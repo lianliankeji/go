@@ -23,239 +23,273 @@ package main
 //hard-coding.
 
 import (
-	"errors"
-	"fmt"
-	"strconv"
+    "errors"
+    "fmt"
+    "strconv"
 
-	"github.com/hyperledger/fabric/core/chaincode/shim"
+    "github.com/hyperledger/fabric/core/chaincode/shim"
 )
 
 // SimpleChaincode example simple Chaincode implementation
 type EventSender struct {
 }
 
+func (t *EventSender) checkAccountOfUser(stub shim.ChaincodeStubInterface, userName string, accName string) bool {
+    //tmp check
+    if userName == accName {
+        return true
+    } else {
+        return false
+    }
+}
+
 func (t *EventSender) Init(stub shim.ChaincodeStubInterface, function string, args []string) ([]byte, error) {
-	return nil, nil
+    return nil, nil
 }
 
 // Transaction makes payment of X units from A to B
 func (t *EventSender) Invoke(stub shim.ChaincodeStubInterface, function string, args []string) (
-	[]byte, error) {
+    []byte, error) {
 
-	var A, B string    // Entities
-	var Aval, Bval int // Asset holdings
-	var Gval int       // Asset holdings
-	var X int          // Transaction value
+    var A, B string    // Entities
+    var Aval, Bval int // Asset holdings
+    var Gval int       // Asset holdings
 
-	if function == "transfer" {
+    //verify user and account
+    var userName = args[3]
+    var accName = args[0]
 
-		A = args[0]
-		B = args[2]
+    if ok := t.checkAccountOfUser(stub, userName, accName); !ok {
+        fmt.Println("verify user(%s) and account(%s) failed. \n", userName, accName)
+        return nil, errors.New("user and account check failed.")
+    }
 
-		// Get the state from the ledger
-		// TODO: will be nice to have a GetAllState call to ledger
-		Avalbytes, err := stub.GetState(A)
-		if err != nil {
+    if function == "transfer" {
 
-			//event
-			stub.SetEvent("error", []byte("Entity not found"))
+        A = args[0]
+        B = args[2]
 
-			return nil, errors.New("Failed to get state")
-		}
-		if Avalbytes == nil {
+        // Perform the execution
+        X, err := strconv.Atoi(args[1])
+        if err != nil || X < 0 {
 
-			//event
-			stub.SetEvent("error", []byte("Entity not found"))
+            //event
+            stub.SetEvent("error", []byte("Invalid amount, expecting a positive integer value"))
 
-			return nil, errors.New("Entity not found")
-		}
-		Aval, _ = strconv.Atoi(string(Avalbytes))
+            return nil, errors.New("Invalid amount, expecting a positive integer value")
+        }
 
-		Bvalbytes, err := stub.GetState(B)
-		if err != nil {
+        // transfer 0, return ok.
+        if X == 0 {
+            return nil, nil
+        }
 
-			//event
-			stub.SetEvent("error", []byte("Failed to get state"))
+        if A == B {
+            stub.SetEvent("error", []byte("Two entities of transfer are same."))
 
-			return nil, errors.New("Failed to get state")
-		}
-		if Bvalbytes == nil {
+            return nil, errors.New("Two entities of transfer are same.")
+        }
 
-			//event
-			stub.SetEvent("error", []byte("Entity not found"))
+        // Get the state from the ledger
+        // TODO: will be nice to have a GetAllState call to ledger
+        Avalbytes, err := stub.GetState(A)
+        if err != nil {
 
-			return nil, errors.New("Entity not found")
-		}
-		Bval, _ = strconv.Atoi(string(Bvalbytes))
+            //event
+            stub.SetEvent("error", []byte("Entity not found"))
 
-		// Perform the execution
-		X, err = strconv.Atoi(args[1])
-		if err != nil {
+            return nil, errors.New("Failed to get state")
+        }
+        if Avalbytes == nil {
 
-			//event
-			stub.SetEvent("error", []byte("Invalid amount, expecting a integer value"))
+            //event
+            stub.SetEvent("error", []byte("Entity not found"))
 
-			return nil, errors.New("Invalid amount, expecting a integer value")
-		}
+            return nil, errors.New("Entity not found")
+        }
+        Aval, _ = strconv.Atoi(string(Avalbytes))
 
-		if Aval < X {
+        Bvalbytes, err := stub.GetState(B)
+        if err != nil {
 
-			//event
-			stub.SetEvent("error", []byte("Balance not enough"))
+            //event
+            stub.SetEvent("error", []byte("Failed to get state"))
 
-			return nil, errors.New("Balance not enough")
-		}
+            return nil, errors.New("Failed to get state")
+        }
+        if Bvalbytes == nil {
 
-		if Aval > X || Aval == X {
-			Aval = Aval - X
-			Bval = Bval + X
-		}
+            //event
+            stub.SetEvent("error", []byte("Entity not found"))
 
-		fmt.Printf("Aval = %d, Bval = %d\n", Aval, Bval)
+            return nil, errors.New("Entity not found")
+        }
+        Bval, _ = strconv.Atoi(string(Bvalbytes))
 
-		// Write the state back to the ledger
-		err = stub.PutState(A, []byte(strconv.Itoa(Aval)))
-		if err != nil {
-			return nil, err
-		}
+        if Aval < X {
+            //event
+            stub.SetEvent("error", []byte("Balance not enough"))
 
-		err = stub.PutState(B, []byte(strconv.Itoa(Bval)))
-		if err != nil {
-			return nil, err
-		}
-	}
+            return nil, errors.New("Balance not enough")
+        } else {
+            Aval = Aval - X
+            Bval = Bval + X
+        }
 
-	if function == "recharge" || function == "takeCash" {
+        fmt.Printf("Aval = %d, Bval = %d\n", Aval, Bval)
 
-		A = args[0]
+        // Write the state back to the ledger
+        err = stub.PutState(A, []byte(strconv.Itoa(Aval)))
+        if err != nil {
+            return nil, err
+        }
 
-		// Get the state from the ledger
-		Avalbytes, err := stub.GetState(A)
-		if err != nil {
+        err = stub.PutState(B, []byte(strconv.Itoa(Bval)))
+        if err != nil {
+            return nil, err
+        }
+    }
 
-			//event
-			stub.SetEvent("error", []byte("Failed to get state"))
+    if function == "recharge" || function == "takeCash" {
 
-			return nil, errors.New("Failed to get state")
-		}
-		if Avalbytes == nil {
+        A = args[0]
 
-			err := stub.PutState(A, []byte(strconv.Itoa(0)))
+        // Perform the execution
+        X, err := strconv.Atoi(args[1])
+        if err != nil || X < 0 {
 
-			if err != nil {
-				return nil, err
-			}
+            //event
+            stub.SetEvent("error", []byte("Invalid amount, expecting a positive integer value"))
 
-		}
-		Aval, _ = strconv.Atoi(string(Avalbytes))
+            return nil, errors.New("Invalid amount, expecting a integer value")
+        }
 
-		// gloab bae
-		Gvalbytes, err := stub.GetState("gloab")
-		if err != nil {
+        // Get the state from the ledger
+        Avalbytes, err := stub.GetState(A)
+        if err != nil {
 
-			//event
-			stub.SetEvent("error", []byte("Failed to get state"))
+            //event
+            stub.SetEvent("error", []byte("Failed to get state"))
 
-			return nil, errors.New("Failed to get state")
-		}
-		if Gvalbytes == nil {
+            return nil, errors.New("Failed to get state")
+        }
+        if Avalbytes == nil {
 
-			err := stub.PutState("gloab", []byte(strconv.Itoa(0)))
+            err := stub.PutState(A, []byte(strconv.Itoa(0)))
 
-			if err != nil {
-				return nil, err
-			}
+            if err != nil {
+                return nil, err
+            }
 
-		}
-		Gval, _ = strconv.Atoi(string(Gvalbytes))
+        }
+        Aval, _ = strconv.Atoi(string(Avalbytes))
 
-		// Perform the execution
-		X, err = strconv.Atoi(args[1])
-		if err != nil {
+        // gloab bae
+        Gvalbytes, err := stub.GetState("gloab")
+        if err != nil {
 
-			//event
-			stub.SetEvent("error", []byte("Invalid amount, expecting a integer value"))
+            //event
+            stub.SetEvent("error", []byte("Failed to get state"))
 
-			return nil, errors.New("Invalid amount, expecting a integer value")
-		}
+            return nil, errors.New("Failed to get state")
+        }
+        if Gvalbytes == nil {
 
-		if function == "recharge" {
+            err := stub.PutState("gloab", []byte(strconv.Itoa(0)))
 
-			fmt.Printf("Aval = %d, X = %d\n", Aval, X)
-			Aval = Aval + X
+            if err != nil {
+                return nil, err
+            }
 
-			Gval = Gval + X
-		}
+        }
+        Gval, _ = strconv.Atoi(string(Gvalbytes))
 
-		if function == "takeCash" {
+        if function == "recharge" {
 
-			if Aval < X {
+            fmt.Printf("Aval = %d, X = %d\n", Aval, X)
+            Aval = Aval + X
 
-				//event
-				stub.SetEvent("error", []byte("Balance not enough"))
+            Gval = Gval + X
+        }
 
-				return nil, errors.New("Balance not enough")
-			}
+        if function == "takeCash" {
 
-			fmt.Printf("Aval = %d, X = %d\n", Aval, X)
-			Aval = Aval - X
+            if Aval < X {
 
-			Gval = Gval - X
-		}
+                //event
+                stub.SetEvent("error", []byte("Balance not enough"))
 
-		// Write the state back to the ledger
-		err = stub.PutState(A, []byte(strconv.Itoa(Aval)))
-		if err != nil {
-			return nil, err
-		}
+                return nil, errors.New("Balance not enough")
+            }
 
-		err = stub.PutState("gloab", []byte(strconv.Itoa(Gval)))
-		if err != nil {
-			return nil, err
-		}
+            fmt.Printf("Aval = %d, X = %d\n", Aval, X)
+            Aval = Aval - X
 
-	}
+            Gval = Gval - X
+        }
 
-	//event
-	stub.SetEvent("success", []byte("invoke success"))
-	return nil, nil
+        // Write the state back to the ledger
+        err = stub.PutState(A, []byte(strconv.Itoa(Aval)))
+        if err != nil {
+            return nil, err
+        }
+
+        err = stub.PutState("gloab", []byte(strconv.Itoa(Gval)))
+        if err != nil {
+            return nil, err
+        }
+
+    }
+
+    //event
+    stub.SetEvent("success", []byte("invoke success"))
+    return nil, nil
 }
 
 // Query callback representing the query of a chaincode
 func (t *EventSender) Query(stub shim.ChaincodeStubInterface, function string, args []string) ([]byte, error) {
-	if function != "query" {
-		return nil, errors.New("Invalid query function name. Expecting \"query\"")
-	}
-	var A string // Entities
-	var err error
+    if function != "query" {
+        return nil, errors.New("Invalid query function name. Expecting \"query\"")
+    }
+    var A string // Entities
+    var err error
 
-	if len(args) != 1 {
-		return nil,
-			errors.New("Incorrect number of arguments. Expecting name of the personto query")
-	}
+    if len(args) != 2 {
+        return nil,
+            errors.New("Incorrect number of arguments. Expecting name of the personto query")
+    }
 
-	A = args[0]
+    //verify user and account
+    var userName = args[1]
+    var accName = args[0]
 
-	// Get the state from the ledger
-	Avalbytes, err := stub.GetState(A)
-	if err != nil {
-		jsonResp := "{\"Error\":\"Failed to get state for " + A + "\"}"
-		return nil, errors.New(jsonResp)
-	}
+    if ok := t.checkAccountOfUser(stub, userName, accName); !ok {
+        fmt.Println("verify user(%s) and account(%s) failed. \n", userName, accName)
+        return nil, errors.New("user and account check failed.")
+    }
 
-	if Avalbytes == nil {
-		jsonResp := "{\"Error\":\"Nil amount for " + A + "\"}"
-		return nil, errors.New(jsonResp)
-	}
+    A = args[0]
 
-	jsonResp := "{\"Name\":\"" + A + "\",\"Amount\":\"" + string(Avalbytes) + "\"}"
-	fmt.Printf("Query Response:%s\n", jsonResp)
-	return Avalbytes, nil
+    // Get the state from the ledger
+    Avalbytes, err := stub.GetState(A)
+    if err != nil {
+        jsonResp := "{\"Error\":\"Failed to get state for " + A + "\"}"
+        return nil, errors.New(jsonResp)
+    }
+
+    if Avalbytes == nil {
+        jsonResp := "{\"Error\":\"Nil amount for " + A + "\"}"
+        return nil, errors.New(jsonResp)
+    }
+
+    jsonResp := "{\"Name\":\"" + A + "\",\"Amount\":\"" + string(Avalbytes) + "\"}"
+    fmt.Printf("Query Response:%s\n", jsonResp)
+    return Avalbytes, nil
 }
 
 func main() {
-	err := shim.Start(new(EventSender))
-	if err != nil {
-		fmt.Printf("Error starting EventSender chaincode: %s", err)
-	}
+    err := shim.Start(new(EventSender))
+    if err != nil {
+        fmt.Printf("Error starting EventSender chaincode: %s", err)
+    }
 }
