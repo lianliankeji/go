@@ -12,10 +12,10 @@ import (
 var mylog = InitMylog("bae")
 var tblName = "BAE_AccountOwnership"
 
-type EventSender struct {
+type FRT struct {
 }
 
-func (t *EventSender) checkAccountOfUser(stub shim.ChaincodeStubInterface, userName string, account string, userCert []byte) (bool, error) {
+func (t *FRT) checkAccountOfUser(stub shim.ChaincodeStubInterface, userName string, account string, userCert []byte) (bool, error) {
 
 	callerCert, err := stub.GetCallerCertificate()
 	mylog.Debug("caller certificate: %x", callerCert)
@@ -39,7 +39,7 @@ func (t *EventSender) checkAccountOfUser(stub shim.ChaincodeStubInterface, userN
 	return true, nil
 }
 
-func (t *EventSender) Init(stub shim.ChaincodeStubInterface, function string, args []string) ([]byte, error) {
+func (t *FRT) Init(stub shim.ChaincodeStubInterface, function string, args []string) ([]byte, error) {
 
 	_, err := stub.GetTable(tblName)
 	if err == nil {
@@ -61,7 +61,7 @@ func (t *EventSender) Init(stub shim.ChaincodeStubInterface, function string, ar
 }
 
 // Transaction makes payment of X units from A to B
-func (t *EventSender) Invoke(stub shim.ChaincodeStubInterface, function string, args []string) (
+func (t *FRT) Invoke(stub shim.ChaincodeStubInterface, function string, args []string) (
 	[]byte, error) {
 
 	var A, B string    // Entities
@@ -263,7 +263,7 @@ func (t *EventSender) Invoke(stub shim.ChaincodeStubInterface, function string, 
 }
 
 // Query callback representing the query of a chaincode
-func (t *EventSender) Query(stub shim.ChaincodeStubInterface, function string, args []string) ([]byte, error) {
+func (t *FRT) Query(stub shim.ChaincodeStubInterface, function string, args []string) ([]byte, error) {
 	if function != "query" {
 		return nil, errors.New("Invalid query function name. Expecting \"query\"")
 	}
@@ -307,7 +307,7 @@ func (t *EventSender) Query(stub shim.ChaincodeStubInterface, function string, a
 	return Avalbytes, nil
 }
 
-func (t *EventSender) isCaller(stub shim.ChaincodeStubInterface, certificate []byte) (bool, error) {
+func (t *FRT) isCaller(stub shim.ChaincodeStubInterface, certificate []byte) (bool, error) {
 	mylog.Debug("Check caller...")
 
 	sigma, err := stub.GetCallerMetadata()
@@ -351,7 +351,7 @@ func main() {
 	// for debug
 	mylog.SetDefaultLvl(0)
 
-	err := shim.Start(new(EventSender))
+	err := shim.Start(new(FRT))
 	if err != nil {
 		fmt.Printf("Error starting EventSender chaincode: %s", err)
 	}
