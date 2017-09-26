@@ -49,6 +49,8 @@ func (m *MYLOG) log(lvl int, format string, args ...interface{}) {
 		lvlStr = "error"
 	case MYLOG_LVL_FATAL:
 		lvlStr = "fatal"
+        default:
+                lvlStr = "unknown"
 	}
 
 	buf := bytes.NewBufferString(time.Now().Local().Format("20060102 15:04:05.000"))
