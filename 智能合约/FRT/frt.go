@@ -10,7 +10,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
-	"time"
+	//"time"
 
 	"github.com/hyperledger/fabric/core/chaincode/shim"
 )
@@ -129,7 +129,7 @@ func (t *FRT) Invoke(stub shim.ChaincodeStubInterface, function string, args []s
 	mylog.Debug("func =%s, args = %v", function, args)
 	var err error
 
-	var argCount = 2
+	var argCount = 3
 	if len(args) < argCount {
 		mylog.Error("Invoke miss arg, got %d, at least need %d.", len(args), argCount)
 		return nil, errors.New("Invoke miss arg.")
@@ -138,6 +138,13 @@ func (t *FRT) Invoke(stub shim.ChaincodeStubInterface, function string, args []s
 	//verify user and account
 	var userName = args[0]
 	var accName = args[1]
+	var times int64 = 0
+
+	times, err = strconv.ParseInt(args[2], 0, 64)
+	if err != nil {
+		mylog.Error("Invoke convert times(%s) failed. err=%s", args[2], err)
+		return nil, errors.New("Invoke convert times failed.")
+	}
 
 	//开户时不需要校验
 	if function != "account" && function != "accountCB" {
@@ -153,16 +160,16 @@ func (t *FRT) Invoke(stub shim.ChaincodeStubInterface, function string, args []s
 	if function == "issue" {
 		mylog.Debug("Enter issue")
 
-		var argCount = 3
+		var argCount = 4
 		if len(args) < argCount {
 			mylog.Error("Invoke(issue) miss arg, got %d, at least need %d.", len(args), argCount)
 			return nil, errors.New("Invoke(issue) miss arg.")
 		}
 
 		var issueAmount int64
-		issueAmount, err = strconv.ParseInt(args[2], 0, 64)
+		issueAmount, err = strconv.ParseInt(args[3], 0, 64)
 		if err != nil {
-			mylog.Error("Invoke(issue) convert issueAmount(%s) failed. err=%s", args[2], err)
+			mylog.Error("Invoke(issue) convert issueAmount(%s) failed. err=%s", args[3], err)
 			return nil, errors.New("Invoke(issue) convert issueAmount failed.")
 		}
 		mylog.Debug("issueAmount= %v", issueAmount)
@@ -183,7 +190,7 @@ func (t *FRT) Invoke(stub shim.ChaincodeStubInterface, function string, args []s
 			}
 		}
 
-		return t.issueCoin(stub, accName, issueAmount)
+		return t.issueCoin(stub, accName, issueAmount, times)
 
 	} else if function == "account" {
 		mylog.Debug("Enter account")
@@ -203,7 +210,7 @@ func (t *FRT) Invoke(stub shim.ChaincodeStubInterface, function string, args []s
 		*/
 		usrType = 0
 
-		return t.openAccount(stub, accName, usrType, userName, false)
+		return t.openAccount(stub, accName, usrType, userName, times, false)
 
 	} else if function == "accountCB" {
 		mylog.Debug("Enter accountCB")
@@ -221,7 +228,7 @@ func (t *FRT) Invoke(stub shim.ChaincodeStubInterface, function string, args []s
 			return nil, errors.New("Invoke(accountCB) account exists.")
 		}
 
-		_, err = t.openAccount(stub, accName, usrType, userName, true)
+		_, err = t.openAccount(stub, accName, usrType, userName, times, true)
 		if err != nil {
 			mylog.Error("Invoke(accountCB) openAccount failed. err=%s", err)
 			return nil, errors.New("Invoke(accountCB) openAccount failed.")
@@ -236,24 +243,24 @@ func (t *FRT) Invoke(stub shim.ChaincodeStubInterface, function string, args []s
 		return nil, nil
 
 	} else if function == "transefer" {
-		var argCount = 5
+		var argCount = 6
 		if len(args) < argCount {
 			mylog.Error("Invoke(transefer) miss arg, got %d, at least need %d.", len(args), argCount)
 			return nil, errors.New("Invoke(transefer) miss arg.")
 		}
 
-		var toAcc = args[2]
-		var transType = args[3]
+		var toAcc = args[3]
+		var transType = args[4]
 
 		var transAmount int64
-		transAmount, err = strconv.ParseInt(args[4], 0, 64)
+		transAmount, err = strconv.ParseInt(args[5], 0, 64)
 		if err != nil {
-			mylog.Error("convert issueAmount(%s) failed. err=%s", args[4], err)
+			mylog.Error("convert issueAmount(%s) failed. err=%s", args[5], err)
 			return nil, errors.New("convert issueAmount failed.")
 		}
 		mylog.Debug("transAmount= %v", transAmount)
 
-		return t.transferCoin(stub, accName, toAcc, transType, transAmount)
+		return t.transferCoin(stub, accName, toAcc, transType, transAmount, times)
 
 	}
 
@@ -628,7 +635,7 @@ func (t *FRT) setEntity(stub shim.ChaincodeStubInterface, cb *Entity) error {
 }
 
 //发行frt
-func (t *FRT) issueCoin(stub shim.ChaincodeStubInterface, cbID string, issueAmount int64) ([]byte, error) {
+func (t *FRT) issueCoin(stub shim.ChaincodeStubInterface, cbID string, issueAmount, times int64) ([]byte, error) {
 	mylog.Debug("Enter issueCoin")
 
 	var err error
@@ -665,13 +672,13 @@ func (t *FRT) issueCoin(stub shim.ChaincodeStubInterface, cbID string, issueAmou
 	fromEntity.TotalAmount = math.MaxInt64
 	fromEntity.User = "fanxiaotian"
 
-	t.recordTranse(stub, &fromEntity, cb, "issue", issueAmount)
+	t.recordTranse(stub, &fromEntity, cb, "issue", issueAmount, times)
 
 	return nil, nil
 }
 
 //frt转账
-func (t *FRT) transferCoin(stub shim.ChaincodeStubInterface, from, to, transType string, amount int64) ([]byte, error) {
+func (t *FRT) transferCoin(stub shim.ChaincodeStubInterface, from, to, transType string, amount, times int64) ([]byte, error) {
 	mylog.Debug("Enter transferCoin")
 
 	var err error
@@ -723,7 +730,7 @@ func (t *FRT) transferCoin(stub shim.ChaincodeStubInterface, from, to, transType
 		return nil, errors.New("setEntity of to failed.")
 	}
 
-	err = t.recordTranse(stub, fromEntity, toEntity, transType, amount)
+	err = t.recordTranse(stub, fromEntity, toEntity, transType, amount, times)
 
 	return nil, err
 }
@@ -734,15 +741,16 @@ const (
 )
 
 //记录交易。目前交易分为两种：一种是和央行打交道的，包括央行发行货币、央行给项目或企业转帐，此类交易普通用户不能查询；另一种是项目、企业、个人间互相转账，此类交易普通用户能查询
-func (t *FRT) recordTranse(stub shim.ChaincodeStubInterface, fromEnt, toEnt *Entity, transType string, amount int64) error {
+func (t *FRT) recordTranse(stub shim.ChaincodeStubInterface, fromEnt, toEnt *Entity, transType string, amount, times int64) error {
 	var transInfo Transaction
-	var now = time.Now()
+	//var now = time.Now()
 
 	transInfo.FromID = fromEnt.EntID
 	transInfo.FromType = fromEnt.EntType
 	transInfo.ToID = toEnt.EntID
 	transInfo.ToType = toEnt.EntType
-	transInfo.Time = now.Unix()*1000 + int64(now.Nanosecond()/1000000) //单位毫秒
+	//transInfo.Time = now.Unix()*1000 + int64(now.Nanosecond()/1000000) //单位毫秒
+	transInfo.Time = times
 	transInfo.Amount = amount
 	transInfo.TxID = stub.GetTxID()
 	transInfo.TransType = transType
@@ -811,7 +819,7 @@ func (t *FRT) getAllAccountNames(stub shim.ChaincodeStubInterface) ([]byte, erro
 	return accB, nil
 }
 
-func (t *FRT) openAccount(stub shim.ChaincodeStubInterface, accName string, accType int, userName string, isCBAcc bool) ([]byte, error) {
+func (t *FRT) openAccount(stub shim.ChaincodeStubInterface, accName string, accType int, userName string, times int64, isCBAcc bool) ([]byte, error) {
 	mylog.Debug("Enter openAccount")
 
 	var err error
@@ -833,13 +841,14 @@ func (t *FRT) openAccount(stub shim.ChaincodeStubInterface, accName string, accT
 	}
 
 	var ent Entity
-	var now = time.Now()
+	//var now = time.Now()
 
 	ent.EntID = accName
 	ent.EntType = accType
 	ent.RestAmount = 0
 	ent.TotalAmount = 0
-	ent.Time = now.Unix()*1000 + int64(now.Nanosecond()/1000000) //单位毫秒
+	//ent.Time = now.Unix()*1000 + int64(now.Nanosecond()/1000000) //单位毫秒
+	ent.Time = times
 
 	err = t.setEntity(stub, &ent)
 	if err != nil {
