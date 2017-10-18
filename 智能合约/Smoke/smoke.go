@@ -1,8 +1,8 @@
 package main
 
 import (
-	//"encoding/base64"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,9 +13,10 @@ import (
 	//"time"
 
 	"github.com/hyperledger/fabric/core/chaincode/shim"
+	"github.com/hyperledger/fabric/core/crypto/primitives"
 )
 
-var mylog = InitMylog("frt")
+var mylog = InitMylog("smk")
 
 const (
 	ENT_CENTERBANK = 1
@@ -27,23 +28,37 @@ const (
 	ATTR_USRNAME = "usrname"
 	ATTR_USRTYPE = "usertype"
 
-	TRANSSEQ_PREFIX    = "__~!@#@!~_frt_transSeqPre__"         //序列号生成器的key的前缀。使用的是worldState存储
-	TRANSINFO_PREFIX   = "__~!@#@!~_frt_transInfoPre__"        //交易信息的key的前缀。使用的是worldState存储
-	CENTERBANK_ACC_KEY = "__~!@#@!~_frt_centerBankAccKey__#$%" //央行账户的key。使用的是worldState存储
-	ALL_ACC_KEY        = "__~!@#@!~_frt_allAccInfo__#$%"       //存储所有账户名的key。使用的是worldState存储
+	TRANSSEQ_PREFIX    = "__~!@#@!~_smk_transSeqPre__"         //序列号生成器的key的前缀。使用的是worldState存储
+	TRANSINFO_PREFIX   = "__~!@#@!~_smk_transInfoPre__"        //交易信息的key的前缀。使用的是worldState存储
+	DFID_PREFIX        = "__~!@#@!~_smk_dfIdPre__"             //欠款融资id的key的前缀。使用的是worldState存储
+	DFID_TX_PREFIX     = "__~!@#@!~_smk_dfIdTxPre__"           //欠款融资id交易信息的key的前缀。使用的是worldState存储
+	CENTERBANK_ACC_KEY = "__~!@#@!~_smk_centerBankAccKey__#$%" //央行账户的key。使用的是worldState存储
+	ALL_ACC_KEY        = "__~!@#@!~_smk_allAccInfo__#$%"       //存储所有账户名的key。使用的是worldState存储
 
 	ALL_ACC_DELIM = ':' //所有账户名的分隔符
+
+	TRANS_LVL_CB   = 1 //交易级别，银行
+	TRANS_LVL_COMM = 2 //交易级别，普通
 )
 
 //账户信息Entity
 // 一系列ID（或账户）都定义为字符串类型。因为putStat函数的第一个参数为字符串类型，这些ID（或账户）都作为putStat的第一个参数；另外从SDK传过来的参数也都是字符串类型。
 type Entity struct {
 	EntID       string `json:"id"`          //银行/企业/项目/个人ID
+	EntDesc     string `json:"desc"`        //描述信息
 	EntType     int    `json:"entType"`     //类型 中央银行:1, 企业:2, 项目:3, 个人:4
 	TotalAmount int64  `json:"totalAmount"` //货币总数额(发行或接收)
 	RestAmount  int64  `json:"restAmount"`  //账户余额
 	User        string `json:"user"`        //该实例所属的用户
-	Time        int64  `json:"time"`        //开户时间
+	Time        int64  `json:"time"`        //创建时间
+
+	DFIdMap map[string]int64 `json:"dfIdMap"` //贷款融资id的map，DFId作为子账户
+}
+
+//查询账户信息
+type QueryEntity struct {
+	TotalAmount int64            `json:"totalAmount"` //注意，这里指的是账户所有余额，即Entity中RestAmount
+	DFIdMap     map[string]int64 `json:"dfIdMap"`     //贷款融资id的map，DFId作为子账户
 }
 
 //供查询的交易内容
@@ -64,6 +79,12 @@ type Transaction struct {
 	TxID         string `json:"txid"`         //交易ID
 	TransLvl     int    `json:"transLvl"`     //交易级别
 	GlobalSerial int64  `json:"globalSerial"` //全局交易序列号
+	DfId         string `json:"dfid"`         //欠款融资id
+}
+
+type TraceInfo struct {
+	Time     int64  `json:"time"`     //物流时间
+	TraceMsg string `json:"tracemsg"` //物流信息
 }
 
 //查询的对账信息
@@ -74,13 +95,36 @@ type QueryBalance struct {
 	Message      string `json:"message"`      //对账附件信息
 }
 
-type FRT struct {
+type DebtFinance struct {
+	DFID              string `json:"DFId"`        //欠款融资id
+	DebtInfo          string `json:"debtInfo"`    //欠款信息
+	DebtAmount        string `json:"debtAmt"`     //欠款金额。 不用运算，只是保存，所以用字符串类型
+	DebtTime          int64  `json:"debtTime"`    //欠款时间
+	DebtContractNo    string `json:"debtContNo"`  //欠款合同编号
+	FinanceInfo       string `json:"finacInfo"`   //融资信息
+	FinanceAmount     string `json:"finacAmt"`    //融资总额
+	FinanceTime       int64  `json:"finacTime"`   //融资时间
+	FinanceContractNo string `json:"finacContNo"` //融资合同编号
+}
+
+type DfidTransInfo struct {
+	AccName string `json:"accName"`
+	Amount  int64  `json:"amount"`
+	Time    int64  `json:"time"`
+}
+
+type QueryDfidTransInfo struct {
+	DebtFinance
+	TransInfoList []DfidTransInfo `json:"transInfoList"`
+}
+
+type SMK struct {
 }
 
 //var centerBankId = 0xDE0B6B3A7640000
 //var centerBankId = "10000000000000000000"
 
-func (t *FRT) Init(stub shim.ChaincodeStubInterface, function string, args []string) ([]byte, error) {
+func (t *SMK) Init(stub shim.ChaincodeStubInterface, function string, args []string) ([]byte, error) {
 	mylog.Debug("Enter Init")
 	mylog.Debug("func =%s, args = %v", function, args)
 
@@ -124,14 +168,14 @@ func (t *FRT) Init(stub shim.ChaincodeStubInterface, function string, args []str
 }
 
 // Transaction makes payment of X units from A to B
-func (t *FRT) Invoke(stub shim.ChaincodeStubInterface, function string, args []string) ([]byte, error) {
+func (t *SMK) Invoke(stub shim.ChaincodeStubInterface, function string, args []string) ([]byte, error) {
 	mylog.Debug("Enter Invoke")
 	mylog.Debug("func =%s, args = %v", function, args)
 	var err error
 
-	var argCount = 3
-	if len(args) < argCount {
-		mylog.Error("Invoke miss arg, got %d, at least need %d.", len(args), argCount)
+	var fixedArgCount = 4
+	if len(args) < fixedArgCount {
+		mylog.Error("Invoke miss arg, got %d, at least need %d.", len(args), fixedArgCount)
 		return nil, errors.New("Invoke miss arg.")
 	}
 
@@ -139,18 +183,18 @@ func (t *FRT) Invoke(stub shim.ChaincodeStubInterface, function string, args []s
 	var userName = args[0]
 	var accName = args[1]
 	var times int64 = 0
+	var userCert []byte
 
-	times, err = strconv.ParseInt(args[2], 0, 64)
+	userCert, _ = base64.StdEncoding.DecodeString(args[2])
+
+	times, err = strconv.ParseInt(args[3], 0, 64)
 	if err != nil {
-		mylog.Error("Invoke convert times(%s) failed. err=%s", args[2], err)
+		mylog.Error("Invoke convert times(%s) failed. err=%s", args[3], err)
 		return nil, errors.New("Invoke convert times failed.")
 	}
 
 	//开户时不需要校验
 	if function != "account" && function != "accountCB" {
-		var userCert []byte
-		//userCert, _ = base64.StdEncoding.DecodeString(args[4])
-
 		if ok, _ := t.checkAccountOfUser(stub, userName, accName, userCert); !ok {
 			fmt.Println("verify user(%s) and account(%s) failed. \n", userName, accName)
 			return nil, errors.New("user and account check failed.")
@@ -160,16 +204,16 @@ func (t *FRT) Invoke(stub shim.ChaincodeStubInterface, function string, args []s
 	if function == "issue" {
 		mylog.Debug("Enter issue")
 
-		var argCount = 4
+		var argCount = fixedArgCount + 1
 		if len(args) < argCount {
 			mylog.Error("Invoke(issue) miss arg, got %d, at least need %d.", len(args), argCount)
 			return nil, errors.New("Invoke(issue) miss arg.")
 		}
 
 		var issueAmount int64
-		issueAmount, err = strconv.ParseInt(args[3], 0, 64)
+		issueAmount, err = strconv.ParseInt(args[fixedArgCount], 0, 64)
 		if err != nil {
-			mylog.Error("Invoke(issue) convert issueAmount(%s) failed. err=%s", args[3], err)
+			mylog.Error("Invoke(issue) convert issueAmount(%s) failed. err=%s", args[fixedArgCount], err)
 			return nil, errors.New("Invoke(issue) convert issueAmount failed.")
 		}
 		mylog.Debug("issueAmount= %v", issueAmount)
@@ -196,16 +240,27 @@ func (t *FRT) Invoke(stub shim.ChaincodeStubInterface, function string, args []s
 		mylog.Debug("Enter account")
 		var usrType int
 
+		tmpType, err := stub.ReadCertAttribute(ATTR_USRTYPE)
+		if err != nil {
+			mylog.Error("ReadCertAttribute(%s) failed. err=%s", ATTR_USRTYPE, err)
+			//return nil, errors.New("ReadCertAttribute failed.")
+		}
+		tmpName, err := stub.ReadCertAttribute(ATTR_USRNAME)
+		if err != nil {
+			mylog.Error("ReadCertAttribute(%s) failed. err=%s", ATTR_USRTYPE, err)
+			//return nil, errors.New("ReadCertAttribute failed.")
+		}
+		tmpRole, err := stub.ReadCertAttribute(ATTR_ROLE)
+		if err != nil {
+			mylog.Error("ReadCertAttribute(%s) failed. err=%s", ATTR_USRTYPE, err)
+			//return nil, errors.New("ReadCertAttribute failed.")
+		}
+		mylog.Debug("userName=%s, userType=%s, userRole=%s", string(tmpName), string(tmpType), string(tmpRole))
 		/*
-			tmpType, err := stub.ReadCertAttribute(ATTR_USRTYPE)
-			if err != nil {
-				mylog.Error("ReadCertAttribute(%s) failed. err=%s", ATTR_USRTYPE, err)
-				//return nil, errors.New("ReadCertAttribute failed.")
-			}
 			usrType, err = strconv.Atoi(string(tmpType))
 			if err != nil {
 				mylog.Error("convert usrType(%s) failed. err=%s", tmpType, err)
-				return nil, errors.New("convert usrType failed.")
+				//return nil, errors.New("convert usrType failed.")
 			}
 		*/
 		usrType = 0
@@ -243,25 +298,139 @@ func (t *FRT) Invoke(stub shim.ChaincodeStubInterface, function string, args []s
 		return nil, nil
 
 	} else if function == "transefer" {
-		var argCount = 6
+		var argCount = fixedArgCount + 4
 		if len(args) < argCount {
 			mylog.Error("Invoke(transefer) miss arg, got %d, at least need %d.", len(args), argCount)
 			return nil, errors.New("Invoke(transefer) miss arg.")
 		}
 
-		var toAcc = args[3]
-		var transType = args[4]
+		var toAcc = args[fixedArgCount]
+		var transType = args[fixedArgCount+1]
+		var dfId = args[fixedArgCount+2]
 
 		var transAmount int64
-		transAmount, err = strconv.ParseInt(args[5], 0, 64)
+		transAmount, err = strconv.ParseInt(args[fixedArgCount+3], 0, 64)
 		if err != nil {
-			mylog.Error("convert issueAmount(%s) failed. err=%s", args[5], err)
+			mylog.Error("convert issueAmount(%s) failed. err=%s", args[fixedArgCount+3], err)
 			return nil, errors.New("convert issueAmount failed.")
 		}
 		mylog.Debug("transAmount= %v", transAmount)
 
-		return t.transferCoin(stub, accName, toAcc, transType, transAmount, times)
+		return t.transferCoin(stub, accName, toAcc, dfId, transType, transAmount, times)
 
+	} else if function == "trace" {
+		var argCount = fixedArgCount + 2
+		if len(args) < argCount {
+			mylog.Error("Invoke(transefer) miss arg, got %d, at least need %d.", len(args), argCount)
+			return nil, errors.New("Invoke(transefer) miss arg.")
+		}
+
+		var wareId = args[fixedArgCount]
+		var msg = args[fixedArgCount+1]
+
+		return nil, t.recordTrace(stub, wareId, msg, times)
+	} else if function == "debt" {
+		var argCount = fixedArgCount + 4
+		if len(args) < argCount {
+			mylog.Error("Invoke(debt) miss arg, got %d, at least need %d.", len(args), argCount)
+			return nil, errors.New("Invoke(debt) miss arg.")
+		}
+
+		var dfId = args[fixedArgCount]
+		var debtInfo = args[fixedArgCount+1]
+		var contractNo = args[fixedArgCount+2]
+		var debtAmout = args[fixedArgCount+3]
+
+		var dfInfoKey = t.getDfInfoKey(dfId)
+		var dfB, dfJson []byte
+		var df DebtFinance
+
+		dfB, err = stub.GetState(dfInfoKey)
+		if err != nil {
+			mylog.Error("Invoke(debt) GetState(%s) failed. err=%s.", dfInfoKey, err)
+			return nil, errors.New("Invoke(debt) GetState failed.")
+		}
+		if dfB != nil {
+			mylog.Error("Invoke(debt) DebtFinance exists already.")
+			return nil, errors.New("Invoke(debt) DebtFinance exists already.")
+		}
+
+		df.DFID = dfId
+		df.DebtInfo = debtInfo
+		df.DebtContractNo = contractNo
+		df.DebtTime = times
+		df.DebtAmount = debtAmout
+
+		dfJson, err = json.Marshal(df)
+		if err != nil {
+			mylog.Error("Invoke(debt) Marshal failed. err=%s.", err)
+			return nil, errors.New("Invoke(debt) Marshal failed.")
+		}
+
+		err = t.PutState_Ex(stub, dfInfoKey, dfJson)
+		if err != nil {
+			mylog.Error("Invoke(debt) PutState failed. err=%s.", err)
+			return nil, errors.New("Invoke(debt) PutState failed.")
+		}
+
+		return nil, nil
+	} else if function == "finance" {
+		var argCount = fixedArgCount + 4
+		if len(args) < argCount {
+			mylog.Error("Invoke(finance) miss arg, got %d, at least need %d.", len(args), argCount)
+			return nil, errors.New("Invoke(finance) miss arg.")
+		}
+
+		var dfId = args[fixedArgCount]
+		var finacInfo = args[fixedArgCount+1]
+		var contractNo = args[fixedArgCount+2]
+		var finacAmout = args[fixedArgCount+3]
+
+		var dfInfoKey = t.getDfInfoKey(dfId)
+		var dfB, dfJson []byte
+		var df DebtFinance
+
+		dfB, err = stub.GetState(dfInfoKey)
+		if err != nil {
+			mylog.Error("Invoke(finance) GetState(%s) failed. err=%s.", dfInfoKey, err)
+			return nil, errors.New("Invoke(finance) GetState failed.")
+		}
+		//如果没有供应商记入的欠款信息，则不能融资
+		if dfB == nil {
+			mylog.Error("Invoke(finance) DebtInfo not exists.")
+			return nil, errors.New("Invoke(finance) DebtInfo not exists.")
+		}
+
+		err = json.Unmarshal(dfB, &df)
+		if err != nil {
+			mylog.Error("Invoke(finance) Unmarshal failed. err=%s.", err)
+			return nil, errors.New("Invoke(finance) Unmarshal failed.")
+		}
+
+		//如果已发起过一次融资，则不能再次发起
+		if df.FinanceTime > 0 {
+			mylog.Error("Invoke(finance) finance already.")
+			return nil, errors.New("Invoke(finance) finance already.")
+		}
+
+		df.FinanceInfo = finacInfo
+		df.FinanceTime = times
+		df.DebtContractNo = contractNo
+		df.FinanceAmount = finacAmout
+
+		dfJson, err = json.Marshal(df)
+		if err != nil {
+			mylog.Error("Invoke(finance) Marshal failed. err=%s.", err)
+			return nil, errors.New("Invoke(finance) Marshal failed.")
+		}
+
+		err = t.PutState_Ex(stub, dfInfoKey, dfJson)
+		if err != nil {
+			mylog.Error("Invoke(finance) PutState failed. err=%s.", err)
+			return nil, errors.New("Invoke(finance) PutState failed.")
+		}
+
+		return nil, nil
 	}
 
 	//event
@@ -270,7 +439,7 @@ func (t *FRT) Invoke(stub shim.ChaincodeStubInterface, function string, args []s
 }
 
 // Query callback representing the query of a chaincode
-func (t *FRT) Query(stub shim.ChaincodeStubInterface, function string, args []string) ([]byte, error) {
+func (t *SMK) Query(stub shim.ChaincodeStubInterface, function string, args []string) ([]byte, error) {
 	mylog.Debug("Enter Query")
 	mylog.Debug("func =%s, args = %v", function, args)
 
@@ -302,7 +471,19 @@ func (t *FRT) Query(stub shim.ChaincodeStubInterface, function string, args []st
 		}
 		mylog.Debug("queryEntity=%v", queryEntity)
 
-		retValue := []byte(strconv.FormatInt(queryEntity.RestAmount, 10))
+		var qEnt QueryEntity
+		qEnt.TotalAmount = queryEntity.RestAmount
+		qEnt.DFIdMap = queryEntity.DFIdMap
+		if qEnt.DFIdMap == nil {
+			qEnt.DFIdMap = make(map[string]int64)
+		}
+		//retValue := []byte(strconv.FormatInt(queryEntity.RestAmount, 10))
+		retValue, err := json.Marshal(qEnt)
+		if err != nil {
+			mylog.Error("getEntity Marshal failed. err=%s", err)
+			return nil, err
+		}
+
 		mylog.Debug("retValue=%v, %s", retValue, string(retValue))
 
 		return retValue, nil
@@ -363,28 +544,92 @@ func (t *FRT) Query(stub shim.ChaincodeStubInterface, function string, args []st
 		}
 
 		return retValues, nil
-	} else if function == "queryAcc" {
-		var argCount = 2
+	} else if function == "queryTrace" {
+		var argCount = 1
 		if len(args) < argCount {
-			mylog.Error("queryAcc miss arg, got %d, need %d.", len(args), argCount)
-			return nil, errors.New("queryAcc miss arg.")
+			mylog.Error("queryTrace miss arg, got %d, need %d.", len(args), argCount)
+			return nil, errors.New("queryTrace miss arg.")
 		}
+		wareId := args[0]
 
-		var err error
-		var accName = args[0]
-		//var userName = args[1]
-
-		accExist, err := t.isEntityExists(stub, accName)
+		retValues, err := stub.GetState(wareId)
 		if err != nil {
-			mylog.Error("queryAcc: isEntityExists (id=%s) failed. err=%s", accName, err)
-			return nil, errors.New("queryAcc: isEntityExists failed.")
+			mylog.Error("queryTrace GetState failed. err=%s", err)
+			return nil, errors.New("queryTrace GetState failed.")
+		}
+		if retValues == nil {
+			retValues = []byte("[]")
+		} else {
+			retValues = append([]byte("["), retValues...)
+			retValues = append(retValues, ']')
 		}
 
-		var retValues []byte
-		if accExist {
-			retValues = []byte("1")
+		return retValues, nil
+	} else if function == "queryDfid" {
+		var argCount = 1
+		if len(args) < argCount {
+			mylog.Error("queryDfid miss arg, got %d, need %d.", len(args), argCount)
+			return nil, errors.New("queryDfid miss arg.")
+		}
+		dfId := args[0]
+
+		//先获取DebtFinance的信息
+		var qdf QueryDfidTransInfo
+		dfB, err := stub.GetState(t.getDfInfoKey(dfId))
+		if err != nil {
+			mylog.Error("queryDfid GetState(DfInfo) failed. err=%s", err)
+			return nil, errors.New("queryDfid GetState failed.")
+		}
+		if dfB == nil {
+			mylog.Error("queryDfid no dfInfo for such id '%s'.", dfId)
+			return nil, errors.New("queryDfid no dfInfo for such id.")
+		}
+		err = json.Unmarshal(dfB, &qdf.DebtFinance)
+		if err != nil {
+			mylog.Error("queryDfid Unmarshal(DebtFinance) failed. err=%s", err)
+			return nil, errors.New("queryDfid Unmarshal failed.")
+		}
+
+		dftB, err := stub.GetState(t.getDfIdTransKey(dfId))
+		if err != nil {
+			mylog.Error("queryDfid GetState(DfTranseInfo) failed. err=%s", err)
+			return nil, errors.New("queryDfid GetState failed.")
+		}
+		if dftB == nil {
+			qdf.TransInfoList = []DfidTransInfo{}
 		} else {
-			retValues = []byte("0")
+			var transkList []string
+			err = json.Unmarshal(dftB, &transkList)
+			if err != nil {
+				mylog.Error("queryDfid Unmarshal(DfidTransInfo) failed. err=%s", err)
+				return nil, errors.New("queryDfid Unmarshal failed.")
+			}
+			var transB []byte
+			var transInfo Transaction
+			for _, k := range transkList {
+				transB, err = stub.GetState(k)
+				if err != nil {
+					mylog.Error("queryDfid GetState(TranseInfo) failed. err=%s", err)
+					//return nil, errors.New("queryDfid GetState failed.")
+					continue
+				}
+				if transB == nil {
+					mylog.Error("queryDfid GetState(TranseInfo) for '%s' is nil.", k)
+					continue
+				}
+				err = json.Unmarshal(transB, &transInfo)
+				if err != nil {
+					mylog.Error("queryDfid Unmarshal(TranseInfo) failed. err=%s", err)
+					continue
+				}
+				qdf.TransInfoList = append(qdf.TransInfoList, DfidTransInfo{AccName: transInfo.ToID, Amount: transInfo.Amount, Time: transInfo.Time})
+			}
+		}
+
+		retValues, err := json.Marshal(qdf)
+		if err != nil {
+			mylog.Error("queryDfid Marshal(qdf) failed. err=%s", err)
+			return nil, errors.New("queryDfid Marshal(qdf) failed.")
 		}
 
 		return retValues, nil
@@ -393,7 +638,7 @@ func (t *FRT) Query(stub shim.ChaincodeStubInterface, function string, args []st
 	return nil, errors.New("unknown function.")
 }
 
-func (t *FRT) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl int, begIdx, endIdx int64) ([]byte, error) {
+func (t *SMK) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl int, begIdx, endIdx int64) ([]byte, error) {
 	var maxSeq int64
 	var err error
 	var retTransInfo []byte = []byte("[]") //返回的结果是一个json数组，所以如果结果为空，返回空数组
@@ -473,7 +718,7 @@ func (t *FRT) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl int, be
 	return retTransInfo, nil
 }
 
-func (t *FRT) queryBalance(stub shim.ChaincodeStubInterface) ([]byte, error) {
+func (t *SMK) queryBalance(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	var qb QueryBalance
 	qb.IssueAmount = 0
 	qb.AccSumAmount = 0
@@ -537,7 +782,7 @@ func (t *FRT) queryBalance(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	return retValue, nil
 }
 
-func (t *FRT) isCaller(stub shim.ChaincodeStubInterface, certificate []byte) (bool, error) {
+func (t *SMK) isCaller(stub shim.ChaincodeStubInterface, certificate []byte) (bool, error) {
 	mylog.Debug("Check caller...")
 
 	sigma, err := stub.GetCallerMetadata()
@@ -553,10 +798,10 @@ func (t *FRT) isCaller(stub shim.ChaincodeStubInterface, certificate []byte) (bo
 		return false, errors.New("Failed getting binding")
 	}
 
-	mylog.Debug("passed certificate [% x]", certificate)
-	mylog.Debug("passed sigma [% x]", sigma)
-	mylog.Debug("passed payload [% x]", payload)
-	mylog.Debug("passed binding [% x]", binding)
+	//mylog.Debug("passed certificate [% x]", certificate)
+	//mylog.Debug("passed sigma [% x]", sigma)
+	//mylog.Debug("passed payload [% x]", payload)
+	//mylog.Debug("passed binding [% x]", binding)
 
 	ok, err := stub.VerifySignature(
 		certificate,
@@ -577,33 +822,33 @@ func (t *FRT) isCaller(stub shim.ChaincodeStubInterface, certificate []byte) (bo
 	return ok, err
 }
 
-func (t *FRT) checkAccountOfUser(stub shim.ChaincodeStubInterface, userName string, account string, userCert []byte) (bool, error) {
+func (t *SMK) checkAccountOfUser(stub shim.ChaincodeStubInterface, userName string, account string, userCert []byte) (bool, error) {
 
-	/*
-		callerCert, err := stub.GetCallerCertificate()
-		mylog.Debug("caller certificate: %x", callerCert)
+	//*
+	callerCert, err := stub.GetCallerCertificate()
+	mylog.Debug("caller certificate: %x", callerCert)
 
-		ok, err := t.isCaller(stub, callerCert)
-		if err != nil {
-			mylog.Error("call isCaller failed(callerCert).")
-		}
-		if !ok {
-			mylog.Error("is not Caller(callerCert).")
-		}
+	ok, err := t.isCaller(stub, callerCert)
+	if err != nil {
+		mylog.Error("call isCaller failed(callerCert).")
+	}
+	if !ok {
+		mylog.Error("is not Caller(callerCert).")
+	}
 
-		ok, err = t.isCaller(stub, userCert)
-		if err != nil {
-			mylog.Error("call isCaller failed(userCert).")
-		}
-		if !ok {
-			mylog.Error("is not userCert(userCert).")
-		}
-	*/
+	ok, err = t.isCaller(stub, userCert)
+	if err != nil {
+		mylog.Error("call isCaller failed(userCert).")
+	}
+	if !ok {
+		mylog.Error("is not userCert(userCert).")
+	}
+	//*/
 
 	return true, nil
 }
 
-func (t *FRT) getEntity(stub shim.ChaincodeStubInterface, cbId string) (*Entity, error) {
+func (t *SMK) getEntity(stub shim.ChaincodeStubInterface, cbId string) (*Entity, error) {
 	var centerBankByte []byte
 	var cb Entity
 	var err error
@@ -624,7 +869,7 @@ func (t *FRT) getEntity(stub shim.ChaincodeStubInterface, cbId string) (*Entity,
 	return &cb, nil
 }
 
-func (t *FRT) isEntityExists(stub shim.ChaincodeStubInterface, cbId string) (bool, error) {
+func (t *SMK) isEntityExists(stub shim.ChaincodeStubInterface, cbId string) (bool, error) {
 	var centerBankByte []byte
 	var err error
 
@@ -641,7 +886,7 @@ func (t *FRT) isEntityExists(stub shim.ChaincodeStubInterface, cbId string) (boo
 }
 
 //央行数据写入
-func (t *FRT) setEntity(stub shim.ChaincodeStubInterface, cb *Entity) error {
+func (t *SMK) setEntity(stub shim.ChaincodeStubInterface, cb *Entity) error {
 
 	jsons, err := json.Marshal(cb)
 
@@ -659,8 +904,8 @@ func (t *FRT) setEntity(stub shim.ChaincodeStubInterface, cb *Entity) error {
 	return nil
 }
 
-//发行frt
-func (t *FRT) issueCoin(stub shim.ChaincodeStubInterface, cbID string, issueAmount, times int64) ([]byte, error) {
+//发行
+func (t *SMK) issueCoin(stub shim.ChaincodeStubInterface, cbID string, issueAmount, times int64) ([]byte, error) {
 	mylog.Debug("Enter issueCoin")
 
 	var err error
@@ -697,13 +942,13 @@ func (t *FRT) issueCoin(stub shim.ChaincodeStubInterface, cbID string, issueAmou
 	fromEntity.TotalAmount = math.MaxInt64
 	fromEntity.User = "fanxiaotian"
 
-	t.recordTranse(stub, &fromEntity, cb, "issue", issueAmount, times)
+	t.recordTranse(stub, &fromEntity, cb, "", "issue", issueAmount, times)
 
 	return nil, nil
 }
 
-//frt转账
-func (t *FRT) transferCoin(stub shim.ChaincodeStubInterface, from, to, transType string, amount, times int64) ([]byte, error) {
+//转账
+func (t *SMK) transferCoin(stub shim.ChaincodeStubInterface, from, to, dfId, transType string, amount, times int64) ([]byte, error) {
 	mylog.Debug("Enter transferCoin")
 
 	var err error
@@ -720,20 +965,19 @@ func (t *FRT) transferCoin(stub shim.ChaincodeStubInterface, from, to, transType
 	var fromEntity, toEntity *Entity
 	fromEntity, err = t.getEntity(stub, from)
 	if err != nil {
-		mylog.Error("getEntity(id=%s) failed. err=%s", from, err)
+		mylog.Error("transferCoin: getEntity(id=%s) failed. err=%s", from, err)
 		return nil, errors.New("getEntity from failed.")
 	}
 	toEntity, err = t.getEntity(stub, to)
 	if err != nil {
-		mylog.Error("getEntity(id=%s) failed. err=%s", to, err)
+		mylog.Error("transferCoin: getEntity(id=%s) failed. err=%s", to, err)
 		return nil, errors.New("getEntity to failed.")
 	}
 
 	if fromEntity.RestAmount < amount {
-		mylog.Error("fromEntity(id=%s) restAmount not enough.", from)
+		mylog.Error("transferCoin: fromEntity(id=%s) restAmount not enough.", from)
 		return nil, errors.New("fromEntity restAmount not enough.")
 	}
-
 	mylog.Debug("fromEntity before= %v", fromEntity)
 	mylog.Debug("toEntity before= %v", toEntity)
 
@@ -741,32 +985,56 @@ func (t *FRT) transferCoin(stub shim.ChaincodeStubInterface, from, to, transType
 	toEntity.RestAmount += amount
 	toEntity.TotalAmount += amount
 
+	var recordDfid string = ""
+
+	//********** 添加子账户处理
+	//如果转出账户是央行账户，那么直接转出，无需处理子账户。因为央行账户没有以融资id的子账户，所以DFIdMap为nil
+	if fromEntity.DFIdMap != nil {
+		v, ok := fromEntity.DFIdMap[dfId]
+		if !ok {
+			mylog.Error("transferCoin: fromEntity(id=%s) has no such dfid '%s'.", from, dfId)
+			return nil, errors.New("fromEntity has no such dfid.")
+		}
+		if v < amount {
+			mylog.Error("transferCoin: fromEntity(id=%s) sub acc(id=%s) restAmount not enough.", from, dfId)
+			return nil, errors.New("fromEntity sub acc restAmount not enough.")
+		}
+		fromEntity.DFIdMap[dfId] -= amount
+
+		//只有转出账户有dfid子账户时，才需要记录该交易到以dfid为key的交易记录里
+		recordDfid = dfId
+	}
+	if toEntity.DFIdMap != nil {
+		_, ok := toEntity.DFIdMap[dfId]
+		if !ok {
+			toEntity.DFIdMap[dfId] = amount
+		} else {
+			toEntity.DFIdMap[dfId] += amount
+		}
+	}
+	//********** 添加子账户处理
+
 	mylog.Debug("fromEntity after= %v", fromEntity)
 	mylog.Debug("toEntity after= %v", toEntity)
 
 	err = t.setEntity(stub, fromEntity)
 	if err != nil {
-		mylog.Error("setEntity of fromEntity(id=%s) failed. err=%s", from, err)
+		mylog.Error("transferCoin: setEntity of fromEntity(id=%s) failed. err=%s", from, err)
 		return nil, errors.New("setEntity of from failed.")
 	}
 	err = t.setEntity(stub, toEntity)
 	if err != nil {
-		mylog.Error("setEntity of toEntity(id=%s) failed. err=%s", to, err)
+		mylog.Error("transferCoin: setEntity of toEntity(id=%s) failed. err=%s", to, err)
 		return nil, errors.New("setEntity of to failed.")
 	}
 
-	err = t.recordTranse(stub, fromEntity, toEntity, transType, amount, times)
+	err = t.recordTranse(stub, fromEntity, toEntity, recordDfid, transType, amount, times)
 
 	return nil, err
 }
 
-const (
-	TRANS_LVL_CB   = 1
-	TRANS_LVL_COMM = 2
-)
-
 //记录交易。目前交易分为两种：一种是和央行打交道的，包括央行发行货币、央行给项目或企业转帐，此类交易普通用户不能查询；另一种是项目、企业、个人间互相转账，此类交易普通用户能查询
-func (t *FRT) recordTranse(stub shim.ChaincodeStubInterface, fromEnt, toEnt *Entity, transType string, amount, times int64) error {
+func (t *SMK) recordTranse(stub shim.ChaincodeStubInterface, fromEnt, toEnt *Entity, dfId, transType string, amount, times int64) error {
 	var transInfo Transaction
 	//var now = time.Now()
 
@@ -779,6 +1047,7 @@ func (t *FRT) recordTranse(stub shim.ChaincodeStubInterface, fromEnt, toEnt *Ent
 	transInfo.Amount = amount
 	transInfo.TxID = stub.GetTxID()
 	transInfo.TransType = transType
+	transInfo.DfId = dfId
 
 	var transLevel int = TRANS_LVL_COMM
 	accCB, err := t.getCenterBankAcc(stub)
@@ -801,7 +1070,7 @@ func (t *FRT) recordTranse(stub shim.ChaincodeStubInterface, fromEnt, toEnt *Ent
 	return nil
 }
 
-func (t *FRT) checkAccountName(accName string) error {
+func (t *SMK) checkAccountName(accName string) error {
 	//会用':'作为分隔符分隔多个账户名，所以账户名不能含有':'
 	var invalidChars string = string(ALL_ACC_DELIM)
 
@@ -812,7 +1081,7 @@ func (t *FRT) checkAccountName(accName string) error {
 	return nil
 }
 
-func (t *FRT) saveAccountName(stub shim.ChaincodeStubInterface, accName string) error {
+func (t *SMK) saveAccountName(stub shim.ChaincodeStubInterface, accName string) error {
 	accB, err := stub.GetState(ALL_ACC_KEY)
 	if err != nil {
 		mylog.Error("saveAccountName GetState failed.err=%s", err)
@@ -835,7 +1104,7 @@ func (t *FRT) saveAccountName(stub shim.ChaincodeStubInterface, accName string) 
 	return nil
 }
 
-func (t *FRT) getAllAccountNames(stub shim.ChaincodeStubInterface) ([]byte, error) {
+func (t *SMK) getAllAccountNames(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	accB, err := stub.GetState(ALL_ACC_KEY)
 	if err != nil {
 		mylog.Error("getAllAccountNames GetState failed.err=%s", err)
@@ -844,7 +1113,7 @@ func (t *FRT) getAllAccountNames(stub shim.ChaincodeStubInterface) ([]byte, erro
 	return accB, nil
 }
 
-func (t *FRT) openAccount(stub shim.ChaincodeStubInterface, accName string, accType int, userName string, times int64, isCBAcc bool) ([]byte, error) {
+func (t *SMK) openAccount(stub shim.ChaincodeStubInterface, accName string, accType int, userName string, times int64, isCBAcc bool) ([]byte, error) {
 	mylog.Debug("Enter openAccount")
 
 	var err error
@@ -874,6 +1143,12 @@ func (t *FRT) openAccount(stub shim.ChaincodeStubInterface, accName string, accT
 	ent.TotalAmount = 0
 	//ent.Time = now.Unix()*1000 + int64(now.Nanosecond()/1000000) //单位毫秒
 	ent.Time = times
+	ent.DFIdMap = nil
+
+	//非央行账户需要建立以dfid为key的子账户
+	if !isCBAcc {
+		ent.DFIdMap = make(map[string]int64)
+	}
 
 	err = t.setEntity(stub, &ent)
 	if err != nil {
@@ -885,6 +1160,7 @@ func (t *FRT) openAccount(stub shim.ChaincodeStubInterface, accName string, accT
 
 	//央行账户此处不保存
 	if !isCBAcc {
+		ent.DFIdMap = make(map[string]int64)
 		err = t.saveAccountName(stub, accName)
 	}
 
@@ -893,7 +1169,7 @@ func (t *FRT) openAccount(stub shim.ChaincodeStubInterface, accName string, accT
 
 var centerBankAccCache []byte = nil
 
-func (t *FRT) setCenterBankAcc(stub shim.ChaincodeStubInterface, acc string) error {
+func (t *SMK) setCenterBankAcc(stub shim.ChaincodeStubInterface, acc string) error {
 	err := t.PutState_Ex(stub, CENTERBANK_ACC_KEY, []byte(acc))
 	if err != nil {
 		mylog.Error("setCenterBankAcc PutState failed.err=%s", err)
@@ -904,7 +1180,7 @@ func (t *FRT) setCenterBankAcc(stub shim.ChaincodeStubInterface, acc string) err
 
 	return nil
 }
-func (t *FRT) getCenterBankAcc(stub shim.ChaincodeStubInterface) ([]byte, error) {
+func (t *SMK) getCenterBankAcc(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	if centerBankAccCache != nil {
 		return centerBankAccCache, nil
 	}
@@ -920,7 +1196,7 @@ func (t *FRT) getCenterBankAcc(stub shim.ChaincodeStubInterface) ([]byte, error)
 	return bankB, nil
 }
 
-func (t *FRT) getTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string) (int64, error) {
+func (t *SMK) getTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string) (int64, error) {
 	seqB, err := stub.GetState(transSeqKey)
 	if err != nil {
 		mylog.Error("getTransSeq GetState failed.err=%s", err)
@@ -944,7 +1220,7 @@ func (t *FRT) getTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string) 
 
 	return seq, nil
 }
-func (t *FRT) setTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string, seq int64) error {
+func (t *SMK) setTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string, seq int64) error {
 	err := t.PutState_Ex(stub, transSeqKey, []byte(strconv.FormatInt(seq, 10)))
 	if err != nil {
 		mylog.Error("setTransSeq PutState failed.err=%s", err)
@@ -954,7 +1230,7 @@ func (t *FRT) setTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string, 
 	return nil
 }
 
-func (t *FRT) getTransInfoKey(stub shim.ChaincodeStubInterface, transLvl int, seq int64) string {
+func (t *SMK) getTransInfoKey(stub shim.ChaincodeStubInterface, transLvl int, seq int64) string {
 	var buf = bytes.NewBufferString(TRANSINFO_PREFIX)
 	buf.WriteString("lvl")
 	buf.WriteString(strconv.Itoa(transLvl))
@@ -962,18 +1238,18 @@ func (t *FRT) getTransInfoKey(stub shim.ChaincodeStubInterface, transLvl int, se
 	buf.WriteString(strconv.FormatInt(seq, 10))
 	return buf.String()
 }
-func (t *FRT) getTransSeqKey(stub shim.ChaincodeStubInterface, transLvl int) string {
+func (t *SMK) getTransSeqKey(stub shim.ChaincodeStubInterface, transLvl int) string {
 	var buf = bytes.NewBufferString(TRANSSEQ_PREFIX)
 	buf.WriteString("lvl")
 	buf.WriteString(strconv.Itoa(transLvl))
 	buf.WriteString("_")
 	return buf.String()
 }
-func (t *FRT) getGlobTransSeqKey(stub shim.ChaincodeStubInterface) string {
+func (t *SMK) getGlobTransSeqKey(stub shim.ChaincodeStubInterface) string {
 	return TRANSSEQ_PREFIX + "global_"
 }
 
-func (t *FRT) setTransInfo(stub shim.ChaincodeStubInterface, info *Transaction) error {
+func (t *SMK) setTransInfo(stub shim.ChaincodeStubInterface, info *Transaction) error {
 	//先获取全局seq
 	seqGlob, err := t.getTransSeq(stub, t.getGlobTransSeqKey(stub))
 	if err != nil {
@@ -998,7 +1274,8 @@ func (t *FRT) setTransInfo(stub shim.ChaincodeStubInterface, info *Transaction) 
 		return errors.New("setTransInfo marshal failed.")
 	}
 
-	err = t.PutState_Ex(stub, t.getTransInfoKey(stub, info.TransLvl, seqLvl), transJson)
+	var transKey = t.getTransInfoKey(stub, info.TransLvl, seqLvl)
+	err = t.PutState_Ex(stub, transKey, transJson)
 	if err != nil {
 		mylog.Error("setTransInfo PutState failed. err=%s", err)
 		return errors.New("setTransInfo PutState failed.")
@@ -1016,12 +1293,59 @@ func (t *FRT) setTransInfo(stub shim.ChaincodeStubInterface, info *Transaction) 
 		return errors.New("setTransInfo setTransSeq failed.")
 	}
 
+	if len(info.DfId) > 0 {
+		err = t.recordDfIdTrans(stub, transKey, info.DfId)
+		if err != nil {
+			mylog.Error("setTransInfo recordDfIdTrans failed. err=%s", err)
+			return errors.New("setTransInfo recordDfIdTrans failed.")
+		}
+	}
+
 	mylog.Debug("setTransInfo OK, info=%v", info)
 
 	return nil
 }
 
-func (t *FRT) getTransInfo(stub shim.ChaincodeStubInterface, key string) (*Transaction, error) {
+//记录某个dfid下的交易
+func (t *SMK) getDfIdTransKey(dfId string) string {
+	return DFID_TX_PREFIX + dfId
+}
+func (t *SMK) recordDfIdTrans(stub shim.ChaincodeStubInterface, transKey, dfId string) error {
+
+	recdB, err := stub.GetState(t.getDfIdTransKey(dfId))
+	if err != nil {
+		mylog.Error("recordDfIdTrans GetState failed. err=%s", err)
+		return errors.New("recordDfIdTrans GetState failed.")
+	}
+
+	var transList []string
+	if recdB == nil {
+		transList = append(transList, transKey)
+	} else {
+		err = json.Unmarshal(recdB, &transList)
+		if err != nil {
+			mylog.Error("recordDfIdTrans Unmarshal failed. err=%s", err)
+			return errors.New("recordDfIdTrans Unmarshal failed.")
+		}
+		transList = append(transList, transKey)
+	}
+
+	recdJson, err := json.Marshal(transList)
+	if err != nil {
+		mylog.Error("recordDfIdTrans Marshal failed. err=%s", err)
+		return errors.New("recordDfIdTrans Marshal failed.")
+	}
+
+	err = t.PutState_Ex(stub, t.getDfIdTransKey(dfId), recdJson)
+	if err != nil {
+		mylog.Error("recordDfIdTrans PutState failed. err=%s", err)
+		return errors.New("recordDfIdTrans PutState failed.")
+	}
+
+	return nil
+}
+
+func (t *SMK) getTransInfo(stub shim.ChaincodeStubInterface, key string) (*Transaction, error) {
 	var err error
 	var trans Transaction
 
@@ -1045,7 +1369,7 @@ func (t *FRT) getTransInfo(stub shim.ChaincodeStubInterface, key string) (*Trans
 
 	return &trans, nil
 }
-func (t *FRT) getQueryTransInfo(stub shim.ChaincodeStubInterface, key string) (*QueryTrans, error) {
+func (t *SMK) getQueryTransInfo(stub shim.ChaincodeStubInterface, key string) (*QueryTrans, error) {
 	var err error
 	var trans QueryTrans
 
@@ -1070,11 +1394,51 @@ func (t *FRT) getQueryTransInfo(stub shim.ChaincodeStubInterface, key string) (*
 	return &trans, nil
 }
 
-func (t *FRT) PutState_Ex(stub shim.ChaincodeStubInterface, key string, value []byte) error {
+func (t *SMK) recordTrace(stub shim.ChaincodeStubInterface, wareId, msg string, times int64) error {
+	var err error
+
+	//根据商品id获取已有的记录
+	infoB, err := stub.GetState(wareId)
+	if err != nil {
+		mylog.Error("recordTrace GetState failed.err=%s", err)
+		return err
+	}
+
+	var info TraceInfo
+	info.Time = times
+	info.TraceMsg = msg
+
+	infoJson, err := json.Marshal(info)
+	if err != nil {
+		mylog.Error("recordTrace Marshal failed.err=%s", err)
+		return err
+	}
+
+	if infoB == nil {
+		infoB = infoJson
+	} else {
+		infoB = append(infoB, ',')
+		infoB = append(infoB, infoJson...)
+	}
+
+	err = t.PutState_Ex(stub, wareId, infoB)
+	if err != nil {
+		mylog.Error("recordTrace PutState failed. err=%s", err)
+		return err
+	}
+
+	return nil
+}
+
+func (t *SMK) getDfInfoKey(dfId string) string {
+	return DFID_PREFIX + dfId
+}
+
+func (t *SMK) PutState_Ex(stub shim.ChaincodeStubInterface, key string, value []byte) error {
 	//当key为空字符串时，0.6的PutState接口不会报错，但是会导致chainCode所在的contianer异常退出。
 	if key == "" {
-		mylog.Error("PutState_Ex key err.")
-		return errors.New("PutState_Ex key err.")
+		mylog.Error("myPutState key err.")
+		return errors.New("myPutState key err.")
 	}
 	return stub.PutState(key, value)
 }
@@ -1083,7 +1447,9 @@ func main() {
 	// for debug
 	mylog.SetDefaultLvl(0)
 
-	err := shim.Start(new(FRT))
+	primitives.SetSecurityLevel("SHA3", 256)
+
+	err := shim.Start(new(SMK))
 	if err != nil {
 		fmt.Printf("Error starting EventSender chaincode: %s", err)
 	}

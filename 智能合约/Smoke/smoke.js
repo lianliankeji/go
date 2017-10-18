@@ -17,7 +17,7 @@ var PEER_ADDRESS = "grpc://127.0.0.1:7051";
 var EVENTHUB_ADDRESS = "grpc://127.0.0.1:7053";
 
 // var pem = fs.readFileSync('./cert/us.blockchain.ibm.com.cert'); 
-var chain = hfc.newChain("frtChain");
+var chain = hfc.newChain("smkChain");
 var keyValStorePath = "/usr/local/llwork/hfc_keyValStore";
 
 chain.setDevMode(false);
@@ -28,7 +28,7 @@ chain.eventHubConnect(EVENTHUB_ADDRESS);
 var eh = chain.getEventHub();
 
 process.on('exit', function (){
-  __myConsLog(" ****  frt exit ****");
+  __myConsLog(" ****  smk exit **** ");
   chain.eventHubDisconnect();
   //fs.closeSync(wFd);
 });
@@ -87,7 +87,7 @@ var getCertAttrKeys = [attrKeys.ROLE, attrKeys.USRNAME, attrKeys.USRTYPE]
 var isConfidential = false;
 
 // restfull
-app.get('/frt/deploy',function(req, res){  
+app.get('/smk/deploy',function(req, res){  
 
     res.set({'Content-Type':'text/json','Encodeing':'utf8'});  
 
@@ -109,8 +109,6 @@ app.get('/frt/deploy',function(req, res){
             var attr;
             
             user.getUserCert(attr, function (err, userCert) {
-
-                //__myConsLog("enroll and getUserCert successfully!!!!!")
                 if (err) {
                     __myConsLog("getUserCert err, ", err);
                     body.code=retCode.GETUSERCERT_ERR;
@@ -118,12 +116,12 @@ app.get('/frt/deploy',function(req, res){
                     res.send(body)
                     return
                 }
-            
+
                 var deployRequest = {
                 
                     fcn: "init",
                     args: [],
-                    chaincodePath: "/usr/local/llwork/frt/frtccpath",
+                    chaincodePath: "/usr/local/llwork/smk/smkccpath",
                     confidential: isConfidential,
                 };
                 
@@ -153,14 +151,14 @@ app.get('/frt/deploy',function(req, res){
 });  
 
 
-app.get('/frt/invoke', function(req, res) { 
+app.get('/smk/invoke', function(req, res) { 
 
     res.set({'Content-Type':'text/json','Encodeing':'utf8'});
     
     __execInvoke(req, res)
 });
 
-app.get('/frt/query', function(req, res) { 
+app.get('/smk/query', function(req, res) { 
 
     res.set({'Content-Type':'text/json','Encodeing':'utf8'});  
 
@@ -170,18 +168,9 @@ app.get('/frt/query', function(req, res) {
     };
 
     var enrollUser = req.query.usr;  
-    var func = req.query.func;
 
     chain.getUser(enrollUser, function (err, user) {
         if (err || !user.isEnrolled()) {
-            //如果是查询账户是否存在，这里返回不存在"0"
-            if (func == "queryAcc") {
-                body.code = retCode.OK;
-                body.msg = "0"
-                res.send(body)
-                return
-            }
-            
             __myConsLog("Query: failed to get user: %s",err);
             body.code=retCode.GETUSER_ERR;
             body.msg="tx error"
@@ -204,6 +193,7 @@ app.get('/frt/query', function(req, res) {
             //__myConsLog("**** query Enrolled ****");
   
             var ccId = req.query.ccId;
+            var func = req.query.func;
 
 
             var queryRequest = {
@@ -216,10 +206,10 @@ app.get('/frt/query', function(req, res) {
                 confidential: isConfidential
             };   
             
-            var acc = req.query.acc;
-            
             if (func == "query"){
+                var acc = req.query.acc;
                 queryRequest.args = [acc, enrollUser]
+
             } else if (func == "queryTx"){
                 var begSeq = req.query.begSeq;
                 if (begSeq == undefined) 
@@ -235,9 +225,13 @@ app.get('/frt/query', function(req, res) {
                 
                 queryRequest.args = [enrollUser, begSeq, endSeq, translvl]
                 
-            } else if (func == "queryAcc"){
-                queryRequest.args = [acc, enrollUser]
-            }
+            } else if (func == "queryTrace"){
+                var wareId = req.query.wareId;
+                queryRequest.args = [wareId, enrollUser]
+            } else if (func == "queryDfid"){
+                var dfId = req.query.dfId;
+                queryRequest.args = [dfId, enrollUser]
+            } 
             
             // query
             var tx = user.query(queryRequest);
@@ -270,7 +264,7 @@ app.get('/frt/query', function(req, res) {
     });    
 });
 
-app.get('/frt/quotations', function(req, res) {
+app.get('/smk/quotations', function(req, res) {
     res.set({'Content-Type':'text/json','Encodeing':'utf8'});
     
     var quotations = {
@@ -287,7 +281,7 @@ app.get('/frt/quotations', function(req, res) {
     res.send(body) 
 })
 
-app.get('/frt/register', function(req, res) { 
+app.get('/smk/register', function(req, res) { 
     
     res.set({'Content-Type':'text/json','Encodeing':'utf8'});  
 
@@ -384,7 +378,7 @@ function __execInvoke(req, res) {
                 fcn: func,
                 confidential: isConfidential,
                 attrs: getCertAttrKeys,
-                args: [enrollUser, acc,  Date.now() + ""],  //getTime()要转为字符串
+                args: [enrollUser, acc, TCert.encode().toString('base64'),  Date.now() + ""],  //getTime()要转为字符串  时间从服务器取？  万一服务器时间不对怎么办？
                 userCert: TCert
             }
             
@@ -397,34 +391,35 @@ function __execInvoke(req, res) {
             } else if (func == "transefer") {
                 var reacc = req.query.reacc;
                 var amt = req.query.amt;
-                var transType = req.query.transType;
-                invokeRequest.args.push(reacc, transType, amt)
+                //var transType = req.query.transType;
+                var transType = "" //暂时不用这个参数
+                var dfId = req.query.dfId; //欠款融资id
+                invokeRequest.args.push(reacc, transType, dfId, amt)
                 
-            } else if (func == "support") {
-                var movieId = req.query.movie
-                var reacc = __getAccByMovieID(movieId)
-                if (reacc == undefined) {
-                    __myConsLog("Failed to get account for movie ", movieId);
-                    body.code=retCode.GETACCBYMVID_ERR;
-                    body.msg="tx error"
-                    res.send(body) 
-                    return
-                }
+            } else if (func == "trace") { //物流溯源
+                var wareId = req.query.acc;
+                var msg = req.query.msg;
+                invokeRequest.args.push(wareId, msg)
                 
-                var amt = req.query.amt;
-                var transType = req.query.transType;
-                invokeRequest.args.push(reacc, transType, amt)
-                invokeRequest.fcn = "transefer"  //还是走的transefer
+            } else if (func == "debt") { //供应商应收帐款
+                var dfId = req.query.dfId; //欠款融资id
+                var debtInfo = req.query.dtinfo; //欠款信息
+                var contractNo = req.query.cttno; //欠款合同号
+                var debtAmout = req.query.dtamt; //欠款金额
+                invokeRequest.args.push(dfId, debtInfo, contractNo, debtAmout)
+            } else if (func == "finance") { //金融机构申请贷款
+                var dfId = req.query.dfId; //欠款融资id
+                var finacInfo = req.query.fcinfo; //融资信息
+                var contractNo = req.query.cttno; //融资合同号
+                var finacAmout = req.query.fcamt; //融资金额
+                invokeRequest.args.push(dfId, finacInfo, contractNo, finacAmout)
             }
 
             // invoke
             var tx = user.invoke(invokeRequest);
 
             tx.on('complete', function (results) {
-                
                 var retInfo = results.result.toString()  // like: "Tx 2eecbc7b-eb1b-40c0-818d-4340863862fe complete"
-                //__myConsLog("invoke completed successfully: request=%j, results=%j",invokeRequest, retInfo);
-                
                 var txId = retInfo.replace("Tx ", '').replace(" complete", '')
                 body.msg=txId
                 res.send(body)
@@ -432,7 +427,7 @@ function __execInvoke(req, res) {
                 //去掉无用的信息,不打印
                 invokeRequest.chaincodeID = "*"
                 invokeRequest.userCert = "*"
-                //invokeRequest.args[2] = "*"
+                invokeRequest.args[2] = "*"
                 __myConsLog("Invoke success: request=%j, results=%s",invokeRequest, results.result.toString());
             });
             tx.on('error', function (error) {
@@ -611,7 +606,12 @@ if (wFd < 0) {
 //fs.fsyncSync(wFd);
 
  
-app.listen(8188, "127.0.0.1");
+app.listen(8288, "127.0.0.1");
 
-__myConsLog("listen on 8188...");
+__myConsLog("listen on 8288...");
 
+
+//setTimeout(function A() {
+//              process.exit(1)
+//           }, 
+//           2000);
