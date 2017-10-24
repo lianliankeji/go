@@ -57,8 +57,9 @@ type Entity struct {
 
 //查询账户信息
 type QueryEntity struct {
-	TotalAmount int64            `json:"totalAmount"` //注意，这里指的是账户所有余额，即Entity中RestAmount
-	DFIdMap     map[string]int64 `json:"dfIdMap"`     //贷款融资id的map，DFId作为子账户
+	EntID       string           `json:"id"`      //银行/企业/项目/个人ID
+	TotalAmount int64            `json:"totAmt"`  //注意，这里指的是账户所有余额，即Entity中RestAmount
+	DFIdMap     map[string]int64 `json:"dfIdMap"` //贷款融资id的map，DFId作为子账户
 }
 
 //供查询的交易内容
@@ -415,7 +416,7 @@ func (t *SMK) Invoke(stub shim.ChaincodeStubInterface, function string, args []s
 
 		df.FinanceInfo = finacInfo
 		df.FinanceTime = times
-		df.DebtContractNo = contractNo
+		df.FinanceContractNo = contractNo
 		df.FinanceAmount = finacAmout
 
 		dfJson, err = json.Marshal(df)
@@ -581,9 +582,11 @@ func (t *SMK) Query(stub shim.ChaincodeStubInterface, function string, args []st
 			return nil, errors.New("queryDfid GetState failed.")
 		}
 		if dfB == nil {
-			mylog.Error("queryDfid no dfInfo for such id '%s'.", dfId)
-			return nil, errors.New("queryDfid no dfInfo for such id.")
+			mylog.Info("queryDfid no dfInfo for such id '%s'.", dfId)
+			//不存在则返回空结构
+			return []byte("{}"), nil
 		}
+
 		err = json.Unmarshal(dfB, &qdf.DebtFinance)
 		if err != nil {
 			mylog.Error("queryDfid Unmarshal(DebtFinance) failed. err=%s", err)
@@ -633,11 +636,67 @@ func (t *SMK) Query(stub shim.ChaincodeStubInterface, function string, args []st
 		}
 
 		return retValues, nil
+	} else if function == "queryAcc" {
+		var argCount = 2
+		if len(args) < argCount {
+			mylog.Error("queryAcc miss arg, got %d, need %d.", len(args), argCount)
+			return nil, errors.New("queryAcc miss arg.")
+		}
+
+		var err error
+		var accName = args[0]
+		//var userName = args[1]
+
+		accExist, err := t.isEntityExists(stub, accName)
+		if err != nil {
+			mylog.Error("queryAcc: isEntityExists (id=%s) failed. err=%s", accName, err)
+			return nil, errors.New("queryAcc: isEntityExists failed.")
+		}
+
+		var retValues []byte
+		if accExist {
+			retValues = []byte("1")
+		} else {
+			retValues = []byte("0")
+		}
+
+		return retValues, nil
+	} else if function == "queryAllAcc" {
+		var argCount = 4
+		if len(args) < argCount {
+			mylog.Error("queryAllAcc miss arg, got %d, need %d.", len(args), argCount)
+			return nil, errors.New("queryAllAcc miss arg.")
+		}
+
+		var err error
+		//var accName = args[0]
+		//var userName = args[1]
+		begIdx, err := strconv.ParseInt(args[2], 0, 64)
+		if err != nil {
+			mylog.Error("queryAllAcc ParseInt(%s) failed.", args[2])
+			return nil, errors.New("queryAllAcc ParseInt failed.")
+		}
+
+		endIdx, err := strconv.ParseInt(args[3], 0, 64)
+		if err != nil {
+			mylog.Error("queryAllAcc ParseInt(%s) failed.", args[3])
+			return nil, errors.New("queryAllAcc ParseInt failed.")
+		}
+
+		//begIdx从1开始
+		if begIdx <= 0 {
+			begIdx = 1
+		}
+		if endIdx < 0 {
+			endIdx = math.MaxInt64
+		}
+		return t.queryAllAcc(stub, begIdx, endIdx, false)
 	}
 
 	return nil, errors.New("unknown function.")
 }
 
+//begIdx从1开始
 func (t *SMK) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl int, begIdx, endIdx int64) ([]byte, error) {
 	var maxSeq int64
 	var err error
@@ -724,12 +783,13 @@ func (t *SMK) queryBalance(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	qb.AccSumAmount = 0
 	qb.AccCount = 0
 
-	accsB, err := stub.GetState(ALL_ACC_KEY)
+	allAccs, err := t.getAllAccountNames(stub)
 	if err != nil {
-		mylog.Error("queryBalance GetState failed. err=%s", err)
-		return nil, errors.New("queryBalance GetState failed.")
+		mylog.Error("queryBalance getAllAccountNames failed. err=%s", err)
+		return nil, errors.New("queryBalance getAllAccountNames failed.")
 	}
-	if accsB != nil {
+
+	if len(allAccs) > 0 {
 
 		cbAccB, err := t.getCenterBankAcc(stub)
 		if err != nil {
@@ -747,22 +807,9 @@ func (t *SMK) queryBalance(stub shim.ChaincodeStubInterface) ([]byte, error) {
 			qb.IssueAmount = cbEnt.TotalAmount - cbEnt.RestAmount
 		}
 
-		var allAccs = bytes.NewBuffer(accsB)
-		var acc []byte
+		qb.AccCount = int64(len(allAccs))
 		var ent *Entity
-		for {
-			acc, err = allAccs.ReadBytes(ALL_ACC_DELIM)
-			if err != nil {
-				if err == io.EOF {
-					break
-				} else {
-					mylog.Error("queryBalance ReadBytes failed. err=%s", err)
-					continue
-				}
-			}
-			qb.AccCount++
-			acc = acc[:len(acc)-1] //去掉末尾的分隔符
-
+		for _, acc := range allAccs {
 			ent, err = t.getEntity(stub, string(acc))
 			if err != nil {
 				mylog.Error("queryBalance getEntity(%s) failed. err=%s", string(acc), err)
@@ -774,6 +821,63 @@ func (t *SMK) queryBalance(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	}
 
 	retValue, err := json.Marshal(qb)
+	if err != nil {
+		mylog.Error("queryBalance Marshal failed. err=%s", err)
+		return nil, errors.New("queryBalance Marshal failed.")
+	}
+
+	return retValue, nil
+}
+
+//begIdx从1开始
+func (t *SMK) queryAllAcc(stub shim.ChaincodeStubInterface, begIdx, endIdx int64, all bool) ([]byte, error) {
+	if endIdx < begIdx {
+		mylog.Warn("queryAllAcc nothing to do(%d,%d).", begIdx, endIdx)
+		return []byte("[]"), nil
+	}
+
+	allAccs, err := t.getAllAccountNames(stub)
+	if err != nil {
+		mylog.Error("queryBalance getAllAccountNames failed. err=%s", err)
+		return nil, errors.New("queryBalance getAllAccountNames failed.")
+	}
+	allAccCnt := int64(len(allAccs))
+	if endIdx > allAccCnt {
+		endIdx = allAccCnt
+		if endIdx < begIdx {
+			mylog.Warn("queryAllAcc nothing to do2(%d,%d).", begIdx, endIdx)
+			return []byte("[]"), nil
+		}
+	}
+
+	//begIdx从1开始，自然计数法，所以这里要减1
+	allAccs = allAccs[begIdx-1 : endIdx]
+
+	var accInfo []QueryEntity = []QueryEntity{}
+	var tmpEnt QueryEntity
+
+	if len(allAccs) > 0 {
+		var ent *Entity
+		for _, acc := range allAccs {
+			ent, err = t.getEntity(stub, string(acc))
+			if err != nil {
+				mylog.Error("queryBalance getEntity(%s) failed. err=%s", string(acc), err)
+				continue
+			}
+			if ent.DFIdMap == nil {
+				tmpEnt.DFIdMap = make(map[string]int64)
+			} else {
+				tmpEnt.DFIdMap = ent.DFIdMap
+			}
+			if !all && len(tmpEnt.DFIdMap) == 0 {
+				continue
+			}
+
+			accInfo = append(accInfo, QueryEntity{EntID: ent.EntID, TotalAmount: ent.TotalAmount, DFIdMap: ent.DFIdMap})
+		}
+	}
+
+	retValue, err := json.Marshal(accInfo)
 	if err != nil {
 		mylog.Error("queryBalance Marshal failed. err=%s", err)
 		return nil, errors.New("queryBalance Marshal failed.")
@@ -1104,13 +1208,36 @@ func (t *SMK) saveAccountName(stub shim.ChaincodeStubInterface, accName string) 
 	return nil
 }
 
-func (t *SMK) getAllAccountNames(stub shim.ChaincodeStubInterface) ([]byte, error) {
+func (t *SMK) getAllAccountNames(stub shim.ChaincodeStubInterface) ([]string, error) {
+
 	accB, err := stub.GetState(ALL_ACC_KEY)
 	if err != nil {
 		mylog.Error("getAllAccountNames GetState failed.err=%s", err)
-		return nil, err
+		return nil, errors.New("getAllAccountNames GetState failed.")
 	}
-	return accB, nil
+
+	var result []string
+	if accB == nil {
+		return result, nil
+	}
+
+	var allAccs = bytes.NewBuffer(accB)
+	var acc []byte
+	for {
+		acc, err = allAccs.ReadBytes(ALL_ACC_DELIM)
+		if err != nil {
+			if err == io.EOF {
+				break
+			} else {
+				mylog.Error("getAllAccountNames ReadBytes failed. err=%s", err)
+				continue
+			}
+		}
+		acc = acc[:len(acc)-1] //去掉末尾的分隔符
+		result = append(result, string(acc))
+	}
+
+	return result, nil
 }
 
 func (t *SMK) openAccount(stub shim.ChaincodeStubInterface, accName string, accType int, userName string, times int64, isCBAcc bool) ([]byte, error) {
