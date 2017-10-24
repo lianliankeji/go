@@ -1,0 +1,175 @@
+<html>  
+    <head>  
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8" /> 
+        <script type="text/javascript">
+            //获得AJAX的XMLHttpRequest对象
+            //*
+            var xmlHttp;
+            var ccId = "612951125189a1baf83351b7d2cd4f6311f677ce47eaa9db148bdcb1c2741395";
+            
+            function createXHR(){
+                if(window.ActiveXObject){
+                    xmlHttp=new ActiveXObject("Microsoft.XMLHTTP");
+                }else{
+                    xmlHttp=new XMLHttpRequest();
+                }
+            }
+            //创建回调函数将服务器返回的值显示到DIV当中（也就是处理服务器端响应的内容）
+            function addCallBack(){
+                document.getElementById("addResult").innerHTML="";
+                document.getElementById("getResult").innerHTML="";
+                document.getElementById("queryData").innerHTML="";
+                
+                if(xmlHttp.readyState==4){
+                   if(xmlHttp.status==200){
+                        var resText=xmlHttp.responseText;
+                        var resObj = JSON.parse(resText)
+                        var retCode = "Error"
+                        if (resObj.code == 0)
+                            retCode = "OK"
+                            
+                        document.getElementById("addResult").innerHTML=retCode;
+                    }
+                }
+            }
+            function getCallBack(){
+                document.getElementById("addResult").innerHTML="";
+                document.getElementById("getResult").innerHTML="";
+                document.getElementById("queryData").innerHTML="";
+                
+                if(xmlHttp.readyState==4){
+                   if(xmlHttp.status==200){
+                        var resText=xmlHttp.responseText;
+                        var resObj = JSON.parse(resText)
+                        var retCode = "Error"
+                        var data = "<br>"
+                        if (resObj.code == 0){
+                            retCode = "OK"
+                            var list = JSON.parse(resObj.msg)
+                            if (list.length == 0)
+                                data += "该商品信息不存在."
+                            else {
+                                for (var i=0;i<list.length;i++) {
+                                    var time = new Date(list[i].time)
+                                    var traceMsg = list[i].tracemsg
+                                    
+                                    data += time.toLocaleDateString() + "-" + time.toTimeString().substr(0,8) + "  " + traceMsg + "<br>"
+                                }
+                            }
+                            
+                            document.getElementById("queryData").innerHTML=data;
+                        }
+                            
+                        document.getElementById("getResult").innerHTML=retCode;
+                    }
+                }
+            }
+            //*/
+            //按钮的GET提交方法（GET提交方法是将内容通过url发送出去的）
+            function addInfo(){
+                
+                //获取XMLHttpRequest对象
+                createXHR();
+                //根据document对象的getElementById方法获取第一个文本输入框的内容
+                var wareID=document.getElementById("wareID").value;
+                if (wareID == undefined || wareID.length == 0) {
+                    alert("商品id为空")
+                    return
+                }
+                //根据document对象的getElementById方法获取第二个文本输入框的内容
+                var msg=document.getElementById("msg").value;
+                if (msg == undefined || msg.length == 0) {
+                    alert("信息为空")
+                    return
+                }                //将两个文本输入框的内容拼接为一个字符串
+                var queryStr="ccId="+ccId+"&acc="+wareID+"&msg="+msg;
+                //提供发送的url
+                var url="http://192.168.10.100/smk/invoke?func=trace&usr=centerBank&"+queryStr;
+
+
+                //使用XMLHttpRequest对象的open方法初始化参数（提交方式，url,是否异步）
+                xmlHttp.open("GET", url, false)
+                //调用回调函数
+                //xmlHttp.onreadystatechange=addCallBack;
+                
+                //将初始化的参数发送出去
+                xmlHttp.send(null);
+                
+                addCallBack();
+                //*/
+            }
+            function getInfo(){
+                //获取XMLHttpRequest对象
+                createXHR();
+                //根据document对象的getElementById方法获取第一个文本输入框的内容
+                var wareID=document.getElementById("wareID").value;
+                if (wareID == undefined || wareID.length == 0) {
+                    alert("商品id为空")
+                    return
+                }
+            
+                //将两个文本输入框的内容拼接为一个字符串
+                var queryStr="ccId="+ccId+"&wareId="+wareID;
+                //提供发送的url
+                var url="http://192.168.10.100/smk/query?func=queryTrace&usr=centerBank&"+queryStr;
+
+
+                //使用XMLHttpRequest对象的open方法初始化参数（提交方式，url,是否异步）
+                xmlHttp.open("GET", url, false)
+                //调用回调函数
+                //xmlHttp.onreadystatechange=getCallBack;
+                //将初始化的参数发送出去
+                xmlHttp.send(null);
+                
+                getCallBack();
+                //*/
+            }
+            //按钮的POST提交方法
+            /*
+            function setPOST(){
+                //获取XMLHttpRequest对象
+                createXHR();
+                //根据document对象的getElementById方法获取第一个文本输入框的内容
+                    
+                 var username=document.getElementById("username").value;
+                //根据document对象的getElementById方法获取第二个文本输入框的内容
+                var age=document.getElementById("age").value;
+                //将两个文本输入框的内容拼接为一个字符串
+                var queryStr="username="+username+"&age="+age;
+                //提供发送的url
+                      
+                var url="login.jsp?"+"stampTime:"+new Date().getTime();
+                //使用XMLHttpRequest对象的open方法初始化参数（提交方式，url,是否异步）
+                      
+                xmlHttp.open("POST", url,true)
+                //设置请求头来设置以表单的形式来提交内容信息
+                      
+                xmlHttp.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
+                //将要发送的信息发送出去
+                      
+                xmlHttp.send(queryStr);
+                //调用回调函数
+                      
+                xmlHttp.onreadystatechange=addCallBack;
+            }*/
+        </script>
+    </head>  
+    <body>  
+     <form>
+        <fieldset style="width:600;border-color:gray">
+            <legend><b>物流信息</b></legend>
+            商品：<input type="text" name="wareID"  value="433221000001" id="wareID" ><br>
+            信息：<input type="text" name="msg" id="msg"><br>
+            <input type="button" value="物流信息提交" onclick="addInfo()"> <b id="addResult"></b><br>
+        </fieldset>
+        <br>
+        <br>
+        <fieldset style="width:600;border-color:gray">
+            <legend><b>查询</b></legend>
+            <input type="button" value="物流信息查询" onclick="getInfo()"> <b id="getResult"></b><br>
+            <br>
+            <span id = "queryData"/>
+        </fieldset>
+     </form>
+    </body>  
+</html>  

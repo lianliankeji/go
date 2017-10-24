@@ -1,0 +1,492 @@
+<html>  
+    <head>  
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8" /> 
+        <script type="text/javascript">
+            //获得AJAX的XMLHttpRequest对象
+            //*
+            var xmlHttp;
+            var ccId = "be13256ca035dae8609c37d8622418457e94aec2478b0c4098d985889195b422";
+            var finacAcc = "YunLianJinRong"
+            var returnCode = {
+                OK:                     0,
+                ERROR:                  0xffffffff
+            }
+            
+            function createXHR(){
+                if(window.ActiveXObject){
+                    xmlHttp=new ActiveXObject("Microsoft.XMLHTTP");
+                }else{
+                    xmlHttp=new XMLHttpRequest();
+                }
+            }
+            
+            function getLocalTime(timeMillis){
+                var time = new Date(timeMillis)
+                return time.toLocaleDateString() + "-" + time.toTimeString().substr(0,8)
+            }
+            //创建回调函数将服务器返回的值显示到DIV当中（也就是处理服务器端响应的内容）
+            function InvokeCallBack(resultKey){
+                var ret = returnCode.ERROR
+                var retResult = "Error"
+                
+                if(xmlHttp.readyState==4){
+                   if(xmlHttp.status==200){
+                        var resText=xmlHttp.responseText;
+                        var resObj = JSON.parse(resText)
+                        if (resObj.code == 0) {
+                            ret = returnCode.OK
+                            retResult = "OK"
+                        }
+                    }
+                }
+                if (resultKey != undefined)
+                    document.getElementById(resultKey).innerHTML=retResult;
+                
+                return ret
+            }
+            
+            function queryFinacCallBack(){
+                if(xmlHttp.readyState==4){
+                   if(xmlHttp.status==200){
+                        var resText=xmlHttp.responseText;
+                        var resObj = JSON.parse(resText)
+                        var ret = "Error"
+                        var data = "<br>"
+                        if (resObj.code == 0){
+                            ret = "OK"
+                            var retObj = JSON.parse(resObj.msg)
+                            
+                            
+                            if (retObj.DFId == undefined)
+                                data += "信息不存在."
+                            else {
+                                var debtTime = getLocalTime(retObj.debtTime)
+                                data += debtTime + " 合同编号#" + retObj.debtContNo + "   " +
+                                        retObj.debtInfo + retObj.debtAmt + "<br>"
+                                
+                                if (retObj.finacTime != 0) {
+                                    var finacTime = getLocalTime(retObj.finacTime)
+                                    data += finacTime + " 合同编号#" + retObj.finacContNo + "   " +
+                                            retObj.finacInfo + retObj.finacAmt + "<br>"
+                                }
+                                
+                                for (var i=0;i<retObj.transInfoList.length;i++) {
+                                    var buyTime = getLocalTime(retObj.transInfoList[i].time)
+                                    data += buyTime + " 用户'" + retObj.transInfoList[i].accName + 
+                                            "'购买理财产品" + retObj.transInfoList[i].amount + "<br>"
+                                }
+                            }
+                            
+                            document.getElementById("queryFinacData").innerHTML=data;
+                        }
+                            
+                        document.getElementById("queryFinacResult").innerHTML=ret;
+                    }
+                }
+            }
+            
+            function queryUserCallBack(){
+                if(xmlHttp.readyState==4){
+                   if(xmlHttp.status==200){
+                        var resText=xmlHttp.responseText;
+                        var resObj = JSON.parse(resText)
+                        var ret = "Error"
+                        var data = "<br>"
+                        if (resObj.code == 0){
+                            ret = "OK"
+                            var retList = JSON.parse(resObj.msg) //是个数组
+                            //不显示finacAcc这个账户
+                            if (retList.length == 0 || (retList.length == 1 && retList[0].id == finacAcc))
+                                data += "信息不存在."
+                            else {
+                                for (var i=0;i<retList.length;i++){
+                                    if (retList[i].id == finacAcc)
+                                        continue
+                                        
+                                    data += retList[i].id+": "  + " 总量"+retList[i].totAmt+"<br>"
+                                    for (var dfID in retList[i].dfIdMap) {
+                                        data += "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;融资ID: "+dfID+" 量: "+retList[i].dfIdMap[dfID]+"<br>"
+                                    }
+                                }
+                            }
+                            
+                            document.getElementById("queryUserData").innerHTML=data;
+                        }
+                            
+                        document.getElementById("queryUserResult").innerHTML=ret;
+                    }
+                }
+            }
+            //*/
+            //按钮的GET提交方法（GET提交方法是将内容通过url发送出去的）
+            function debtInfo(){
+                clearAllResult();
+                //获取XMLHttpRequest对象
+                createXHR();
+                //根据document对象的getElementById方法获取第一个文本输入框的内容
+                var dfId=document.getElementById("dfId").value;
+                if (dfId == undefined || dfId.length == 0) {
+                    alert("应收帐融资No为空")
+                    return
+                }
+
+                var dtinfo = "供应商应收零售商"
+                
+                //根据document对象的getElementById方法获取第二个文本输入框的内容
+                var dtamt=document.getElementById("dtamt").value;
+                if (dtamt == undefined || dtamt.length == 0) {
+                    alert("金额为空")
+                    return
+                }                
+                //根据document对象的getElementById方法获取第二个文本输入框的内容
+                var cttno=document.getElementById("dtcttno").value;
+                if (cttno == undefined || cttno.length == 0) {
+                    alert("合同号为空")
+                    return
+                }
+
+                //将两个文本输入框的内容拼接为一个字符串
+                var queryStr="ccId="+ccId+"&dfId="+dfId+"&dtinfo="+dtinfo+"&dtamt="+dtamt+"&cttno="+cttno;
+                //提供发送的url
+                var url="http://192.168.10.100/smk/invoke?func=debt&usr=lianlian&acc=lianlian&"+queryStr;
+
+
+                //使用XMLHttpRequest对象的open方法初始化参数（提交方式，url,是否异步）
+                xmlHttp.open("GET", url, false)
+                //调用回调函数
+                //if (isAsync == true)
+                //    xmlHttp.onreadystatechange=InvokeCallBack;
+                
+                //将初始化的参数发送出去
+                xmlHttp.send(null);
+                
+                InvokeCallBack("debtResult");
+                //*/
+            }
+            var accExistCB = false
+            var accExistYljr = false
+            function finacInfo() {
+                clearAllResult();
+                //获取XMLHttpRequest对象
+                createXHR();
+                //根据document对象的getElementById方法获取第一个文本输入框的内容
+                var dfId=document.getElementById("dfId").value;
+                if (dfId == undefined || dfId.length == 0) {
+                    alert("应收帐融资No为空")
+                    return
+                }
+
+                var fcinfo = "云联金融融资贷款"
+                
+                //根据document对象的getElementById方法获取第二个文本输入框的内容
+                var fcamt=document.getElementById("fcamt").value;
+                if (fcamt == undefined || fcamt.length == 0) {
+                    alert("金额为空")
+                    return
+                }                
+                //根据document对象的getElementById方法获取第二个文本输入框的内容
+                var cttno=document.getElementById("fccttno").value;
+                if (cttno == undefined || cttno.length == 0) {
+                    alert("合同号为空")
+                    return
+                }
+
+                //将两个文本输入框的内容拼接为一个字符串
+                var queryStr="ccId="+ccId+"&dfId="+dfId+"&fcinfo="+fcinfo+"&fcamt="+fcamt+"&cttno="+cttno;
+                //提供发送的url
+                var url="http://192.168.10.100/smk/invoke?func=finance&usr=lianlian&acc=lianlian&"+queryStr;
+
+                //使用XMLHttpRequest对象的open方法初始化参数（提交方式，url,是否异步）
+                xmlHttp.open("GET", url, false)
+                //调用回调函数
+                //if (isAsync == true)
+                //    xmlHttp.onreadystatechange=InvokeCallBack;
+                //将初始化的参数发送出去
+                xmlHttp.send(null);
+                var retRslt = "Error"
+
+                if (InvokeCallBack() == returnCode.OK) {
+                    //先开户中央银行
+                    if (!accExistCB) {
+                        if (newAccount("centerBank", true) != returnCode.OK) {
+                            document.getElementById("finacResult").innerHTML=retRslt;
+                            return
+                        }
+                        accExistCB = true
+                    }
+                    //央行发行货币
+                    if (issue("centerBank", fcamt) != returnCode.OK) {
+                        document.getElementById("finacResult").innerHTML=retRslt;
+                        return
+                    }
+                    //云联金融开户
+                    if (!accExistYljr) {
+                        if (newAccount(finacAcc) != returnCode.OK) {
+                            document.getElementById("finacResult").innerHTML=retRslt;
+                            return
+                        }
+                        accExistYljr = true
+                    }
+                    //给这个账号转账
+                    if (transfer(dfId, "centerBank", "centerBank", finacAcc, fcamt) == returnCode.OK)
+                        retRslt = "OK"
+                }
+
+                document.getElementById("finacResult").innerHTML=retRslt;
+                //*/
+            }
+            function buyInfo(){
+                clearAllResult();
+                //获取XMLHttpRequest对象
+                createXHR();
+                //根据document对象的getElementById方法获取第一个文本输入框的内容
+                var dfId=document.getElementById("dfId").value;
+                if (dfId == undefined || dfId.length == 0) {
+                    alert("应收帐融资No为空")
+                    return
+                }
+
+                //根据document对象的getElementById方法获取第二个文本输入框的内容
+                var user=document.getElementById("userAcc").value;
+                if (user == undefined || user.length == 0) {
+                    alert("账号为空")
+                    return
+                }
+                //根据document对象的getElementById方法获取第二个文本输入框的内容
+                var amt=document.getElementById("userAmt").value;
+                if (amt == undefined || amt.length == 0) {
+                    alert("金额为空")
+                    return
+                }                
+                
+                //给用户开户
+                if (newAccount(user) != returnCode.OK) {
+                    document.getElementById("buyResult").innerHTML="Error";
+                    return
+                }
+
+                var retRslt = "Error"
+                if (transfer(dfId, finacAcc, finacAcc, user, amt) == returnCode.OK)
+                    retRslt = "OK"
+                
+                document.getElementById("buyResult").innerHTML=retRslt;
+                //*/
+            }
+            function queryFinacInfo(){
+                clearAllResult();
+                //获取XMLHttpRequest对象
+                createXHR();
+                //根据document对象的getElementById方法获取第一个文本输入框的内容
+                var dfId=document.getElementById("dfId").value;
+                if (dfId == undefined || dfId.length == 0) {
+                    alert("应收帐融资No为空")
+                    return
+                }
+                //将两个文本输入框的内容拼接为一个字符串
+                var queryStr="ccId="+ccId+"&dfId="+dfId;
+                //提供发送的url
+                var url="http://192.168.10.100/smk/query?func=queryDfid&usr=centerBank&"+queryStr;
+
+                //使用XMLHttpRequest对象的open方法初始化参数（提交方式，url,是否异步）
+                xmlHttp.open("GET", url, false)
+                //调用回调函数
+                //if (isAsync == true)
+                //    xmlHttp.onreadystatechange=InvokeCallBack;
+                //将初始化的参数发送出去
+                xmlHttp.send(null);
+                queryFinacCallBack();
+                //*/
+            }
+            function queryUserInfo(){
+                clearAllResult();
+                //获取XMLHttpRequest对象
+                createXHR();
+                
+                //将两个文本输入框的内容拼接为一个字符串
+                var queryStr="ccId="+ccId;
+                //提供发送的url
+                var url="http://192.168.10.100/smk/query?func=queryAllAcc&usr=centerBank&"+queryStr;
+
+                //使用XMLHttpRequest对象的open方法初始化参数（提交方式，url,是否异步）
+                xmlHttp.open("GET", url, false)
+                //调用回调函数
+                //if (isAsync == true)
+                //    xmlHttp.onreadystatechange=InvokeCallBack;
+                //将初始化的参数发送出去
+                xmlHttp.send(null);
+                queryUserCallBack();
+                //*/
+            }
+            function newAccount(user, isCB){
+                //获取XMLHttpRequest对象
+                createXHR();
+                            
+                //将两个文本输入框的内容拼接为一个字符串
+                var queryStr="ccId="+ccId+"&usr="+user+"&acc="+user
+                
+                //查询账户是否存在
+                var url="http://192.168.10.100/smk/query?func=queryAcc&"+queryStr;
+                xmlHttp.open("GET", url, false)
+                xmlHttp.send(null);
+                var ret = returnCode.ERROR
+                var isExist = false
+                if(xmlHttp.readyState==4){
+                   if(xmlHttp.status==200){
+                        var resText=xmlHttp.responseText;
+                        var resObj = JSON.parse(resText)
+                        if (resObj.code == 0) {
+                            ret = returnCode.OK
+                            if (resObj.msg == "1")
+                                isExist = true
+                        }
+                    }
+                }
+                //已存在，直接返回
+                if (ret == returnCode.OK && isExist == true)
+                    return returnCode.OK
+                
+                createXHR();
+                var url="http://192.168.10.100/smk/register?func=account&"+queryStr;
+                if (isCB == true) {
+                    url="http://192.168.10.100/smk/register?func=accountCB&"+queryStr;
+                }
+                //使用XMLHttpRequest对象的open方法初始化参数（提交方式，url,是否异步）
+                xmlHttp.open("GET", url, false)
+                //将初始化的参数发送出去
+                xmlHttp.send(null);
+                var ret = InvokeCallBack();
+                return ret
+                //*/
+            }
+            function transfer(dfId, user, acc, reacc, amt){
+                //获取XMLHttpRequest对象
+                createXHR();
+
+                //将两个文本输入框的内容拼接为一个字符串
+                var queryStr="ccId="+ccId+"&dfId="+dfId+"&usr="+user+"&acc="+acc+"&reacc="+reacc+"&amt="+amt;
+                //提供发送的url
+                var url="http://192.168.10.100/smk/invoke?func=transefer&"+queryStr;
+                //使用XMLHttpRequest对象的open方法初始化参数（提交方式，url,是否异步）
+                xmlHttp.open("GET", url, false)
+                //调用回调函数
+                //if (isAsync == true)
+                //    xmlHttp.onreadystatechange=InvokeCallBack;
+                //将初始化的参数发送出去
+                xmlHttp.send(null);
+                return InvokeCallBack();
+                //*/
+            }
+
+            function issue(user,amt){
+                //获取XMLHttpRequest对象
+                createXHR();
+
+                //将两个文本输入框的内容拼接为一个字符串
+                var queryStr="ccId="+ccId+"&usr="+user+"&acc="+user+"&amt="+amt;
+                //提供发送的url
+                var url="http://192.168.10.100/smk/invoke?func=issue&"+queryStr;
+                //使用XMLHttpRequest对象的open方法初始化参数（提交方式，url,是否异步）
+                xmlHttp.open("GET", url, false)
+                //调用回调函数
+                //if (isAsync == true)
+                //    xmlHttp.onreadystatechange=InvokeCallBack;
+                //将初始化的参数发送出去
+                xmlHttp.send(null);
+                return InvokeCallBack();
+                //*/
+            }
+            function clearAllResult() {
+                document.getElementById("debtResult").innerHTML="";
+                document.getElementById("finacResult").innerHTML="";
+                document.getElementById("buyResult").innerHTML="";
+                document.getElementById("queryFinacResult").innerHTML="";
+                document.getElementById("queryFinacData").innerHTML="";
+                document.getElementById("queryUserResult").innerHTML="";
+                document.getElementById("queryUserData").innerHTML="";
+            }
+            //按钮的POST提交方法
+            /*
+            function setPOST(){
+                //获取XMLHttpRequest对象
+                createXHR();
+                //根据document对象的getElementById方法获取第一个文本输入框的内容
+                    
+                 var username=document.getElementById("username").value;
+                //根据document对象的getElementById方法获取第二个文本输入框的内容
+                var age=document.getElementById("age").value;
+                //将两个文本输入框的内容拼接为一个字符串
+                var queryStr="username="+username+"&age="+age;
+                //提供发送的url
+                      
+                var url="login.jsp?"+"stampTime:"+new Date().getTime();
+                //使用XMLHttpRequest对象的open方法初始化参数（提交方式，url,是否异步）
+                      
+                xmlHttp.open("POST", url,true)
+                //设置请求头来设置以表单的形式来提交内容信息
+                      
+                xmlHttp.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
+                //将要发送的信息发送出去
+                      
+                xmlHttp.send(queryStr);
+                //调用回调函数
+                      
+                xmlHttp.onreadystatechange=addCallBack;
+            }*/
+        </script>
+    </head>  
+    <body>  
+     <form>
+        <b> 应收帐融资ID: </b> <input type="text" name="dfId"  id="dfId" value="622311000001"><br>
+        <br>
+        <fieldset style="width:600;border-color:gray">
+            <legend><b>供应商</b></legend>
+            应收帐金额：<input type="text" name="dtamt"  id="dtamt"><br>
+            应收帐合同：<input type="text" name="dtcttno"  id="dtcttno"><br>
+            <input type="button" value="应收账融资" onclick="debtInfo()"> <b id="debtResult"></b><br>
+        </fieldset>
+        <br>
+        <fieldset style="width:600;border-color:gray">
+            <legend><b>云联金融</b></legend>
+            融资金额：<input type="text" name="fcamt"  id="fcamt"><br>
+            融资合同：<input type="text" name="fccttno"  id="fccttno"><br>
+            <input type="button" value="贷款融资" onclick="finacInfo()"> <b id="finacResult"></b><br>
+        </fieldset>
+        <br>
+        <fieldset style="width:600;border-color:gray">
+            <legend><b>购买</b></legend>
+            用户：<input type="text" name="userAcc"  id="userAcc"><br>
+            金额：<input type="text" name="userAmt"  id="userAmt"><br>
+            <input type="button" value="购买金融理财" onclick="buyInfo()"> <b id="buyResult"></b><br>
+        </fieldset>
+        <br>
+        <fieldset style="width:600;border-color:gray">
+            <legend><b>查询</b></legend>
+            <input type="button" value="查询应收帐融资信息" onclick="queryFinacInfo()"> <b id="queryFinacResult"></b><br>
+            <br>
+            <span id="queryFinacData"></span>
+            <input type="button" value="查询用户购买信息" onclick="queryUserInfo()"> <b id="queryUserResult"></b><br>
+            <br>
+            <span id="queryUserData"></span>
+        </fieldset>
+        
+        
+     <!--table width="400" border="0" cellspacing="0" cellpadding="0" align="">   
+        <tr>   
+          
+        <td rowspan="4" class="td3">1</td>  
+
+        </tr>   
+        <tr>   
+        <td  >2</td><td >45645</td>  
+        </tr>   
+        <tr>   
+        <td  >2</td><td >45645</td>  
+        </tr>   
+        <tr>   
+        <td  >2</td><td >45645</td>  
+        </tr>   
+    </table-->    
+    
+     </form>
+    </body>  
+</html>  
