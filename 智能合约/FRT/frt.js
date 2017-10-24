@@ -89,7 +89,8 @@ var isConfidential = false;
 // restfull
 app.get('/frt/deploy',function(req, res){  
 
-    res.set({'Content-Type':'text/json','Encodeing':'utf8'});  
+    res.set({'Content-Type':'text/json','Encodeing':'utf8', 'Access-Control-Allow-Origin':'*'});
+  
 
     var body = {
         code : retCode.OK,
@@ -132,18 +133,25 @@ app.get('/frt/deploy',function(req, res){
                 // Trigger the deploy transaction
                 var deployTx = user.deploy(deployRequest);
                 
+                var isSend = false;  //判断是否已发过回应。 有时操作比较慢时，可能超时等原因先走了'error'的流程，但是当操作完成之后，又会走‘complete’流程再次发回应，此时会发生内部错误，导致脚本异常退出
                 // Print the deploy results
                 deployTx.on('complete', function(results) {
                     __myConsLog("===deploy end===")
                     __myConsLog("results.chaincodeID=========="+results.chaincodeID);
-                    res.send(body)
+                    if (!isSend) {
+                        isSend = true
+                        res.send(body)
+                    }
                 });
 
                 deployTx.on('error', function(err) {
                     __myConsLog("err==========%s", err.toString());
                     body.code=retCode.ERROR;
                     body.msg="deploy error"
-                    res.send(body)
+                    if (!isSend) {
+                        isSend = true
+                        res.send(body)
+                    }
                 });
                 
                 return
@@ -155,14 +163,16 @@ app.get('/frt/deploy',function(req, res){
 
 app.get('/frt/invoke', function(req, res) { 
 
-    res.set({'Content-Type':'text/json','Encodeing':'utf8'});
+    res.set({'Content-Type':'text/json','Encodeing':'utf8', 'Access-Control-Allow-Origin':'*'});
+
     
     __execInvoke(req, res)
 });
 
 app.get('/frt/query', function(req, res) { 
 
-    res.set({'Content-Type':'text/json','Encodeing':'utf8'});  
+    res.set({'Content-Type':'text/json','Encodeing':'utf8', 'Access-Control-Allow-Origin':'*'});
+  
 
     var body = {
         code: retCode.OK,
@@ -216,9 +226,9 @@ app.get('/frt/query', function(req, res) {
                 confidential: isConfidential
             };   
             
-            var acc = req.query.acc;
             
             if (func == "query"){
+                var acc = req.query.acc;
                 queryRequest.args = [acc, enrollUser]
             } else if (func == "queryTx"){
                 var begSeq = req.query.begSeq;
@@ -236,30 +246,38 @@ app.get('/frt/query', function(req, res) {
                 queryRequest.args = [enrollUser, begSeq, endSeq, translvl]
                 
             } else if (func == "queryAcc"){
+                var acc = req.query.acc;
                 queryRequest.args = [acc, enrollUser]
             }
             
             // query
             var tx = user.query(queryRequest);
 
+            var isSend = false;  //判断是否已发过回应。 有时操作比较慢时，可能超时等原因先走了'error'的流程，但是当操作完成之后，又会走‘complete’流程再次发回应，此时会发生内部错误，导致脚本异常退出
             tx.on('complete', function (results) {
                 body.code=retCode.OK;
                 body.msg=results.result.toString()
                 //var obj = JSON.parse(results.result.toString()); 
                 //__myConsLog("obj=", obj)
-                res.send(body)
+                if (!isSend) {
+                    isSend = true
+                    res.send(body)
+                }
                 
                 //去掉无用的信息,不打印
                 queryRequest.userCert = "*"
                 queryRequest.chaincodeID = "*"
-                __myConsLog("Query success: request=%j, results=%s",queryRequest,results.result.toString());
+                __myConsLog("Query success: request=%j, results=%s", queryRequest, body.msg);
             });
 
             tx.on('error', function (error) {
 
                 body.code=retCode.ERROR;
                 body.msg="query err"
-                res.send(body)
+                if (!isSend) {
+                    isSend = true
+                    res.send(body)
+                }
                 
                 //去掉无用的信息,不打印
                 queryRequest.userCert = "*"
@@ -271,7 +289,8 @@ app.get('/frt/query', function(req, res) {
 });
 
 app.get('/frt/quotations', function(req, res) {
-    res.set({'Content-Type':'text/json','Encodeing':'utf8'});
+    res.set({'Content-Type':'text/json','Encodeing':'utf8', 'Access-Control-Allow-Origin':'*'});
+
     
     var quotations = {
         exchangeRate:   '1',
@@ -289,7 +308,8 @@ app.get('/frt/quotations', function(req, res) {
 
 app.get('/frt/register', function(req, res) { 
     
-    res.set({'Content-Type':'text/json','Encodeing':'utf8'});  
+    res.set({'Content-Type':'text/json','Encodeing':'utf8', 'Access-Control-Allow-Origin':'*'});
+  
 
     var user = req.query.usr;
 
@@ -420,6 +440,7 @@ function __execInvoke(req, res) {
             // invoke
             var tx = user.invoke(invokeRequest);
 
+            var isSend = false;  //判断是否已发过回应。 有时操作比较慢时，可能超时等原因先走了'error'的流程，但是当操作完成之后，又会走‘complete’流程再次发回应，此时会发生内部错误，导致脚本异常退出
             tx.on('complete', function (results) {
                 
                 var retInfo = results.result.toString()  // like: "Tx 2eecbc7b-eb1b-40c0-818d-4340863862fe complete"
@@ -427,7 +448,10 @@ function __execInvoke(req, res) {
                 
                 var txId = retInfo.replace("Tx ", '').replace(" complete", '')
                 body.msg=txId
-                res.send(body)
+                if (!isSend) {
+                    isSend = true
+                    res.send(body)
+                }
                 
                 //去掉无用的信息,不打印
                 invokeRequest.chaincodeID = "*"
@@ -438,7 +462,10 @@ function __execInvoke(req, res) {
             tx.on('error', function (error) {
                 body.code=retCode.ERROR;
                 body.msg="tx error"
-                res.send(body) 
+                if (!isSend) {
+                    isSend = true
+                    res.send(body)
+                }
 
                 //去掉无用的信息,不打印
                 invokeRequest.chaincodeID = "*"
@@ -589,7 +616,7 @@ function __myConsLog () {
       return
    }
 
-   var header = util.format("%s [smk]: ", __getNowTime())
+   var header = util.format("%s [frt]: ", __getNowTime())
    arguments["0"] = header +  arguments["0"]
    console.log.apply(this, arguments)
 };
