@@ -49,8 +49,8 @@ func (m *MYLOG) log(lvl int, format string, args ...interface{}) {
 		lvlStr = "error"
 	case MYLOG_LVL_FATAL:
 		lvlStr = "fatal"
-        default:
-                lvlStr = "unknown"
+	default:
+		lvlStr = "unknown"
 	}
 
 	buf := bytes.NewBufferString(time.Now().Local().Format("20060102 15:04:05.000"))
@@ -77,6 +77,12 @@ func (m *MYLOG) Warn(format string, args ...interface{}) {
 func (m *MYLOG) Error(format string, args ...interface{}) {
 	m.log(MYLOG_LVL_ERROR, format, args...)
 }
+func (m *MYLOG) Errorf(format string, args ...interface{}) error {
+	var info = fmt.Sprintf(format, args...)
+	m.log(MYLOG_LVL_ERROR, info)
+	return fmt.Errorf(info)
+}
+
 func (m *MYLOG) Fatal(format string, args ...interface{}) {
 	m.log(MYLOG_LVL_FATAL, format, args...)
 }

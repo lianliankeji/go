@@ -142,7 +142,7 @@ app.get('/smk/deploy',function(req, res){
                 });
 
                 deployTx.on('error', function(err) {
-                    __myConsLog("err==========%s", err.toString());
+                    __myConsLog("deploy error: %s", err.toString());
                     body.code=retCode.ERROR;
                     body.msg="deploy error"
                     if (!isSend) {
@@ -278,7 +278,10 @@ app.get('/smk/query', function(req, res) {
                 //去掉无用的信息,不打印
                 queryRequest.userCert = "*"
                 queryRequest.chaincodeID = "*"
-                __myConsLog("Query success: request=%j, results=%s", queryRequest, body.msg);
+                var maxPrtLen = 256
+                if (body.msg.length > maxPrtLen)
+                    body.msg = body.msg.substr(0, maxPrtLen) + "......"
+                __myConsLog("Query success: request=%j, results=%s",queryRequest, body.msg);
             });
 
             tx.on('error', function (error) {
@@ -648,9 +651,10 @@ if (wFd < 0) {
 //fs.fsyncSync(wFd);
 
  
-app.listen(8288, "127.0.0.1");
+var port = 8288
+app.listen(port, "127.0.0.1");
 
-__myConsLog("listen on 8288...");
+__myConsLog("listen on %d...", port);
 
 
 //setTimeout(function A() {
