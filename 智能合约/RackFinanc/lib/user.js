@@ -1,3 +1,4 @@
+const util = require('util');
 const mysql = require('mysql');
 const comm = require('./commom');
 const hash = require('./hash');
@@ -8,21 +9,55 @@ var connPool
 
 var log = comm.createLog("user.js")
 
-function Init(cb) {
+function _createTableIdx(conn, dbName, tblName, indexName, uniqueOrNot, fieldArr, cb) {
+    //mysql不支持 CREATE UNIQUE INDEX IF NOT EXISTS Idx_UserInfo_name ON UserInfo(name)语法，太垃圾了。需要先判断索引是否已存在
+    conn.query(
+       "SELECT COUNT(TABLE_NAME) as count FROM information_schema.statistics \
+        WHERE TABLE_SCHEMA = ?  AND TABLE_NAME = ? AND INDEX_NAME = ?;", [dbName, tblName, indexName],
+        function(err, results, fields) {
+            if (err) {
+                log.error("_createTableIdx query1 err=%s", err)
+                return cb(err)
+            }
+            if (results.length != 1) {
+                return cb(log.fatalf("_createTableIdx unexpect error,pls check."))
+            } else {
+                //如果不存在该索引，创建之；否则直接返回
+                if (results[0].count == 0) {
+                    var uniqueStr = ""
+                    if (uniqueOrNot == true)
+                        uniqueStr = "UNIQUE"
+                        
+                    var sql = util.format("CREATE %s INDEX %s ON %s(%s);COMMIT;", uniqueStr, indexName, tblName, fieldArr.join(','))
+                    log.debug("sql=%s",sql)
+                    conn.query(sql,  function(err, results, fields) {
+                        if (err) {
+                            log.error("_createTableIdx query2 err=%s", err)
+                            return cb(err)
+                        }
+                    })
+                }
+                cb(null)
+            }
+    });
+}
 
+function Init(cb) {
     var host = '192.168.10.101'
     var user = 'root'
     var pass = 'root'
     var dbName = 'rack'
     var connTmOut = 3000
     
-    var connection = mysql.createConnection({
+    var connConfig = {
         host: host,
         user: user,
         password: pass,
         connectTimeout: connTmOut,
         multipleStatements: true
-    });
+    }
+    
+    var connection = mysql.createConnection(connConfig);
 
     connection.connect( function(err) {
         if (err) {
@@ -31,12 +66,11 @@ function Init(cb) {
         }
         //先创建db，方便下面的连接池直接连接至目标 database
         connection.query('CREATE DATABASE IF NOT EXISTS ' + dbName + "; COMMIT;", function(err) {
+            connection.end();
             if (err){
                 log.error("Init(create db) err=%s", err)
-                connection.end();
                 return cb(err)
             }
-            connection.end();
 
             if (connPool != undefined) {
                 log.info("Init(create connPool) create already.")
@@ -44,14 +78,8 @@ function Init(cb) {
             }
                 
             //创建连接池
-            connPool = mysql.createPool({
-                host: host,
-                user: user,
-                password: pass,
-                database:dbName,
-                connectTimeout: connTmOut,
-                multipleStatements: true
-            });
+            connConfig.database = dbName //添加db参数
+            connPool = mysql.createPool(connConfig);
             
             //初始化数据库表等
             connPool.getConnection(function (err, conn) {
@@ -75,74 +103,25 @@ function Init(cb) {
                     function(err, results, fields) {
                         if (err) {
                             log.error("Init(query) err=%s", err)
+                            conn.release();
                             return cb(err)
                         }
                         //log.debug("results=%j, fields=%j", results, fields)
-                        //创建基于name的index.   mysql不支持 CREATE UNIQUE INDEX IF NOT EXISTS Idx_UserInfo_name ON UserInfo(name)语法，太垃圾了
-                        var indexName = "Idx_UserInfo_name"
-                        conn.query(
-                           "SELECT COUNT(TABLE_NAME) as count FROM information_schema.statistics \
-                            WHERE TABLE_SCHEMA = '" + dbName + "' \
-                              AND TABLE_NAME = 'UserInfo' \
-                              AND INDEX_NAME = '" + indexName + "';",
-                           function(err, results, fields) {
-                                if (err) {
-                                    log.error("Init(query) err=%s", err)
-                                    return cb(err)
-                                }
-                                if (results.length != 1) {
-                                    return cb(log.fatalf("Init(query) index unexpect error,pls check."))
-                                } else {
-                                    //如果不存在该索引，创建之
-                                    if (results[0].count == 0) {
-                                        conn.query(
-                                            "CREATE UNIQUE INDEX " + indexName + " ON UserInfo(name);COMMIT;", 
-                                            function(err, results, fields) {
-                                                if (err) {
-                                                    log.error("Init(query) err=%s", err)
-                                                    return cb(err)
-                                                }
-                                        })
-                                    }
-                                    cb(null)
-                                }
-                        });
+                        _createTableIdx(conn, dbName, "UserInfo", "Idx_UserInfo_name", true, ["name"], function(err){
+                            conn.release();
+                            
+                            if (err) {
+                                log.error("Init(_createTableIdx) err=%s", err)
+                                return cb(err)
+                            }
+                            cb(null)
+                        })
                 });
             });
             
         });
     });
 
-}
-
-function userExists(name, cb) {
-    if (name == undefined || name == ""){
-        return cb(log.errorf("userExists(args check) err=name is null"))
-    }
-        
-    connPool.getConnection(function (err, conn) {
-        if (err) {
-            log.error("userExists(getConnection) err=%s", err)
-            return cb(err)
-        }
-        conn.query(
-           "SELECT id FROM UserInfo WHERE name = ?", [name], 
-            function(err, results, fields) {
-                if (err) {
-                    log.error("userExists(query) err=%s", err)
-                    return cb(err)
-                }
-                //log.info("err=%s, results=%j, fields=%j", err, results, fields)
-                if (results.length == 0)
-                    cb(null, false)
-                else if (results.length == 1)
-                    cb(null, true, results[0].id)
-                else{
-                    return cb(log.fatalf("userExists(query) unexpect error, pls check"))
-                }
-            }
-        )
-    });
 }
 
 function userRegister(name, passwd, cb) {
@@ -166,6 +145,8 @@ function userRegister(name, passwd, cb) {
                 INSERT INTO UserShadow SET id = (SELECT id FROM UserInfo where name = ?), salt = ?, its=?, hash=?;\
                 COMMIT;", [name, name, salt, its, encryt], 
                 function(err) {
+                    conn.release();
+
                     if (err) {
                         log.error("userRegister(query) err=%s", err)
                         return cb(err)
@@ -174,6 +155,71 @@ function userRegister(name, passwd, cb) {
                 }
             )
         });
+    });
+}
+
+function userResetPasswd(name, passwd, cb) {
+    if (name == undefined || name == "" || passwd == undefined || passwd == "") {
+        return cb(log.errorf("userResetPasswd(args check) err=name or passwd is null"))
+    }
+
+    hash.genHash(passwd, function(err, encryt, salt, its) {
+        if (err) {
+            log.error("userResetPasswd(genHash) err=%s", err)
+            return cb(err)
+        }
+
+        connPool.getConnection(function (err, conn) {
+            if (err) {
+                log.error("userResetPasswd(getConnection) err=%s", err)
+                return cb(err)
+            }
+            conn.query(
+               "UPDATE UserShadow SET  salt=?, its=?, hash=?\
+                WHERE id = (SELECT id FROM UserInfo WHERE name=?);\
+                COMMIT;", [salt, its, encryt, name], 
+                function(err) {
+                    conn.release();
+
+                    if (err) {
+                        log.error("userResetPasswd(query) err=%s", err)
+                        return cb(err)
+                    }
+                    cb(null)
+            })
+        });
+    });
+}
+
+function userExists(name, cb) {
+    if (name == undefined || name == ""){
+        return cb(log.errorf("userExists(args check) err=name is null"))
+    }
+        
+    connPool.getConnection(function (err, conn) {
+        if (err) {
+            log.error("userExists(getConnection) err=%s", err)
+            return cb(err)
+        }
+        conn.query(
+           "SELECT id FROM UserInfo WHERE name = ?", [name], 
+            function(err, results, fields) {
+                conn.release();
+
+                if (err) {
+                    log.error("userExists(query) err=%s", err)
+                    return cb(err)
+                }
+                //log.info("err=%s, results=%j, fields=%j", err, results, fields)
+                if (results.length == 0)
+                    cb(null, false)
+                else if (results.length == 1)
+                    cb(null, true, results[0].id)
+                else{
+                    return cb(log.fatalf("userExists(query) unexpect error, pls check"))
+                }
+            }
+        )
     });
 }
 
@@ -190,6 +236,8 @@ function userAuth(name, passwd, cb) {
         conn.query(
            "SELECT hash, salt, its FROM UserShadow WHERE id = (SELECT id FROM UserInfo where name = ?);", [name], 
             function(err, results, fields) {
+                conn.release();
+                
                 if (err) {
                     log.error("userAuth(query) err=%s", err)
                     return cb(err)
@@ -217,7 +265,7 @@ function userAuth(name, passwd, cb) {
 
 function onExit() {
     if (connPool != undefined) {
-        connPool.end();
+        connPool.end();  //退出时使用，这里不输入callback
     }
 }
 
@@ -228,7 +276,7 @@ function __test() {
         log.info("init ok.")
         
         if (true) { 
-            userRegister('LaoWang', '123456', function(err){
+            userResetPasswd('LaoWang', '123456', function(err){
                 if (err) 
                     return log.error("register error=%s", err) 
                 log.info("register OK.") 
@@ -239,14 +287,13 @@ function __test() {
         } else {
             userExists('LaoWang', function(err, ok) {
                 log.info("userExists %s, %s", err,ok)
-                onExit()
-
+                
+                userAuth("LaoWang", '123456', function(err, ok) {
+                    log.info("userAuth %s, %s", err,ok)
+                    onExit()
+                })
             })
 
-            userAuth("LaoWang", '12345', function(err, ok) {
-                log.info("userAuth %s, %s", err,ok)
-                onExit()
-            })
         }
         
     })

@@ -79,8 +79,8 @@ var attrKeys = {
     USRTYPE: "usertype"
 }
 
-var admin = "admin"
-var adminPasswd = "Xurw3yU9zI0l"
+var admin = "WebAppAdmin"
+var adminPasswd = "DJY27pEnl16d"
 
 var getCertAttrKeys = [attrKeys.ROLE, attrKeys.USRNAME, attrKeys.USRTYPE]
 
@@ -362,7 +362,7 @@ app.get('/rack/register', function(req, res) {
                 res.send(body) 
                 return
             }
-            
+
             //如果需要同时开户，则执行开户
             var funcName = req.query.func
             if (funcName == "account" || funcName == "accountCB") {
