@@ -86,11 +86,18 @@ var getCertAttrKeys = [attrKeys.ROLE, attrKeys.USRNAME, attrKeys.USRTYPE]
 
 var isConfidential = false;
 
+//注册处理函数
+var routeTable = {
+    '/rack/deploy'      : handle_deploy,
+    '/rack/invoke'      : handle_invoke,
+    '/rack/query'       : handle_query,
+    '/rack/quotations'  : handle_quotations,
+    '/rack/register'    : handle_register,
+}
+
+
 // restfull
-app.get('/rack/deploy',function(req, res){  
-
-    res.set({'Content-Type':'text/json','Encodeing':'utf8', 'Access-Control-Allow-Origin':'*'});
-
+function handle_deploy(params, res, req){  
     var body = {
         code : retCode.OK,
         msg: "OK"
@@ -154,27 +161,137 @@ app.get('/rack/deploy',function(req, res){
             })
         }
     });
-});  
+}
 
 
-app.get('/rack/invoke', function(req, res) { 
-
-    res.set({'Content-Type':'text/json','Encodeing':'utf8', 'Access-Control-Allow-Origin':'*'});
+function handle_invoke(params, res, req) { 
+    var body = {
+        code: retCode.OK,
+        msg: "OK"
+    };
     
-    __execInvoke(req, res)
-});
+    var enrollUser = params.usr;
+    
+    chain.getUser(enrollUser, function (err, user) {
+        if (err || !user.isEnrolled()) {
+            __myConsLog("invoke: failed to get user: %s ",enrollUser, err);
+            body.code=retCode.GETUSER_ERR;
+            body.msg="tx error"
+            res.send(body) 
+            return
+        }
 
-app.get('/rack/query', function(req, res) { 
+        user.getUserCert(getCertAttrKeys, function (err, TCert) {
+            if (err) {
+                __myConsLog("invoke: failed to getUserCert: %s",enrollUser);
+                body.code=retCode.GETUSERCERT_ERR;
+                body.msg="tx error"
+                res.send(body) 
+                return
+            }
 
-    res.set({'Content-Type':'text/json','Encodeing':'utf8', 'Access-Control-Allow-Origin':'*'});
+            //__myConsLog("user(%s)'s cert:", enrollUser, TCert.cert.toString('hex'));
+            
+            var ccId = params.ccId;
+            var func = params.func;
+            var acc = params.acc;
+            var invokeRequest = {
+                chaincodeID: ccId,
+                fcn: func,
+                confidential: isConfidential,
+                attrs: getCertAttrKeys,
+                args: [enrollUser, acc, TCert.encode().toString('base64'),  Date.now() + ""],  //getTime()要转为字符串  时间从服务器取？  万一服务器时间不对怎么办？
+                userCert: TCert
+            }
+            
+            if (func == "account" || func == "accountCB") {
+                                
+            } else if (func == "issue") {
+                var amt = params.amt;
+                invokeRequest.args.push(amt)
+                
+            } else if (func == "transefer") {
+                var reacc = params.reacc;
+                var amt = params.amt;
+                //var transType = params.transType;
+                var transType = "" //暂时不用这个参数
+                invokeRequest.args.push(reacc, transType, amt)
+                
+            } else if (func == "addRack") {
+                var rackid = params.rid;
+                var desc = params.desc;
+                if (desc == undefined)
+                    desc = ""
+                var addr = params.addr;
+                if (addr == undefined)
+                    addr = ""
+                var capacity = params.cap;
+                invokeRequest.args.push(rackid, desc, addr, capacity)
+            } else if (func == "finacIssue") { 
+                var finacid = params.fid; 
+                var finacAcc = params.fac; 
+                var amtPerUnit = params.apu; 
+                var totalUnit = params.tu; 
+                var deadline = params.dl; 
+                invokeRequest.args.push(finacid, finacAcc, amtPerUnit, totalUnit, deadline)
+            } else if (func == "userBuyFinac") { 
+                var finacid = params.fid; 
+                var rackid = params.rid;
+                var amt = params.amt; 
+                invokeRequest.args.push(finacid, rackid, amt)
+            } else if (func == "finacBonus") {
+                var finacid = params.fid;
+                var rackid = params.rid;
+                var cost = params.cost;
+                var earning = params.earn;
+                invokeRequest.args.push(finacid, rackid, cost, earning)
+            }
 
+            // invoke
+            var tx = user.invoke(invokeRequest);
+
+            var isSend = false;  //判断是否已发过回应。 有时操作比较慢时，可能超时等原因先走了'error'的流程，但是当操作完成之后，又会走‘complete’流程再次发回应，此时会发生内部错误，导致脚本异常退出
+            tx.on('complete', function (results) {
+                var retInfo = results.result.toString()  // like: "Tx 2eecbc7b-eb1b-40c0-818d-4340863862fe complete"
+                var txId = retInfo.replace("Tx ", '').replace(" complete", '')
+                body.msg=txId
+                if (!isSend) {
+                    isSend = true
+                    res.send(body)
+                }
+                
+                //去掉无用的信息,不打印
+                invokeRequest.chaincodeID = "*"
+                invokeRequest.userCert = "*"
+                invokeRequest.args[2] = "*"
+                __myConsLog("Invoke success: request=%j, results=%s",invokeRequest, results.result.toString());
+            });
+            tx.on('error', function (error) {
+                body.code=retCode.ERROR;
+                body.msg="tx error"
+                if (!isSend) {
+                    isSend = true
+                    res.send(body)
+                }
+
+                //去掉无用的信息,不打印
+                invokeRequest.chaincodeID = "*"
+                invokeRequest.userCert = "*"
+                invokeRequest.args[2] = "*"
+                __myConsLog("Invoke failed : request=%j, error=%j",invokeRequest,error);
+            });           
+        });
+    });
+}
+
+function handle_query(params, res, req) { 
     var body = {
         code: retCode.OK,
         msg: "OK"
     };
 
-    var enrollUser = req.query.usr;  
-    var func = req.query.func;
+    var enrollUser = params.usr;  
+    var func = params.func;
 
     chain.getUser(enrollUser, function (err, user) {
         if (err || !user.isEnrolled()) {
@@ -207,9 +324,9 @@ app.get('/rack/query', function(req, res) {
             
             //__myConsLog("**** query Enrolled ****");
   
-            var ccId = req.query.ccId;
+            var ccId = params.ccId;
             
-            var acc = req.query.acc;
+            var acc = params.acc;
             if (acc ==undefined)  //acc可能不需要
                 acc = ""
 
@@ -225,29 +342,29 @@ app.get('/rack/query', function(req, res) {
             
             if (func == "query"){
             } else if (func == "queryTx"){
-                var begSeq = req.query.begSeq;
+                var begSeq = params.begSeq;
                 if (begSeq == undefined) 
                     begSeq = "0"
                 
-                var endSeq = req.query.endSeq;
+                var endSeq = params.endSeq;
                 if (endSeq == undefined) 
                     endSeq = "-1"
                 
-                var translvl = req.query.trsLvl;
+                var translvl = params.trsLvl;
                 if (translvl == undefined) 
                     translvl = "2"
                 
                 queryRequest.args.push(begSeq, endSeq, translvl)
                 
             } else if (func == "queryFinac"){
-                var finacid = req.query.fid;
-                var rackid = req.query.rid;
+                var finacid = params.fid;
+                var rackid = params.rid;
                 if (rackid == undefined )
                     rackid = ""
                queryRequest.args.push(finacid, rackid)
             } else if (func == "queryRack"){
-                var rackid = req.query.rid;
-                var finacid = req.query.fid;
+                var rackid = params.rid;
+                var finacid = params.fid;
                 if (finacid == undefined )
                     finacid = ""
                queryRequest.args.push(rackid, finacid)
@@ -292,11 +409,9 @@ app.get('/rack/query', function(req, res) {
             });
         })
     });    
-});
+}
 
-app.get('/rack/quotations', function(req, res) {
-    res.set({'Content-Type':'text/json','Encodeing':'utf8', 'Access-Control-Allow-Origin':'*'});
-    
+function handle_quotations(params, res, req) {
     var quotations = {
         exchangeRate:   '1',
         increase:       '0.23',
@@ -309,13 +424,10 @@ app.get('/rack/quotations', function(req, res) {
     };
     
     res.send(body) 
-})
+}
 
-app.get('/rack/register', function(req, res) { 
-    
-    res.set({'Content-Type':'text/json','Encodeing':'utf8', 'Access-Control-Allow-Origin':'*'});
-
-    var user = req.query.usr;
+function handle_register(params, res, req) { 
+    var user = params.usr;
 
     var body = {
         code: retCode.OK,
@@ -336,7 +448,7 @@ app.get('/rack/register', function(req, res) {
         
         chain.setRegistrar(adminUser);
         
-        var usrType = req.query.usrTp;
+        var usrType = params.usrTp;
         if (usrType == undefined) {
             usrType = userType.PERSON + ""      //转为字符串格式
         }
@@ -364,133 +476,14 @@ app.get('/rack/register', function(req, res) {
             }
 
             //如果需要同时开户，则执行开户
-            var funcName = req.query.func
+            var funcName = params.func
             if (funcName == "account" || funcName == "accountCB") {
-                __execInvoke(req, res)
+                handle_invoke(params, res, req)
             }
         });
     });   
-});
-
-function __execInvoke(req, res) {
-    var body = {
-        code: retCode.OK,
-        msg: "OK"
-    };
-    
-    var enrollUser = req.query.usr;
-    
-    chain.getUser(enrollUser, function (err, user) {
-        if (err || !user.isEnrolled()) {
-            __myConsLog("invoke: failed to get user: %s ",enrollUser, err);
-            body.code=retCode.GETUSER_ERR;
-            body.msg="tx error"
-            res.send(body) 
-            return
-        }
-
-        user.getUserCert(getCertAttrKeys, function (err, TCert) {
-            if (err) {
-                __myConsLog("invoke: failed to getUserCert: %s",enrollUser);
-                body.code=retCode.GETUSERCERT_ERR;
-                body.msg="tx error"
-                res.send(body) 
-                return
-            }
-
-            //__myConsLog("user(%s)'s cert:", enrollUser, TCert.cert.toString('hex'));
-            
-            var ccId = req.query.ccId;
-            var func = req.query.func;
-            var acc = req.query.acc;
-            var invokeRequest = {
-                chaincodeID: ccId,
-                fcn: func,
-                confidential: isConfidential,
-                attrs: getCertAttrKeys,
-                args: [enrollUser, acc, TCert.encode().toString('base64'),  Date.now() + ""],  //getTime()要转为字符串  时间从服务器取？  万一服务器时间不对怎么办？
-                userCert: TCert
-            }
-            
-            if (func == "account" || func == "accountCB") {
-                                
-            } else if (func == "issue") {
-                var amt = req.query.amt;
-                invokeRequest.args.push(amt)
-                
-            } else if (func == "transefer") {
-                var reacc = req.query.reacc;
-                var amt = req.query.amt;
-                //var transType = req.query.transType;
-                var transType = "" //暂时不用这个参数
-                invokeRequest.args.push(reacc, transType, amt)
-                
-            } else if (func == "addRack") {
-                var rackid = req.query.rid;
-                var desc = req.query.desc;
-                if (desc == undefined)
-                    desc = ""
-                var addr = req.query.addr;
-                if (addr == undefined)
-                    addr = ""
-                var capacity = req.query.cap;
-                invokeRequest.args.push(rackid, desc, addr, capacity)
-            } else if (func == "finacIssue") { 
-                var finacid = req.query.fid; 
-                var finacAcc = req.query.fac; 
-                var amtPerUnit = req.query.apu; 
-                var totalUnit = req.query.tu; 
-                var deadline = req.query.dl; 
-                invokeRequest.args.push(finacid, finacAcc, amtPerUnit, totalUnit, deadline)
-            } else if (func == "userBuyFinac") { 
-                var finacid = req.query.fid; 
-                var rackid = req.query.rid;
-                var amt = req.query.amt; 
-                invokeRequest.args.push(finacid, rackid, amt)
-            } else if (func == "finacBonus") {
-                var finacid = req.query.fid;
-                var rackid = req.query.rid;
-                var cost = req.query.cost;
-                var earning = req.query.earn;
-                invokeRequest.args.push(finacid, rackid, cost, earning)
-            }
-
-            // invoke
-            var tx = user.invoke(invokeRequest);
-
-            var isSend = false;  //判断是否已发过回应。 有时操作比较慢时，可能超时等原因先走了'error'的流程，但是当操作完成之后，又会走‘complete’流程再次发回应，此时会发生内部错误，导致脚本异常退出
-            tx.on('complete', function (results) {
-                var retInfo = results.result.toString()  // like: "Tx 2eecbc7b-eb1b-40c0-818d-4340863862fe complete"
-                var txId = retInfo.replace("Tx ", '').replace(" complete", '')
-                body.msg=txId
-                if (!isSend) {
-                    isSend = true
-                    res.send(body)
-                }
-                
-                //去掉无用的信息,不打印
-                invokeRequest.chaincodeID = "*"
-                invokeRequest.userCert = "*"
-                invokeRequest.args[2] = "*"
-                __myConsLog("Invoke success: request=%j, results=%s",invokeRequest, results.result.toString());
-            });
-            tx.on('error', function (error) {
-                body.code=retCode.ERROR;
-                body.msg="tx error"
-                if (!isSend) {
-                    isSend = true
-                    res.send(body)
-                }
-
-                //去掉无用的信息,不打印
-                invokeRequest.chaincodeID = "*"
-                invokeRequest.userCert = "*"
-                invokeRequest.args[2] = "*"
-                __myConsLog("Invoke failed : request=%j, error=%j",invokeRequest,error);
-            });           
-        });
-    });
 }
+
 
 var movieIdAccMap = {
     "0001": "lianlian",
@@ -635,6 +628,39 @@ function __myConsLog () {
    arguments["0"] = header +  arguments["0"]
    console.log.apply(this, arguments)
 };
+
+
+
+
+
+//公共处理
+function __handle_comm__(req, res) {
+    res.set({'Content-Type':'text/json','Encodeing':'utf8', 'Access-Control-Allow-Origin':'*'});
+
+    var params
+    if (req.method == "GET")
+        params = req.query
+    else if (req.method == "POST")
+        params = req.body
+    else {
+        var body = {
+            code : retCode.ERROR,
+            msg: "only support 'GET' and 'POST' method",
+            result: ""
+        };
+        res.send(body)
+        return
+    }
+    path = req.route.path
+    
+    //调用处理函数
+    return routeTable[path](params, res, req)
+}
+
+for (var path in routeTable) {
+    app.get(path, __handle_comm__)
+    app.post(path, __handle_comm__)
+}
 
 /*
 initAccPassCache();
