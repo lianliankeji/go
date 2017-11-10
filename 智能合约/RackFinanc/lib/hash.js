@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 
 const hashLen = 128         //生成哈希的长度
-const iterations  = 10000   //迭代次数
+const iterations  = 5000   //迭代次数
 
 function genHash(pwd, cb) {
     //salt的长度使用生成的hash的长度

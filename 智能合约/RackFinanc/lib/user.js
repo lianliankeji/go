@@ -1,6 +1,6 @@
 const util = require('util');
 const mysql = require('mysql');
-const comm = require('./commom');
+const comm = require('./common');
 const hash = require('./hash');
 
 

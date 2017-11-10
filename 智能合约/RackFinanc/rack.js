@@ -8,9 +8,12 @@ var hfc = require('hfc');
 var fs = require('fs');
 var util = require('util');
 const readline = require('readline');
+const user = require('./lib/user')
+const common = require('./lib/common')
 
+var logger = common.createLog("rack")
 // block
-__myConsLog(" **** starting HFC sample ****");
+logger.info(" **** starting HFC sample ****");
 
 var MEMBERSRVC_ADDRESS = "grpc://127.0.0.1:7054";
 var PEER_ADDRESS = "grpc://127.0.0.1:7051";
@@ -28,7 +31,7 @@ chain.eventHubConnect(EVENTHUB_ADDRESS);
 var eh = chain.getEventHub();
 
 process.on('exit', function (){
-  __myConsLog(" ****  rack exit **** ");
+  logger.info(" ****  rack exit **** ");
   chain.eventHubDisconnect();
   //fs.closeSync(wFd);
 });
@@ -105,7 +108,7 @@ function handle_deploy(params, res, req){
 
     chain.enroll(admin, adminPasswd, function (err, user) {
         if (err) {
-            __myConsLog("Failed to register: error=%k",err.toString());
+            logger.error("Failed to register: error=%k",err.toString());
             body.code=retCode.ENROLL_ERR;
             body.msg="enroll error"
             res.send(body)
@@ -117,7 +120,7 @@ function handle_deploy(params, res, req){
             
             user.getUserCert(attr, function (err, userCert) {
                 if (err) {
-                    __myConsLog("getUserCert err, ", err);
+                    logger.error("getUserCert err, ", err);
                     body.code=retCode.GETUSERCERT_ERR;
                     body.msg="getUserCert error"
                     res.send(body)
@@ -131,7 +134,7 @@ function handle_deploy(params, res, req){
                     confidential: isConfidential,
                 };
                 
-                __myConsLog("===deploy begin===")
+                logger.info("===deploy begin===")
 
                 // Trigger the deploy transaction
                 var deployTx = user.deploy(deployRequest);
@@ -139,8 +142,8 @@ function handle_deploy(params, res, req){
                 var isSend = false;  //判断是否已发过回应。 有时操作比较慢时，可能超时等原因先走了'error'的流程，但是当操作完成之后，又会走‘complete’流程再次发回应，此时会发生内部错误，导致脚本异常退出
                 // Print the deploy results
                 deployTx.on('complete', function(results) {
-                    __myConsLog("===deploy end===")
-                    __myConsLog("results.chaincodeID=========="+results.chaincodeID);
+                    logger.info("===deploy end===")
+                    logger.info("results.chaincodeID=========="+results.chaincodeID);
                     if (!isSend) {
                         isSend = true
                         res.send(body)
@@ -148,7 +151,7 @@ function handle_deploy(params, res, req){
                 });
 
                 deployTx.on('error', function(err) {
-                    __myConsLog("deploy error: %s", err.toString());
+                    logger.error("deploy error: %s", err.toString());
                     body.code=retCode.ERROR;
                     body.msg="deploy error"
                     if (!isSend) {
@@ -174,7 +177,7 @@ function handle_invoke(params, res, req) {
     
     chain.getUser(enrollUser, function (err, user) {
         if (err || !user.isEnrolled()) {
-            __myConsLog("invoke: failed to get user: %s ",enrollUser, err);
+            logger.error("invoke: failed to get user: %s ",enrollUser, err);
             body.code=retCode.GETUSER_ERR;
             body.msg="tx error"
             res.send(body) 
@@ -183,14 +186,14 @@ function handle_invoke(params, res, req) {
 
         user.getUserCert(getCertAttrKeys, function (err, TCert) {
             if (err) {
-                __myConsLog("invoke: failed to getUserCert: %s",enrollUser);
+                logger.error("invoke: failed to getUserCert: %s",enrollUser);
                 body.code=retCode.GETUSERCERT_ERR;
                 body.msg="tx error"
                 res.send(body) 
                 return
             }
 
-            //__myConsLog("user(%s)'s cert:", enrollUser, TCert.cert.toString('hex'));
+            //logger.info("user(%s)'s cert:", enrollUser, TCert.cert.toString('hex'));
             
             var ccId = params.ccId;
             var func = params.func;
@@ -264,7 +267,7 @@ function handle_invoke(params, res, req) {
                 invokeRequest.chaincodeID = "*"
                 invokeRequest.userCert = "*"
                 invokeRequest.args[2] = "*"
-                __myConsLog("Invoke success: request=%j, results=%s",invokeRequest, results.result.toString());
+                logger.info("Invoke success: request=%j, results=%s",invokeRequest, results.result.toString());
             });
             tx.on('error', function (error) {
                 body.code=retCode.ERROR;
@@ -278,7 +281,7 @@ function handle_invoke(params, res, req) {
                 invokeRequest.chaincodeID = "*"
                 invokeRequest.userCert = "*"
                 invokeRequest.args[2] = "*"
-                __myConsLog("Invoke failed : request=%j, error=%j",invokeRequest,error);
+                logger.error("Invoke failed : request=%j, error=%j",invokeRequest,error);
             });           
         });
     });
@@ -303,7 +306,7 @@ function handle_query(params, res, req) {
                 return
             }
 
-            __myConsLog("Query: failed to get user: %s",err);
+            logger.error("Query: failed to get user: %s",err);
             body.code=retCode.GETUSER_ERR;
             body.msg="tx error"
             res.send(body) 
@@ -312,17 +315,17 @@ function handle_query(params, res, req) {
 
         user.getUserCert(getCertAttrKeys, function (err, TCert) {
             if (err) {
-                __myConsLog("Query: failed to getUserCert: %s",enrollUser);
+                logger.error("Query: failed to getUserCert: %s",enrollUser);
                 body.code=retCode.GETUSERCERT_ERR;
                 body.msg="tx error"
                 res.send(body) 
                 return
             }
             
-            //__myConsLog("user(%s)'s cert:", enrollUser, TCert.cert.toString('hex'));
+            //logger.info("user(%s)'s cert:", enrollUser, TCert.cert.toString('hex'));
             
             
-            //__myConsLog("**** query Enrolled ****");
+            //logger.info("**** query Enrolled ****");
   
             var ccId = params.ccId;
             
@@ -378,7 +381,7 @@ function handle_query(params, res, req) {
                 body.code=retCode.OK;
                 body.msg=results.result.toString()
                 //var obj = JSON.parse(results.result.toString()); 
-                //__myConsLog("obj=", obj)
+                //logger.info("obj=", obj)
                 if (!isSend) {
                     isSend = true
                     res.send(body)
@@ -390,7 +393,7 @@ function handle_query(params, res, req) {
                 var maxPrtLen = 256
                 if (body.msg.length > maxPrtLen)
                     body.msg = body.msg.substr(0, maxPrtLen) + "......"
-                __myConsLog("Query success: request=%j, results=%s",queryRequest, body.msg);
+                logger.info("Query success: request=%j, results=%s",queryRequest, body.msg);
             });
 
             tx.on('error', function (error) {
@@ -405,7 +408,7 @@ function handle_query(params, res, req) {
                 //去掉无用的信息,不打印
                 queryRequest.userCert = "*"
                 queryRequest.chaincodeID = "*"
-                __myConsLog("Query failed : request=%j, error=%j",queryRequest,error.msg);
+                logger.error("Query failed : request=%j, error=%j",queryRequest,error.msg);
             });
         })
     });    
@@ -437,14 +440,14 @@ function handle_register(params, res, req) {
     chain.enroll(admin, adminPasswd, function (err, adminUser) {
         
         if (err) {
-            __myConsLog("ERROR: register enroll failed. user: %s", user, err);
+            logger.error("ERROR: register enroll failed. user: %s", user, err);
             body.code = retCode.ERROR
             body.msg = "register error"
             res.send(body) 
             return;
         }
 
-        //__myConsLog("admin affiliation: %s", adminUser.getAffiliation());
+        //logger.info("admin affiliation: %s", adminUser.getAffiliation());
         
         chain.setRegistrar(adminUser);
         
@@ -464,11 +467,11 @@ function handle_register(params, res, req) {
                          {name: attrKeys.USRTYPE, value: usrType}]
         };
         
-        //__myConsLog("register: registrationRequest =", registrationRequest)
+        //logger.info("register: registrationRequest =", registrationRequest)
         
         chain.registerAndEnroll(registrationRequest, function(err) {
             if (err) {
-                __myConsLog("register: couldn't register name ", user, err)
+                logger.error("register: couldn't register name ", user, err)
                 body.code = retCode.ERROR
                 body.msg = "register error"
                 res.send(body) 
@@ -504,7 +507,7 @@ function __getUserAttrRole(usrType) {
     } else if (usrType == userType.PERSON) {
         return attrRoles.PERSON
     } else {
-        __myConsLog("unknown user type:", usrType)
+        logger.error("unknown user type:", usrType)
         return "unknown"
     }
 }
@@ -531,7 +534,7 @@ var endl = "\n"
  /*
 function initAccPassCache() {
     if (fs.existsSync(passFile)) {
-        __myConsLog("load passwd.");
+        logger.info("load passwd.");
 
         const rdLn = readline.createInterface({
             input: fs.createReadStream(passFile)
@@ -542,15 +545,15 @@ function initAccPassCache() {
             rowCnt++;
             var arr = line.split(delimiter)
             if (arr.length != 2)
-                __myConsLog("line '%s' is invalid in '%s'.", line, passFile);
+                logger.info("line '%s' is invalid in '%s'.", line, passFile);
             else {
                 if (!setUserPasswd(arr[0], arr[1]))
-                    __myConsLog("initAccPassCache: set passwd(%s:%s) failed.", arr[0],  arr[1]);
+                    logger.info("initAccPassCache: set passwd(%s:%s) failed.", arr[0],  arr[1]);
             }
         });
         
         rdLn.on('close', function() {
-            __myConsLog("read %d rows on Init.", rowCnt);
+            logger.info("read %d rows on Init.", rowCnt);
         })
     }
 };
@@ -581,16 +584,16 @@ function getUserPasswd(name) {
 
 
 function writeManyUsers() {
-    __myConsLog("begin  at", new Date().getTime());
+    logger.info("begin  at", new Date().getTime());
     var tetsObj={}
     for (var i=0; i<1000000; i++){
         tetsObj["testUserXXXXX" + i] = "Xurw3yU9zI0l"
     }
-    __myConsLog("after init obj at", new Date().getTime());
+    logger.info("after init obj at", new Date().getTime());
     
     fs.writeFileSync(passFile, JSON.stringify(tetsObj));
     
-    __myConsLog("end at", new Date().getTime());
+    logger.info("end at", new Date().getTime());
 };
 
 function storePasswd(name, passwd) {
@@ -599,7 +602,7 @@ function storePasswd(name, passwd) {
     
     //writeSync返回的是写入字节数
     if (ret != newLine.length) {
-        __myConsLog("storePasswd: write %s failed (%d,%d).", newLine, ret, newLine.length);
+        logger.info("storePasswd: write %s failed (%d,%d).", newLine, ret, newLine.length);
         return false;
     }
     fs.fsyncSync(wFd);
@@ -616,21 +619,6 @@ function __getNowTime() {
     }
     return util.format("%s-%s.%s", now.toLocaleDateString(), now.toTimeString().substr(0,8),  millis)
 }
-
-function __myConsLog () {
-   //arguments格式为{"0":xxx,"1":yyy,"2":zzzz,...}
-   //如果没有输入参数，直接退出
-   if (arguments["0"] == undefined) {
-      return
-   }
-
-   var header = util.format("%s [rack]: ", __getNowTime())
-   arguments["0"] = header +  arguments["0"]
-   console.log.apply(this, arguments)
-};
-
-
-
 
 
 //公共处理
@@ -667,7 +655,7 @@ initAccPassCache();
 
 wFd = fs.openSync(passFile, "a")
 if (wFd < 0) {
-    __myConsLog("open file %s failed", passFile);
+    logger.info("open file %s failed", passFile);
     process.exit(1)
 }
 */
@@ -682,7 +670,7 @@ if (wFd < 0) {
 var port = 8388
 app.listen(port, "127.0.0.1");
 
-__myConsLog("listen on %d...", port);
+logger.info("listen on %d...", port);
 
 
 //setTimeout(function A() {
