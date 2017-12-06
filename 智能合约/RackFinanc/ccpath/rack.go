@@ -13,6 +13,7 @@ import (
 	//"time"
 
 	"github.com/hyperledger/fabric/core/chaincode/shim"
+	//"github.com/hyperledger/fabric/core/crypto"
 	"github.com/hyperledger/fabric/core/crypto/primitives"
 )
 
@@ -24,7 +25,8 @@ const (
 	ENT_PROJECT    = 3
 	ENT_PERSON     = 4
 
-	ATTR_ROLE    = "role"
+	//这些属性的名字应该和js中上送的一致
+	ATTR_USRROLE = "usrrole"
 	ATTR_USRNAME = "usrname"
 	ATTR_USRTYPE = "usertype"
 
@@ -52,6 +54,7 @@ type Entity struct {
 	TotalAmount int64            `json:"ttAmt"` //货币总数额(发行或接收)
 	RestAmount  int64            `json:"rtAmt"` //账户余额
 	User        string           `json:"user"`  //该实例所属的用户
+	Cert        []byte           `json:"cert"`  //证书
 	Time        int64            `json:"time"`  //创建时间
 	DFIdMap     map[string]int64 `json:"dfMap"` //理财id的map，理财id为key，购买金额为value。只保存已购买未赎回的理财产品
 }
@@ -194,12 +197,15 @@ func (t *RACK) Invoke(stub shim.ChaincodeStubInterface, function string, args []
 	}
 
 	//开户时不需要校验
+	//*
 	if function != "account" && function != "accountCB" {
+		mylog.Debug("checkAccountOfUser when invoke")
 		if ok, _ := t.checkAccountOfUser(stub, userName, accName, userCert); !ok {
 			fmt.Println("verify user(%s) and account(%s) failed. \n", userName, accName)
 			return nil, errors.New("user and account check failed.")
 		}
 	}
+	//*/
 
 	if function == "issue" {
 		mylog.Debug("Enter issue")
@@ -250,7 +256,7 @@ func (t *RACK) Invoke(stub shim.ChaincodeStubInterface, function string, args []
 			mylog.Error("ReadCertAttribute(%s) failed. err=%s", ATTR_USRTYPE, err)
 			//return nil, errors.New("ReadCertAttribute failed.")
 		}
-		tmpRole, err := stub.ReadCertAttribute(ATTR_ROLE)
+		tmpRole, err := stub.ReadCertAttribute(ATTR_USRROLE)
 		if err != nil {
 			mylog.Error("ReadCertAttribute(%s) failed. err=%s", ATTR_USRTYPE, err)
 			//return nil, errors.New("ReadCertAttribute failed.")
@@ -265,7 +271,7 @@ func (t *RACK) Invoke(stub shim.ChaincodeStubInterface, function string, args []
 		*/
 		usrType = 0
 
-		return t.newAccount(stub, accName, usrType, userName, times, false)
+		return t.newAccount(stub, accName, usrType, userName, userCert, times, false)
 
 	} else if function == "accountCB" {
 		mylog.Debug("Enter accountCB")
@@ -283,7 +289,7 @@ func (t *RACK) Invoke(stub shim.ChaincodeStubInterface, function string, args []
 			return nil, errors.New("Invoke(accountCB) account exists.")
 		}
 
-		_, err = t.newAccount(stub, accName, usrType, userName, times, true)
+		_, err = t.newAccount(stub, accName, usrType, userName, userCert, times, true)
 		if err != nil {
 			mylog.Error("Invoke(accountCB) openAccount failed. err=%s", err)
 			return nil, errors.New("Invoke(accountCB) openAccount failed.")
@@ -770,18 +776,20 @@ func (t *RACK) Query(stub shim.ChaincodeStubInterface, function string, args []s
 		mylog.Error("Invoke miss arg, got %d, at least need %d.", len(args), fixedArgCount)
 		return nil, errors.New("Invoke miss arg.")
 	}
-	var userName = args[0]
+	//var userName = args[0]
 	var accName = args[1]
 
 	if function == "query" {
 		//verify user and account
-		var userCert []byte
+		//var userCert []byte
 		//userCert, err = base64.StdEncoding.DecodeString(args[2])
 
-		if ok, _ := t.checkAccountOfUser(stub, userName, accName, userCert); !ok {
-			fmt.Println("verify user(%s) and account(%s) failed. \n", userName, accName)
-			return nil, errors.New("user and account check failed.")
-		}
+		/*
+			if ok, _ := t.checkAccountOfUser(stub, userName, accName, userCert); !ok {
+				fmt.Println("verify user(%s) and account(%s) failed. \n", userName, accName)
+				return nil, errors.New("user and account check failed.")
+			}
+		*/
 
 		var queryEntity *Entity
 		queryEntity, err = t.getEntity(stub, accName)
@@ -1202,19 +1210,20 @@ func (t *RACK) isCaller(stub shim.ChaincodeStubInterface, certificate []byte) (b
 
 func (t *RACK) checkAccountOfUser(stub shim.ChaincodeStubInterface, userName string, account string, userCert []byte) (bool, error) {
 
-	//*
-	callerCert, err := stub.GetCallerCertificate()
-	mylog.Debug("caller certificate: %x", callerCert)
+	/*
+		callerCert, err := stub.GetCallerCertificate()
+		mylog.Debug("caller certificate: %x", callerCert)
 
-	ok, err := t.isCaller(stub, callerCert)
-	if err != nil {
-		mylog.Error("call isCaller failed(callerCert).")
-	}
-	if !ok {
-		mylog.Error("is not Caller(callerCert).")
-	}
+		ok, err := t.isCaller(stub, callerCert)
+		if err != nil {
+			mylog.Error("call isCaller failed(callerCert).")
+		}
+		if !ok {
+			mylog.Error("is not Caller(callerCert).")
+		}
+	*/
 
-	ok, err = t.isCaller(stub, userCert)
+	ok, err := t.isCaller(stub, userCert)
 	if err != nil {
 		mylog.Error("call isCaller failed(userCert).")
 	}
@@ -1226,12 +1235,12 @@ func (t *RACK) checkAccountOfUser(stub shim.ChaincodeStubInterface, userName str
 	return true, nil
 }
 
-func (t *RACK) getEntity(stub shim.ChaincodeStubInterface, cbId string) (*Entity, error) {
+func (t *RACK) getEntity(stub shim.ChaincodeStubInterface, entName string) (*Entity, error) {
 	var centerBankByte []byte
-	var cb Entity
+	var ent Entity
 	var err error
 
-	centerBankByte, err = stub.GetState(cbId)
+	centerBankByte, err = stub.GetState(entName)
 	if err != nil {
 		return nil, err
 	}
@@ -1240,11 +1249,16 @@ func (t *RACK) getEntity(stub shim.ChaincodeStubInterface, cbId string) (*Entity
 		return nil, errors.New("nil entity.")
 	}
 
-	if err = json.Unmarshal(centerBankByte, &cb); err != nil {
+	if err = json.Unmarshal(centerBankByte, &ent); err != nil {
 		return nil, errors.New("get data of centerBank failed.")
 	}
 
-	return &cb, nil
+	if ok, _ := t.checkAccountOfUser(stub, "", entName, ent.Cert); !ok {
+		fmt.Println("verify  account(%s) failed. \n", entName)
+		return nil, errors.New("user and account check failed.")
+	}
+
+	return &ent, nil
 }
 
 func (t *RACK) isEntityExists(stub shim.ChaincodeStubInterface, cbId string) (bool, error) {
@@ -1493,7 +1507,7 @@ func (t *RACK) getAllAccountNames(stub shim.ChaincodeStubInterface) ([]byte, err
 	return accB, nil
 }
 
-func (t *RACK) newAccount(stub shim.ChaincodeStubInterface, accName string, accType int, userName string, times int64, isCBAcc bool) ([]byte, error) {
+func (t *RACK) newAccount(stub shim.ChaincodeStubInterface, accName string, accType int, userName string, cert []byte, times int64, isCBAcc bool) ([]byte, error) {
 	mylog.Debug("Enter openAccount")
 
 	var err error
@@ -1522,6 +1536,8 @@ func (t *RACK) newAccount(stub shim.ChaincodeStubInterface, accName string, accT
 	ent.RestAmount = 0
 	ent.TotalAmount = 0
 	//ent.Time = now.Unix()*1000 + int64(now.Nanosecond()/1000000) //单位毫秒
+	ent.Cert = cert
+	ent.User = userName
 	ent.Time = times
 	ent.DFIdMap = nil
 

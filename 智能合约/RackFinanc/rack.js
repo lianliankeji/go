@@ -8,10 +8,11 @@ var hfc = require('hfc');
 var fs = require('fs');
 var util = require('util');
 const readline = require('readline');
-const user = require('./lib/user')
-const common = require('./lib/common')
+const user = require('./lib/user');
+const common = require('./lib/common');
 
 var logger = common.createLog("rack")
+
 // block
 logger.info(" **** starting HFC sample ****");
 
@@ -92,12 +93,24 @@ var isConfidential = false;
 //注册处理函数
 var routeTable = {
     '/rack/deploy'      : handle_deploy,
+    '/rack/register'    : handle_register,
     '/rack/invoke'      : handle_invoke,
     '/rack/query'       : handle_query,
     '/rack/quotations'  : handle_quotations,
-    '/rack/register'    : handle_register,
+    //'/rack/test'        : handle_test,
 }
 
+//for test
+function handle_test(params, res, req){  
+    var body = {
+        code : retCode.OK,
+        msg: "OK"
+    };
+    
+    body.result=params
+    res.send(body)
+    return
+}
 
 // restfull
 function handle_deploy(params, res, req){  
@@ -256,6 +269,8 @@ function handle_invoke(params, res, req) {
             var isSend = false;  //判断是否已发过回应。 有时操作比较慢时，可能超时等原因先走了'error'的流程，但是当操作完成之后，又会走‘complete’流程再次发回应，此时会发生内部错误，导致脚本异常退出
             tx.on('complete', function (results) {
                 var retInfo = results.result.toString()  // like: "Tx 2eecbc7b-eb1b-40c0-818d-4340863862fe complete"
+                //logger.info("invoke completed successfully: request=%j, results=%j",invokeRequest, retInfo);
+                
                 var txId = retInfo.replace("Tx ", '').replace(" complete", '')
                 body.msg=txId
                 if (!isSend) {
@@ -343,8 +358,7 @@ function handle_query(params, res, req) {
                 confidential: isConfidential
             };   
             
-            if (func == "query"){
-            } else if (func == "queryTx"){
+            if (func == "queryTx"){
                 var begSeq = params.begSeq;
                 if (begSeq == undefined) 
                     begSeq = "0"
@@ -487,16 +501,6 @@ function handle_register(params, res, req) {
     });   
 }
 
-
-var movieIdAccMap = {
-    "0001": "lianlian",
-    "0002": "lianlian",
-    "unknown": "unknown"
-}
-function __getAccByMovieID(id) {
-    return movieIdAccMap[id]
-}
-
 function __getUserAttrRole(usrType) {
     if (usrType == userType.CENTERBANK) {
         return attrRoles.CENTERBANK
@@ -609,16 +613,6 @@ function storePasswd(name, passwd) {
     return true;
 }
 */
-
-function __getNowTime() {
-    var now = new Date()
-    var millis = now.getMilliseconds().toString()
-    var millisLen = 3
-    if (millis.length < millisLen) {
-        millis = "000".substr(0, millisLen - millis.length) + millis
-    }
-    return util.format("%s-%s.%s", now.toLocaleDateString(), now.toTimeString().substr(0,8),  millis)
-}
 
 
 //公共处理

@@ -473,6 +473,7 @@ func (t *SMK) Query(stub shim.ChaincodeStubInterface, function string, args []st
 		mylog.Debug("queryEntity=%v", queryEntity)
 
 		var qEnt QueryEntity
+		qEnt.EntID = queryEntity.EntID
 		qEnt.TotalAmount = queryEntity.RestAmount
 		qEnt.DFIdMap = queryEntity.DFIdMap
 		if qEnt.DFIdMap == nil {
