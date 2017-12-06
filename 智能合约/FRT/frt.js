@@ -8,9 +8,15 @@ var hfc = require('hfc');
 var fs = require('fs');
 var util = require('util');
 const readline = require('readline');
+const user = require('./lib/user');
+const common = require('./lib/common');
+
+var logger = common.createLog("frt")
+logger.setLogLevel(logger.logLevel.INFO)
+//logger.setLogLevel(logger.logLevel.DEBUG)
 
 // block
-__myConsLog(" **** starting HFC sample ****");
+logger.info(" **** starting HFC sample ****");
 
 var MEMBERSRVC_ADDRESS = "grpc://127.0.0.1:7054";
 var PEER_ADDRESS = "grpc://127.0.0.1:7051";
@@ -28,9 +34,10 @@ chain.eventHubConnect(EVENTHUB_ADDRESS);
 var eh = chain.getEventHub();
 
 process.on('exit', function (){
-  __myConsLog(" ****  frt exit ****");
+  logger.info(" ****  frt exit ****");
   chain.eventHubDisconnect();
   //fs.closeSync(wFd);
+  user.onExit();
 });
 
 chain.setKeyValStore(hfc.newFileKeyValStore(keyValStorePath));
@@ -39,7 +46,7 @@ chain.addPeer(PEER_ADDRESS);
 
 
 chain.setDeployWaitTime(55); //http请求默认超时是60s（nginx），所以这里的超时时间要少于60s，否则http请求会超时失败
-chain.setInvokeWaitTime(30);
+chain.setInvokeWaitTime(10);
 
 // parse application/x-www-form-urlencoded  
 app.use(bodyParser.urlencoded({ extended: false }))  
@@ -54,6 +61,8 @@ var retCode = {
     GETUSERCERT_ERR:        1004,
     USER_EXISTS:            1005,
     GETACCBYMVID_ERR:       1006,
+    GET_CERT_ERR:           1007,
+    PUT_CERT_ERR:           1008,
     
     ERROR:                  0xffffffff
 }
@@ -74,32 +83,52 @@ var attrRoles = {
 }
 
 var attrKeys = {
-    ROLE: "role",
+    USRROLE: "usrrole",
     USRNAME: "usrname",
     USRTYPE: "usertype"
 }
 
-var admin = "admin"
-var adminPasswd = "Xurw3yU9zI0l"
+var admin = "WebAppAdmin"
+var adminPasswd = "DJY27pEnl16d"
 
-var getCertAttrKeys = [attrKeys.ROLE, attrKeys.USRNAME, attrKeys.USRTYPE]
+var getCertAttrKeys = [attrKeys.USRROLE, attrKeys.USRNAME, attrKeys.USRTYPE]
 
 var isConfidential = false;
 
-// restfull
-app.get('/frt/deploy',function(req, res){  
+//注册处理函数
+var routeTable = {
+    '/frt/deploy'      : {'GET' : handle_deploy,    'POST' : handle_deploy},
+    '/frt/register'    : {'GET' : handle_register,  'POST' : handle_register},
+    '/frt/invoke'      : {'GET' : handle_invoke,    'POST' : handle_invoke},
+    '/frt/query'       : {'GET' : handle_query,     'POST' : handle_query},
+    '/frt/quotations'  : {'GET' : handle_quotations,'POST' : handle_quotations},
+  //'/frt/test'        : {'GET' : handle_test,      'POST' : handle_test},
+}
 
-    res.set({'Content-Type':'text/json','Encodeing':'utf8', 'Access-Control-Allow-Origin':'*'});
-  
-
+//for test
+function handle_test(params, res, req){  
     var body = {
         code : retCode.OK,
-        msg: "OK"
+        msg: "OK",
+        result: ""
+    };
+    
+    body.result=params
+    res.send(body)
+    return
+}
+
+// restfull
+function handle_deploy(params, res, req){  
+    var body = {
+        code : retCode.OK,
+        msg: "OK",
+        result: ""
     };
 
     chain.enroll(admin, adminPasswd, function (err, user) {
         if (err) {
-            __myConsLog("Failed to register: error=%k",err.toString());
+            logger.error("Failed to register: error=%k",err.toString());
             body.code=retCode.ENROLL_ERR;
             body.msg="enroll error"
             res.send(body)
@@ -110,25 +139,22 @@ app.get('/frt/deploy',function(req, res){
             var attr;
             
             user.getUserCert(attr, function (err, userCert) {
-
-                //__myConsLog("enroll and getUserCert successfully!!!!!")
                 if (err) {
-                    __myConsLog("getUserCert err, ", err);
+                    logger.error("getUserCert err, ", err);
                     body.code=retCode.GETUSERCERT_ERR;
                     body.msg="getUserCert error"
                     res.send(body)
                     return
                 }
-            
+
                 var deployRequest = {
-                
                     fcn: "init",
                     args: [],
-                    chaincodePath: "/usr/local/llwork/frt/frtccpath",
+                    chaincodePath: "/usr/local/llwork/frt/ccpath",
                     confidential: isConfidential,
                 };
                 
-                __myConsLog("===deploy begin===")
+                logger.info("===deploy begin===")
 
                 // Trigger the deploy transaction
                 var deployTx = user.deploy(deployRequest);
@@ -136,16 +162,17 @@ app.get('/frt/deploy',function(req, res){
                 var isSend = false;  //判断是否已发过回应。 有时操作比较慢时，可能超时等原因先走了'error'的流程，但是当操作完成之后，又会走‘complete’流程再次发回应，此时会发生内部错误，导致脚本异常退出
                 // Print the deploy results
                 deployTx.on('complete', function(results) {
-                    __myConsLog("===deploy end===")
-                    __myConsLog("results.chaincodeID=========="+results.chaincodeID);
+                    logger.info("===deploy end===")
+                    logger.info("results.chaincodeID=========="+results.chaincodeID);
                     if (!isSend) {
                         isSend = true
+                        body.result = results.chaincodeID
                         res.send(body)
                     }
                 });
 
                 deployTx.on('error', function(err) {
-                    __myConsLog("deploy error: %s", err.toString());
+                    logger.error("deploy error: %s", err.toString());
                     body.code=retCode.ERROR;
                     body.msg="deploy error"
                     if (!isSend) {
@@ -158,96 +185,199 @@ app.get('/frt/deploy',function(req, res){
             })
         }
     });
-});  
+}
 
 
-app.get('/frt/invoke', function(req, res) { 
-
-    res.set({'Content-Type':'text/json','Encodeing':'utf8', 'Access-Control-Allow-Origin':'*'});
-
-    
-    __execInvoke(req, res)
-});
-
-app.get('/frt/query', function(req, res) { 
-
-    res.set({'Content-Type':'text/json','Encodeing':'utf8', 'Access-Control-Allow-Origin':'*'});
-  
-
+function handle_invoke(params, res, req) { 
     var body = {
-        code: retCode.OK,
-        msg: "OK"
+        code : retCode.OK,
+        msg: "OK",
+        result: ""
     };
-
-    var enrollUser = req.query.usr;  
-    var func = req.query.func;
-
+    
+    var enrollUser = params.usr;
+    
     chain.getUser(enrollUser, function (err, user) {
         if (err || !user.isEnrolled()) {
-            //如果是查询账户是否存在，这里返回不存在"0"
-            if (func == "queryAcc") {
-                body.code = retCode.OK;
-                body.msg = "0"
-                res.send(body)
-                return
-            }
-            
-            __myConsLog("Query: failed to get user: %s",err);
+            logger.error("invoke: failed to get user: %s ",enrollUser, err);
             body.code=retCode.GETUSER_ERR;
             body.msg="tx error"
             res.send(body) 
             return
         }
 
-        user.getUserCert(getCertAttrKeys, function (err, TCert) {
+        common.getCert(keyValStorePath, enrollUser, function (err, TCert) {
             if (err) {
-                __myConsLog("Query: failed to getUserCert: %s",enrollUser);
+                logger.error("invoke: failed to getUserCert: %s. err=%s",enrollUser, err);
+                body.code=retCode.GETUSERCERT_ERR;
+                body.msg="tx error"
+                res.send(body) 
+                return
+            }
+
+            var ccId = params.ccId;
+            var func = params.func;
+            var acc = params.acc;
+            var invokeRequest = {
+                chaincodeID: ccId,
+                fcn: func,
+                confidential: isConfidential,
+                attrs: getCertAttrKeys,  //代码里会获取用户的attr，这里要开启
+                args: [enrollUser, acc,  Date.now() + ""],  //getTime()要转为字符串
+                userCert: TCert
+            }
+            
+            if (func == "account" || func == "accountCB") {
+                invokeRequest.args.push(TCert.encode().toString('base64'))
+            } else if (func == "issue") {
+                var amt = params.amt;
+                invokeRequest.args.push(amt)
+                
+            } else if (func == "transefer") {
+                var reacc = params.reacc;
+                var amt = params.amt;
+                var transType = params.transType;
+                if (transType == undefined)
+                    transType = ""
+                invokeRequest.args.push(reacc, transType, amt)
+                
+            } else if (func == "support") {
+                var movieId = params.movie
+                var reacc = __getAccByMovieID(movieId)
+                if (reacc == undefined) {
+                    logger.error("Failed to get account for movie ", movieId);
+                    body.code=retCode.GETACCBYMVID_ERR;
+                    body.msg="tx error"
+                    res.send(body) 
+                    return
+                }
+                
+                var amt = params.amt;
+                var transType = params.transType;
+                invokeRequest.args.push(reacc, transType, amt)
+                invokeRequest.fcn = "transefer"  //还是走的transefer
+            }
+        
+
+            // invoke
+            var tx = user.invoke(invokeRequest);
+
+            var isSend = false;  //判断是否已发过回应。 有时操作比较慢时，可能超时等原因先走了'error'的流程，但是当操作完成之后，又会走‘complete’流程再次发回应，此时会发生内部错误，导致脚本异常退出
+            tx.on('complete', function (results) {
+                var retInfo = results.result.toString()  // like: "Tx 2eecbc7b-eb1b-40c0-818d-4340863862fe complete"
+                logger.debug("invoke completed successfully: results=%j", retInfo);
+                
+                var txId = retInfo.replace("Tx ", '').replace(" complete", '')
+                if (!isSend) {
+                    isSend = true
+                    body.result = {'txid': txId}
+                    res.send(body)
+                }
+                
+                //去掉无用的信息,不打印
+                invokeRequest.chaincodeID = "*"
+                invokeRequest.userCert = "*"
+                if (func == "account" || func == "accountCB")
+                    invokeRequest.args[invokeRequest.args.length - 1] = "*"
+                logger.info("Invoke success: request=%j, results=%s",invokeRequest, results.result.toString());
+            });
+            tx.on('error', function (error) {
+                body.code=retCode.ERROR;
+                body.msg="tx error"
+                if (!isSend) {
+                    isSend = true
+                    res.send(body)
+                }
+
+                //去掉无用的信息,不打印
+                invokeRequest.chaincodeID = "*"
+                invokeRequest.userCert = "*"
+                logger.error("Invoke failed : request=%j, error=%j",invokeRequest,error);
+            });           
+        });
+    });
+}
+
+function handle_query(params, res, req) { 
+    var body = {
+        code : retCode.OK,
+        msg: "OK",
+        result: ""
+    };
+
+    var enrollUser = params.usr;  
+    var func = params.func;
+
+    chain.getUser(enrollUser, function (err, user) {
+        if (err || !user.isEnrolled()) {
+            //如果是查询账户是否存在，这里返回不存在"0"
+            if (func == "queryAcc") {
+                body.result = "0"
+                res.send(body)
+                return
+            }
+
+            logger.error("Query: failed to get user: %s",err);
+            body.code=retCode.GETUSER_ERR;
+            body.msg="tx error"
+            res.send(body) 
+            return
+        }
+
+        common.getCert(keyValStorePath, enrollUser, function (err, TCert) {
+            if (err) {
+                logger.error("Query: failed to getUserCert: %s",enrollUser);
                 body.code=retCode.GETUSERCERT_ERR;
                 body.msg="tx error"
                 res.send(body) 
                 return
             }
             
-            //__myConsLog("user(%s)'s cert:", enrollUser, TCert.cert.toString('hex'));
-            
-            
-            //__myConsLog("**** query Enrolled ****");
+            logger.debug("**** query Enrolled ****");
   
-            var ccId = req.query.ccId;
+            var ccId = params.ccId;
+            
+            var acc = params.acc;
+            if (acc ==undefined)  //acc可能不需要
+                acc = ""
 
 
             var queryRequest = {
-                
                 chaincodeID: ccId,
                 fcn: func,
-                //attrs: getCertAttrKeys,
+                attrs: getCertAttrKeys, //代码里会获取用户的attr，这里要开启
                 userCert: TCert,
-                args: [],
+                args: [enrollUser, acc],
                 confidential: isConfidential
             };   
             
-            
-            if (func == "query"){
-                var acc = req.query.acc;
-                queryRequest.args = [acc, enrollUser]
-            } else if (func == "queryTx"){
-                var begSeq = req.query.begSeq;
+            if (func == "queryTx"){
+                var begSeq = params.begSeq;
                 if (begSeq == undefined) 
                     begSeq = "0"
                 
-                var endSeq = req.query.endSeq;
-                if (endSeq == undefined) 
-                    endSeq = "-1"
+                var count = params.cnt;
+                if (count == undefined) 
+                    count = "-1"  //-1表示查询所有
                 
-                var translvl = req.query.trsLvl;
+                var translvl = params.trsLvl;
                 if (translvl == undefined) 
                     translvl = "2"
                 
-                queryRequest.args = [enrollUser, begSeq, endSeq, translvl]
+                var begTime = params.btm;
+                if (begTime == undefined) 
+                    begTime = "0"
+
+                var endTime = params.etm;
+                if (endTime == undefined) 
+                    endTime = "-1"  //-1表示查询到最新的时间
+
+                var qAcc = params.qacc;
+                if (qAcc == undefined) 
+                    qAcc = ""
                 
-            } else if (func == "queryAcc"){
-                var acc = req.query.acc;
-                queryRequest.args = [acc, enrollUser]
+                queryRequest.args.push(begSeq, count, translvl, begTime, endTime, qAcc)
+                
             }
             
             // query
@@ -256,11 +386,11 @@ app.get('/frt/query', function(req, res) {
             var isSend = false;  //判断是否已发过回应。 有时操作比较慢时，可能超时等原因先走了'error'的流程，但是当操作完成之后，又会走‘complete’流程再次发回应，此时会发生内部错误，导致脚本异常退出
             tx.on('complete', function (results) {
                 body.code=retCode.OK;
-                body.msg=results.result.toString()
                 //var obj = JSON.parse(results.result.toString()); 
-                //__myConsLog("obj=", obj)
+                //logger.debug("obj=", obj)
                 if (!isSend) {
                     isSend = true
+                    body.result = results.result.toString()
                     res.send(body)
                 }
                 
@@ -268,9 +398,9 @@ app.get('/frt/query', function(req, res) {
                 queryRequest.userCert = "*"
                 queryRequest.chaincodeID = "*"
                 var maxPrtLen = 256
-                if (body.msg.length > maxPrtLen)
-                    body.msg = body.msg.substr(0, maxPrtLen) + "......"
-                __myConsLog("Query success: request=%j, results=%s",queryRequest, body.msg);
+                if (body.result.length > maxPrtLen)
+                    body.result = body.result.substr(0, maxPrtLen) + "......"
+                logger.info("Query success: request=%j, results=%s",queryRequest, body.result);
             });
 
             tx.on('error', function (error) {
@@ -285,16 +415,103 @@ app.get('/frt/query', function(req, res) {
                 //去掉无用的信息,不打印
                 queryRequest.userCert = "*"
                 queryRequest.chaincodeID = "*"
-                __myConsLog("Query failed : request=%j, error=%j",queryRequest,error.msg);
+                logger.error("Query failed : request=%j, error=%j",queryRequest,error.msg);
             });
         })
     });    
-});
+}
 
-app.get('/frt/quotations', function(req, res) {
-    res.set({'Content-Type':'text/json','Encodeing':'utf8', 'Access-Control-Allow-Origin':'*'});
+function handle_register(params, res, req) { 
+    var userName = params.usr;
 
+    var body = {
+        code : retCode.OK,
+        msg: "OK",
+        result: ""
+    };
     
+    chain.enroll(admin, adminPasswd, function (err, adminUser) {
+        
+        if (err) {
+            logger.error("ERROR: register enroll failed. user: %s", userName);
+            body.code = retCode.ERROR
+            body.msg = "register error"
+            res.send(body) 
+            return;
+        }
+
+        logger.debug("admin affiliation: %s", adminUser.getAffiliation());
+        
+        chain.setRegistrar(adminUser);
+        
+        var usrType = params.usrTp;
+        if (usrType == undefined) {
+            usrType = userType.PERSON + ""      //转为字符串格式
+        }
+        
+        var registrationRequest = {
+            roles: [ 'client' ],
+            enrollmentID: userName,
+            registrar: adminUser,
+            affiliation: __getUserAffiliation(usrType),
+            //此处的三个属性名需要和chainCode中的一致
+            attributes: [{name: attrKeys.USRROLE, value: __getUserAttrRole(usrType)}, 
+                         {name: attrKeys.USRNAME, value: userName}, 
+                         {name: attrKeys.USRTYPE, value: usrType}]
+        };
+        
+        logger.debug("register: registrationRequest =", registrationRequest)
+        
+        chain.registerAndEnroll(registrationRequest, function(err) {
+            if (err) {
+                logger.error("register: couldn't register name ", userName, err)
+                body.code = retCode.ERROR
+                body.msg = "register error"
+                res.send(body) 
+                return
+            }
+
+            //如果需要同时开户，则执行开户
+            var funcName = params.func
+            if (funcName == "account" || funcName == "accountCB") {
+                chain.getUser(userName, function (err, user) {
+                    if (err || !user.isEnrolled()) {
+                        logger.error("register: failed to get user: %s ",userName, err);
+                        body.code=retCode.GETUSER_ERR;
+                        body.msg="tx error"
+                        res.send(body) 
+                        return
+                    }
+            
+                    user.getUserCert(null, function (err, TCert) {
+                        if (err) {
+                            logger.error("register: failed to getUserCert: %s",userName);
+                            body.code=retCode.GETUSERCERT_ERR;
+                            body.msg="tx error"
+                            res.send(body) 
+                            return
+                        }
+                        logger.debug("%s putCert's pk=[%s] cert=[%s]", userName, TCert.privateKey.getPrivate('hex'), TCert.encode().toString('base64'))
+
+                        common.putCert(keyValStorePath, userName, TCert, function(err){
+                            if (err) {
+                                logger.error("register: failed to putCert: %s",userName);
+                                body.code=retCode.PUT_CERT_ERR;
+                                body.msg="tx error"
+                                res.send(body) 
+                                return
+                            }
+
+                            handle_invoke(params, res, req)
+                        })
+                    })
+                })
+            }
+        });
+    });   
+}
+
+function handle_quotations(params, res, req) {
     var quotations = {
         exchangeRate:   '1',
         increase:       '0.23',
@@ -303,181 +520,11 @@ app.get('/frt/quotations', function(req, res) {
     
     var body = {
         code: retCode.OK,
-        msg: JSON.stringify(quotations)
+        msg: "OK",
+        result: quotations
     };
     
     res.send(body) 
-})
-
-app.get('/frt/register', function(req, res) { 
-    
-    res.set({'Content-Type':'text/json','Encodeing':'utf8', 'Access-Control-Allow-Origin':'*'});
-  
-
-    var user = req.query.usr;
-
-    var body = {
-        code: retCode.OK,
-        msg: "OK"
-    };
-    
-    chain.enroll(admin, adminPasswd, function (err, adminUser) {
-        
-        if (err) {
-            __myConsLog("ERROR: register enroll failed. user: %s", user, err);
-            body.code = retCode.ERROR
-            body.msg = "register error"
-            res.send(body) 
-            return;
-        }
-
-        //__myConsLog("admin affiliation: %s", adminUser.getAffiliation());
-        
-        chain.setRegistrar(adminUser);
-        
-        var usrType = req.query.usrTp;
-        if (usrType == undefined) {
-            usrType = userType.PERSON + ""      //转为字符串格式
-        }
-        
-        var registrationRequest = {
-            roles: [ 'client' ],
-            enrollmentID: user,
-            registrar: adminUser,
-            affiliation: __getUserAffiliation(usrType),
-            //此处的三个属性名需要和chainCode中的一致
-            attributes: [{name: attrKeys.ROLE, value: __getUserAttrRole(usrType)}, 
-                         {name: attrKeys.USRNAME, value: user}, 
-                         {name: attrKeys.USRTYPE, value: usrType}]
-        };
-        
-        //__myConsLog("register: registrationRequest =", registrationRequest)
-        
-        chain.registerAndEnroll(registrationRequest, function(err) {
-            if (err) {
-                __myConsLog("register: couldn't register name ", user, err)
-                body.code = retCode.ERROR
-                body.msg = "register error"
-                res.send(body) 
-                return
-            }
-            
-            //如果需要同时开户，则执行开户
-            var funcName = req.query.func
-            if (funcName == "account" || funcName == "accountCB") {
-                __execInvoke(req, res)
-            }
-        });
-    });   
-});
-
-function __execInvoke(req, res) {
-    var body = {
-        code: retCode.OK,
-        msg: "OK"
-    };
-    
-    var enrollUser = req.query.usr;
-    
-    chain.getUser(enrollUser, function (err, user) {
-        if (err || !user.isEnrolled()) {
-            __myConsLog("invoke: failed to get user: %s ",enrollUser, err);
-            body.code=retCode.GETUSER_ERR;
-            body.msg="tx error"
-            res.send(body) 
-            return
-        }
-
-        user.getUserCert(getCertAttrKeys, function (err, TCert) {
-            if (err) {
-                __myConsLog("invoke: failed to getUserCert: %s",enrollUser);
-                body.code=retCode.GETUSERCERT_ERR;
-                body.msg="tx error"
-                res.send(body) 
-                return
-            }
-
-            //__myConsLog("user(%s)'s cert:", enrollUser, TCert.cert.toString('hex'));
-            
-            var ccId = req.query.ccId;
-            var func = req.query.func;
-            var acc = req.query.acc;
-            var invokeRequest = {
-                chaincodeID: ccId,
-                fcn: func,
-                confidential: isConfidential,
-                attrs: getCertAttrKeys,
-                args: [enrollUser, acc,  Date.now() + ""],  //getTime()要转为字符串
-                userCert: TCert
-            }
-            
-            if (func == "account" || func == "accountCB") {
-                                
-            } else if (func == "issue") {
-                var amt = req.query.amt;
-                invokeRequest.args.push(amt)
-                
-            } else if (func == "transefer") {
-                var reacc = req.query.reacc;
-                var amt = req.query.amt;
-                var transType = req.query.transType;
-                invokeRequest.args.push(reacc, transType, amt)
-                
-            } else if (func == "support") {
-                var movieId = req.query.movie
-                var reacc = __getAccByMovieID(movieId)
-                if (reacc == undefined) {
-                    __myConsLog("Failed to get account for movie ", movieId);
-                    body.code=retCode.GETACCBYMVID_ERR;
-                    body.msg="tx error"
-                    res.send(body) 
-                    return
-                }
-                
-                var amt = req.query.amt;
-                var transType = req.query.transType;
-                invokeRequest.args.push(reacc, transType, amt)
-                invokeRequest.fcn = "transefer"  //还是走的transefer
-            }
-
-            // invoke
-            var tx = user.invoke(invokeRequest);
-
-            var isSend = false;  //判断是否已发过回应。 有时操作比较慢时，可能超时等原因先走了'error'的流程，但是当操作完成之后，又会走‘complete’流程再次发回应，此时会发生内部错误，导致脚本异常退出
-            tx.on('complete', function (results) {
-                
-                var retInfo = results.result.toString()  // like: "Tx 2eecbc7b-eb1b-40c0-818d-4340863862fe complete"
-                //__myConsLog("invoke completed successfully: request=%j, results=%j",invokeRequest, retInfo);
-                
-                var txId = retInfo.replace("Tx ", '').replace(" complete", '')
-                body.msg=txId
-                if (!isSend) {
-                    isSend = true
-                    res.send(body)
-                }
-                
-                //去掉无用的信息,不打印
-                invokeRequest.chaincodeID = "*"
-                invokeRequest.userCert = "*"
-                //invokeRequest.args[2] = "*"
-                __myConsLog("Invoke success: request=%j, results=%s",invokeRequest, results.result.toString());
-            });
-            tx.on('error', function (error) {
-                body.code=retCode.ERROR;
-                body.msg="tx error"
-                if (!isSend) {
-                    isSend = true
-                    res.send(body)
-                }
-
-                //去掉无用的信息,不打印
-                invokeRequest.chaincodeID = "*"
-                invokeRequest.userCert = "*"
-                invokeRequest.args[2] = "*"
-                __myConsLog("Invoke failed : request=%j, error=%j",invokeRequest,error);
-            });           
-        });
-    });
 }
 
 var movieIdAccMap = {
@@ -499,7 +546,7 @@ function __getUserAttrRole(usrType) {
     } else if (usrType == userType.PERSON) {
         return attrRoles.PERSON
     } else {
-        __myConsLog("unknown user type:", usrType)
+        logger.error("unknown user type:", usrType)
         return "unknown"
     }
 }
@@ -508,141 +555,63 @@ function __getUserAffiliation(usrType) {
     return "bank_a"
 }
 
-/*
-var passFile = "/usr/local/llwork/hfc_keyValStore/user.enrollpasswd"
-var wFd = -1
-var delimiter = ":"
-var endl = "\n"
 
-/**
- * cache for acc and passwd.
- */
-//var accPassCache={}
+//公共处理
+function __handle_comm__(req, res) {
+    res.set({'Content-Type':'text/json','Encodeing':'utf8', 'Access-Control-Allow-Origin':'*'});
 
-
-/**
- * init accPassCache
- */
- /*
-function initAccPassCache() {
-    if (fs.existsSync(passFile)) {
-        __myConsLog("load passwd.");
-
-        const rdLn = readline.createInterface({
-            input: fs.createReadStream(passFile)
-        });
-        
-        var rowCnt = 0;
-        rdLn.on('line', function (line) {
-            rowCnt++;
-            var arr = line.split(delimiter)
-            if (arr.length != 2)
-                __myConsLog("line '%s' is invalid in '%s'.", line, passFile);
-            else {
-                if (!setUserPasswd(arr[0], arr[1]))
-                    __myConsLog("initAccPassCache: set passwd(%s:%s) failed.", arr[0],  arr[1]);
-            }
-        });
-        
-        rdLn.on('close', function() {
-            __myConsLog("read %d rows on Init.", rowCnt);
-        })
-    }
-};
-*/
-
-/**
- * Set the passwd.
- * @returns error.
- */
-/*
-function setUserPasswd(name, passwd, isStored) {
-    accPassCache[name] = passwd
-    if (isStored == true) {
-        return storePasswd(name, passwd)
-    }
-    return true;
-};
-*/
-
-/**
- * Get the passwd.
- * @returns passwd
- */
-/*
-function getUserPasswd(name) {
-    return accPassCache[name];
-};
-
-
-function writeManyUsers() {
-    __myConsLog("begin  at", new Date().getTime());
-    var tetsObj={}
-    for (var i=0; i<1000000; i++){
-        tetsObj["testUserXXXXX" + i] = "Xurw3yU9zI0l"
-    }
-    __myConsLog("after init obj at", new Date().getTime());
+    var params
+    var method = req.method
     
-    fs.writeFileSync(passFile, JSON.stringify(tetsObj));
-    
-    __myConsLog("end at", new Date().getTime());
-};
-
-function storePasswd(name, passwd) {
-    var newLine = name + delimiter + passwd + endl;
-    var ret = fs.writeSync(wFd, newLine)
-    
-    //writeSync返回的是写入字节数
-    if (ret != newLine.length) {
-        __myConsLog("storePasswd: write %s failed (%d,%d).", newLine, ret, newLine.length);
-        return false;
+    if (method == "GET")
+        params = req.query
+    else if (method == "POST")
+        params = req.body
+    else {
+        var body = {
+            code : retCode.ERROR,
+            msg: "only support 'GET' and 'POST' method.",
+            result: ""
+        };
+        res.send(body)
+        return
     }
-    fs.fsyncSync(wFd);
-    return true;
-}
-*/
-
-function __getNowTime() {
-    var now = new Date()
-    var millis = now.getMilliseconds().toString()
-    var millisLen = 3
-    if (millis.length < millisLen) {
-        millis = "000".substr(0, millisLen - millis.length) + millis
+    path = req.route.path
+    
+    var handle = routeTable[path][method]
+    if (handle == undefined) {
+        var body = {
+            code : retCode.ERROR,
+            msg: util.format("path '%s' do not support '%s' method.", path, method),
+            result: ""
+        };
+        res.send(body)
+        return
     }
-    return util.format("%s-%s.%s", now.toLocaleDateString(), now.toTimeString().substr(0,8),  millis)
+    
+    //调用处理函数
+    return handle(params, res, req)
 }
 
-function __myConsLog () {
-   //arguments格式为{"0":xxx,"1":yyy,"2":zzzz,...}
-   //如果没有输入参数，直接退出
-   if (arguments["0"] == undefined) {
-      return
-   }
-
-   var header = util.format("%s [frt]: ", __getNowTime())
-   arguments["0"] = header +  arguments["0"]
-   console.log.apply(this, arguments)
-};
+for (var path in routeTable) {
+    app.get(path, __handle_comm__)
+    app.post(path, __handle_comm__)
+}
 
 /*
-initAccPassCache();
-
-wFd = fs.openSync(passFile, "a")
-if (wFd < 0) {
-    __myConsLog("open file %s failed", passFile);
-    process.exit(1)
-}
-*/
-//for (var i=0; i<1000000; i++){
-//    fs.writeSync(wFd, "testUserXXXXX" + i + delimiter + "Xurw3yU9zI0l" + endl)
-//}
-//for (var i=0; i<500000; i++) 
-//   fs.writeSync(wFd, "testUserIIIIIIII" + i + delimiter + "500000U9zI0l" + endl)
-//fs.fsyncSync(wFd);
-
+user.init(function(err) {
+    if (err) {
+        logger.error("init error, exit. err=%s", err)
+        process.exit(1) //调用这个接口触发exit事件
+    }
+    logger.info("init ok.")
  
+    var port = 8188
+    app.listen(port, "127.0.0.1");
+    logger.info("listen on %d...", port);
+})
+*/
 var port = 8188
 app.listen(port, "127.0.0.1");
-
-__myConsLog("listen on %d...", port);
+logger.info("listen on %d...", port);
 
