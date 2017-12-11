@@ -56,15 +56,18 @@ type UserAttrs struct {
 	UserType string `json:"type"`
 }
 
+type RolesPercent struct {
+	Seller   int64 `json:"slr"` //经营者分成比例 因为要和int64参与运算，这里都定义为int64
+	Fielder  int64 `json:"fld"` //场地提供者分成比例
+	Delivery int64 `json:"dvy"` //送货人分成比例
+	Platform int64 `json:"pfm"` //平台分成比例
+}
+
 //货架收入分成比例
 type EarningAllocPercent struct {
-	Rackid      string `json:"rid"`
-	PercentBase int64  `json:"perb"` //因为要和int64参与运算，这里都定义为int64
-	Seller      int64  `json:"slr"`
-	Platform    int64  `json:"pfm"`
-	Fielder     int64  `json:"fld"`
-	Delivery    int64  `json:"dvy"`
-	UpdateTime  int64  `json:"uptm"`
+	Rackid string `json:"rid"`
+	RolesPercent
+	UpdateTime int64 `json:"uptm"`
 }
 
 type QueryEarningAllocTx struct {
@@ -73,14 +76,10 @@ type QueryEarningAllocTx struct {
 }
 
 type PubEarningAllocTx struct {
-	Rackid       string                      `json:"rid"`
-	AllocKey     string                      `json:"ak"`     //本次分成的key，因为目前invoke操作不能返回分成结果，所以执行分成时，设置这个key，然后在查询时使用这个key来查询
-	TotalAmt     int64                       `json:"amt"`    //总金额
-	RatioBase    int64                       `json:"rat"`    //比例基数 百分比100 千分比1000等
-	Seller       int64                       `json:"slr"`    //经营者分成比例
-	Fielder      int64                       `json:"fld"`    //场地提供者分成比例
-	Delivery     int64                       `json:"dvy"`    //送货人分成比例
-	Platform     int64                       `json:"pfm"`    //平台分成比例
+	Rackid   string `json:"rid"`
+	AllocKey string `json:"ak"`  //本次分成的key，因为目前invoke操作不能返回分成结果，所以执行分成时，设置这个key，然后在查询时使用这个key来查询
+	TotalAmt int64  `json:"amt"` //总金额
+	RolesPercent
 	AmountMap    map[string]map[string]int64 `json:"amtmap"` //分成结果 {seller:{usr1:20}, Fielder：{usr2:20} ...}
 	GlobalSerial int64                       `json:"gser"`
 	DateTime     int64                       `json:"dtm"`
@@ -103,24 +102,26 @@ func (t *KDALLOC) Init(stub shim.ChaincodeStubInterface, function string, args [
 	mylog.Debug("Enter Init")
 	mylog.Debug("func =%s, args = %v", function, args)
 
+	/* 这里不输入当前时间参数，因为fabic0.6版本，如果init输入了变量参数，每次deploy出来的chainCodeId不一致。
 	var argCount = 1
 	if len(args) < argCount {
 		return nil, mylog.Errorf("Init miss arg, got %d, at least need %d.", len(args), argCount)
 	}
 
-	times, err := strconv.ParseInt(args[0], 0, 64)
-	if err != nil {
-		return nil, mylog.Errorf("Invoke convert times(%s) failed. err=%s", args[0], err)
-	}
+		times, err := strconv.ParseInt(args[0], 0, 64)
+		if err != nil {
+			return nil, mylog.Errorf("Invoke convert times(%s) failed. err=%s", args[0], err)
+		}
+	*/
 
 	var eap EarningAllocPercent
 	eap.Rackid = "_global__rack___" //全局比例
-	eap.PercentBase = 100           //百分比
 	eap.Platform = 3                //3%
 	eap.Fielder = 3                 //3%
 	eap.Delivery = 2                //2%
 	eap.Seller = 92                 //92%
-	eap.UpdateTime = times
+	//eap.UpdateTime = times
+	eap.UpdateTime = 0
 
 	eapJson, err := json.Marshal(eap)
 	if err != nil {
@@ -291,43 +292,38 @@ func (t *KDALLOC) Invoke(stub shim.ChaincodeStubInterface, function string, args
 		}
 
 		return nil, nil
-	} else if function == "setAlloc" {
+	} else if function == "setAllocCfg" {
 		if !t.isAdmin(stub, accName) {
-			return nil, mylog.Errorf("Invoke(setAlloc) can't exec by %s.", accName)
+			return nil, mylog.Errorf("Invoke(setAllocCfg) can't exec by %s.", accName)
 		}
 
-		var argCount = fixedArgCount + 6
+		var argCount = fixedArgCount + 5
 		if len(args) < argCount {
-			return nil, mylog.Errorf("Invoke(setAlloc) miss arg, got %d, at least need %d.", len(args), argCount)
+			return nil, mylog.Errorf("Invoke(setAllocCfg) miss arg, got %d, at least need %d.", len(args), argCount)
 		}
 
 		rackid := args[fixedArgCount]
 
-		perBase, err := strconv.ParseInt(args[fixedArgCount+1], 0, 64)
+		seller, err := strconv.ParseInt(args[fixedArgCount+1], 0, 64)
 		if err != nil {
-			return nil, mylog.Errorf("Invoke(setAlloc) convert perBase(%s) failed. err=%s", args[fixedArgCount+1], err)
+			return nil, mylog.Errorf("Invoke(setAllocCfg) convert seller(%s) failed. err=%s", args[fixedArgCount+1], err)
 		}
-		seller, err := strconv.ParseInt(args[fixedArgCount+2], 0, 64)
+		fielder, err := strconv.ParseInt(args[fixedArgCount+2], 0, 64)
 		if err != nil {
-			return nil, mylog.Errorf("Invoke(setAlloc) convert seller(%s) failed. err=%s", args[fixedArgCount+2], err)
+			return nil, mylog.Errorf("Invoke(setAllocCfg) convert fielder(%s) failed. err=%s", args[fixedArgCount+2], err)
 		}
-		fielder, err := strconv.ParseInt(args[fixedArgCount+3], 0, 64)
+		delivery, err := strconv.ParseInt(args[fixedArgCount+3], 0, 64)
 		if err != nil {
-			return nil, mylog.Errorf("Invoke(setAlloc) convert fielder(%s) failed. err=%s", args[fixedArgCount+3], err)
+			return nil, mylog.Errorf("Invoke(setAllocCfg) convert delivery(%s) failed. err=%s", args[fixedArgCount+3], err)
 		}
-		delivery, err := strconv.ParseInt(args[fixedArgCount+4], 0, 64)
+		platform, err := strconv.ParseInt(args[fixedArgCount+4], 0, 64)
 		if err != nil {
-			return nil, mylog.Errorf("Invoke(setAlloc) convert delivery(%s) failed. err=%s", args[fixedArgCount+4], err)
-		}
-		platform, err := strconv.ParseInt(args[fixedArgCount+5], 0, 64)
-		if err != nil {
-			return nil, mylog.Errorf("Invoke(setAlloc) convert platform(%s) failed. err=%s", args[fixedArgCount+5], err)
+			return nil, mylog.Errorf("Invoke(setAllocCfg) convert platform(%s) failed. err=%s", args[fixedArgCount+4], err)
 		}
 
 		var eap EarningAllocPercent
 
 		eap.Rackid = rackid
-		eap.PercentBase = perBase
 		eap.Seller = seller
 		eap.Fielder = fielder
 		eap.Delivery = delivery
@@ -336,12 +332,12 @@ func (t *KDALLOC) Invoke(stub shim.ChaincodeStubInterface, function string, args
 
 		eapJson, err := json.Marshal(eap)
 		if err != nil {
-			return nil, mylog.Errorf("Invoke(setAlloc) Marshal error, err=%s.", err)
+			return nil, mylog.Errorf("Invoke(setAllocCfg) Marshal error, err=%s.", err)
 		}
 
 		err = t.PutState_Ex(stub, t.getRackAllocPercentKey(rackid), eapJson)
 		if err != nil {
-			return nil, mylog.Errorf("Invoke(setAlloc) PutState_Ex error, err=%s.", err)
+			return nil, mylog.Errorf("Invoke(setAllocCfg) PutState_Ex error, err=%s.", err)
 		}
 
 		return nil, nil
@@ -861,11 +857,7 @@ func (t *KDALLOC) setAllocEarnTx(stub shim.ChaincodeStubInterface, rackid, alloc
 	var eat EarningAllocTx
 	eat.Rackid = rackid
 	eat.AllocKey = allocKey
-	eat.RatioBase = eap.PercentBase
-	eat.Seller = eap.Seller
-	eat.Fielder = eap.Fielder
-	eat.Delivery = eap.Delivery
-	eat.Platform = eap.Platform
+	eat.RolesPercent = eap.RolesPercent
 	eat.TotalAmt = totalAmt
 
 	eat.AmountMap = make(map[string]map[string]int64)
@@ -874,9 +866,11 @@ func (t *KDALLOC) setAllocEarnTx(stub shim.ChaincodeStubInterface, rackid, alloc
 	eat.AmountMap[RACK_ROLE_DELIVERY] = make(map[string]int64)
 	eat.AmountMap[RACK_ROLE_PLATFORM] = make(map[string]int64)
 
-	sellerAmt := totalAmt * eap.Seller / eap.PercentBase
-	fielderAmt := totalAmt * eap.Fielder / eap.PercentBase
-	deliveryAmt := totalAmt * eap.Delivery / eap.PercentBase
+	var base = eap.Seller + eap.Fielder + eap.Delivery + eap.Platform
+
+	sellerAmt := totalAmt * eap.Seller / base
+	fielderAmt := totalAmt * eap.Fielder / base
+	deliveryAmt := totalAmt * eap.Delivery / base
 	//上面计算可能有四舍五入的情况，剩余的都放在平台账户
 	platformAmt := totalAmt - sellerAmt - fielderAmt - deliveryAmt
 
@@ -933,14 +927,17 @@ func (t *KDALLOC) getRolesAllocEarning(totalAmt int64, accs string, result map[s
 	var newAccs = strings.Trim(strings.TrimSpace(accs), ";")
 
 	if strings.Contains(newAccs, ";") {
-		var base = 100 //如果每个角色的账户中含有子账户，则每个子账户的比例是百分比
-		var accArr = strings.Split(newAccs, ";")
-		var accCnt = len(accArr)
+		var base = 0
+		var accRatArr = strings.Split(newAccs, ";")
+		var accCnt = len(accRatArr)
 		var tmpAmt int64 = 0
 		var sumAmt int64 = 0
 		var err error
 		var rat int
-		for i, acc := range accArr {
+		var accArr []string
+		var ratArr []int
+		//检查输入格式并计算比例总和，用于做分母
+		for _, acc := range accRatArr {
 			if !strings.Contains(acc, ":") {
 				return mylog.Errorf("getRolesAllocEarning  accs parse error, '%s' has no ':'.", acc)
 			}
@@ -952,14 +949,17 @@ func (t *KDALLOC) getRolesAllocEarning(totalAmt int64, accs string, result map[s
 			if err != nil {
 				return mylog.Errorf("getRolesAllocEarning  accs parse error, '%s' format error 2.", acc)
 			}
-
-			//如果是最后一个账户，用总数减去其余账户的总值， 防止四舍五入造成的总和不对
+			base += rat
+			accArr = append(accArr, pair[0])
+			ratArr = append(ratArr, rat)
+		}
+		for i, acc := range accArr {
 			if i == accCnt-1 {
-				result[pair[0]] = totalAmt - sumAmt
+				result[acc] = totalAmt - sumAmt
 			} else {
-				tmpAmt = totalAmt * int64(rat) / int64(base)
+				tmpAmt = totalAmt * int64(ratArr[i]) / int64(base)
 				sumAmt += tmpAmt
-				result[pair[0]] = tmpAmt
+				result[acc] = tmpAmt
 			}
 		}
 	} else {

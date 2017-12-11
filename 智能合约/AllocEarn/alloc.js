@@ -136,7 +136,8 @@ function handle_deploy(params, res, req){
         } else {
             var deployRequest = {
                 fcn: "init",
-                args: [Date.now().toString()],
+                //args: [Date.now().toString()], //这里不输入当前时间参数，因为fabic0.6版本，如果init输入了变量参数，每次deploy出来的chainCodeId不一致。
+                args: [],
                 chaincodePath: "/usr/local/llwork/alloc/alloc_ccpath",
                 confidential: isConfidential,
             };
@@ -218,14 +219,13 @@ function handle_invoke(params, res, req) {
                 var key = params.key;
                 var value = params.val;
                 invokeRequest.args.push(key, value)
-            } else if (func == "setAlloc") {
+            } else if (func == "setAllocCfg") {
                 var rackid = params.rid;
-                var perBase = params.pbs;
                 var seller = params.slr;
                 var platform = params.pfm;
                 var fielder = params.fld;
                 var delivery = params.dvy;
-                invokeRequest.args.push(rackid, perBase, seller, fielder, delivery, platform)
+                invokeRequest.args.push(rackid, seller, fielder, delivery, platform)
             }else if (func == "allocEarning") {
                 var rackid = params.rid;
                 var seller = params.slr;
@@ -368,9 +368,18 @@ function handle_query(params, res, req) {
                 body.code=retCode.OK;
                 //var obj = JSON.parse(results.result.toString()); 
                 //logger.debug("obj=", obj)
+                var resultStr = results.result.toString()
                 if (!isSend) {
                     isSend = true
-                    body.result = results.result.toString()
+                    /* 暂时还保留字符串格式
+                    //如下几种函数的result返回json格式
+                    if (func == "queryRackAllocCfg" || func == "queryRackAlloc") {
+                        body.result = JSON.parse(resultStr)
+                    } else {
+                        body.result = resultStr
+                    }
+                    */
+                    body.result = resultStr
                     res.send(body)
                 }
                 
@@ -378,9 +387,9 @@ function handle_query(params, res, req) {
                 queryRequest.userCert = "*"
                 queryRequest.chaincodeID = "*"
                 var maxPrtLen = 256
-                if (body.result.length > maxPrtLen)
-                    body.result = body.result.substr(0, maxPrtLen) + "......"
-                logger.info("Query success: request=%j, results=%s",queryRequest, body.result);
+                if (resultStr.length > maxPrtLen)
+                    resultStr = resultStr.substr(0, maxPrtLen) + "......"
+                logger.info("Query success: request=%j, results=%s",queryRequest, resultStr);
             });
 
             tx.on('error', function (error) {
