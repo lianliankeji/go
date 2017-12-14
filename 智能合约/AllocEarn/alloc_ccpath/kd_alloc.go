@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	//"io"
+	"io"
 	"math"
 	"strconv"
 	"strings"
@@ -28,9 +28,10 @@ const (
 	GLOBAL_ALLOCPERCENT_KEY = "__~!@#@!~_kd_alloc_globalallocper__#$%"   //全局的收入分成比例
 	ALLOCPERCENT_PREFIX     = "__~!@#@!~_kd_alloc_allocPerPre__"         //每个货架的收入分成比例的key前缀
 	ALLOCSEQ_PREFIX         = "__~!@#@!~_kd_alloc_allocSeqPre__"         //
-	ALLOC_TX_PREFIX         = "__~!@#@!~_kd_alloc_alloctxPre__"          //收入分成交易记录
+	ALLOC_TX_PREFIX         = "__~!@#@!~_kd_alloc_alloctxPre__"          //每个货架收入分成交易记录
+	ACC_ALLOC_TX_PREFIX     = "__~!@#@!~_kd_alloc_acc_alloctxPre__"      //某个账户收入分成交易记录
 
-	ALL_ACC_DELIM = ':' //所有账户名的分隔符
+	MULTI_STRING_DELIM = ':' //所有账户名的分隔符
 
 	RACK_ROLE_SELLER   = "slr"
 	RACK_ROLE_FIELDER  = "fld"
@@ -40,7 +41,7 @@ const (
 
 //账户信息Entity
 // 一系列ID（或账户）都定义为字符串类型。因为putStat函数的第一个参数为字符串类型，这些ID（或账户）都作为putStat的第一个参数；另外从SDK传过来的参数也都是字符串类型。
-type Entity struct {
+type AccountEntity struct {
 	EntID       string `json:"id"`          //银行/企业/项目/个人ID
 	EntType     int    `json:"entType"`     //类型 中央银行:1, 企业:2, 项目:3, 个人:4
 	TotalAmount int64  `json:"totalAmount"` //货币总数额(发行或接收)
@@ -76,14 +77,15 @@ type QueryEarningAllocTx struct {
 }
 
 type PubEarningAllocTx struct {
-	Rackid   string `json:"rid"`
-	AllocKey string `json:"ak"`  //本次分成的key，因为目前invoke操作不能返回分成结果，所以执行分成时，设置这个key，然后在查询时使用这个key来查询
-	TotalAmt int64  `json:"amt"` //总金额
-	RolesPercent
+	Rackid       string                      `json:"rid"`
+	AllocKey     string                      `json:"ak"`     //本次分成的key，因为目前invoke操作不能返回分成结果，所以执行分成时，设置这个key，然后在查询时使用这个key来查询
+	TotalAmt     int64                       `json:"amt"`    //总金额
 	AmountMap    map[string]map[string]int64 `json:"amtmap"` //分成结果 {seller:{usr1:20}, Fielder：{usr2:20} ...}
 	GlobalSerial int64                       `json:"gser"`
 	DateTime     int64                       `json:"dtm"`
+	RolesPercent
 }
+
 type EarningAllocTx struct {
 	PubEarningAllocTx
 }
@@ -95,6 +97,17 @@ type AllocAccs struct {
 	Platform string `json:"pfm"`
 }
 
+type QueryAccEarningAllocTx struct {
+	Serail        int64            `json:"ser"`
+	AccName       string           `json:"acc"`
+	Rackid        string           `json:"rid"`
+	RoleAmountMap map[string]int64 `json:"ramap"`
+	DateTime      int64            `json:"dtm"`
+	TotalAmt      int64            `json:"tamt"` //总金额
+	GlobalSerial  int64            `json:"gser"`
+	RolesPercent
+}
+
 type KDALLOC struct {
 }
 
@@ -103,15 +116,15 @@ func (t *KDALLOC) Init(stub shim.ChaincodeStubInterface, function string, args [
 	mylog.Debug("func =%s, args = %v", function, args)
 
 	/* 这里不输入当前时间参数，因为fabic0.6版本，如果init输入了变量参数，每次deploy出来的chainCodeId不一致。
-	var argCount = 1
-	if len(args) < argCount {
-		return nil, mylog.Errorf("Init miss arg, got %d, at least need %d.", len(args), argCount)
-	}
+	   var argCount = 1
+	   if len(args) < argCount {
+	       return nil, mylog.Errorf("Init miss arg, got %d, at least need %d.", len(args), argCount)
+	   }
 
-		times, err := strconv.ParseInt(args[0], 0, 64)
-		if err != nil {
-			return nil, mylog.Errorf("Invoke convert times(%s) failed. err=%s", args[0], err)
-		}
+	       times, err := strconv.ParseInt(args[0], 0, 64)
+	       if err != nil {
+	           return nil, mylog.Errorf("Invoke convert times(%s) failed. err=%s", args[0], err)
+	       }
 	*/
 
 	var eap EarningAllocPercent
@@ -159,7 +172,7 @@ func (t *KDALLOC) Invoke(stub shim.ChaincodeStubInterface, function string, args
 	}
 
 	var userAttrs *UserAttrs
-	var userEnt *Entity = nil
+	var userEnt *AccountEntity = nil
 
 	userAttrs, err = t.getUserAttrs(stub)
 	if err != nil {
@@ -167,7 +180,7 @@ func (t *KDALLOC) Invoke(stub shim.ChaincodeStubInterface, function string, args
 	}
 
 	//开户时不需要校验
-	if function != "account" && function != "accountCB" {
+	if function != "account" && function != "accountCB" && function != "updateCert" {
 
 		userEnt, err = t.getEntity(stub, accName)
 		if err != nil {
@@ -181,27 +194,7 @@ func (t *KDALLOC) Invoke(stub shim.ChaincodeStubInterface, function string, args
 		}
 	}
 
-	if function == "account" {
-		mylog.Debug("Enter account")
-		var usrType int
-
-		var argCount = fixedArgCount + 1
-		if len(args) < argCount {
-			mylog.Error("Invoke(account) miss arg, got %d, at least need %d.", len(args), argCount)
-			return nil, errors.New("Invoke(account) miss arg.")
-		}
-
-		userCert, err := base64.StdEncoding.DecodeString(args[fixedArgCount])
-		if err != nil {
-			mylog.Error("Invoke(account) DecodeString failed. err=%s", err)
-			return nil, errors.New("Invoke(account) DecodeString failed.")
-		}
-
-		usrType = 0
-
-		return t.newAccount(stub, accName, usrType, userName, userCert, times, false)
-
-	} else if function == "accountCB" {
+	if function == "accountCB" {
 		mylog.Debug("Enter accountCB")
 		var usrType int = 0
 
@@ -417,7 +410,7 @@ func (t *KDALLOC) Query(stub shim.ChaincodeStubInterface, function string, args 
 	var accName = args[1]
 
 	var userAttrs *UserAttrs
-	var userEnt *Entity = nil
+	var userEnt *AccountEntity = nil
 
 	userAttrs, err = t.getUserAttrs(stub)
 	if err != nil {
@@ -436,7 +429,7 @@ func (t *KDALLOC) Query(stub shim.ChaincodeStubInterface, function string, args 
 
 	if function == "query" {
 
-		var queryEntity *Entity
+		var queryEntity *AccountEntity
 		queryEntity, err = t.getEntity(stub, accName)
 		if err != nil {
 			mylog.Error("getEntity queryEntity(id=%s) failed. err=%s", accName, err)
@@ -469,28 +462,9 @@ func (t *KDALLOC) Query(stub shim.ChaincodeStubInterface, function string, args 
 		}
 
 		return retValues, nil
-	} else if function == "queryAcc" {
-		accExist, err := t.isEntityExists(stub, accName)
-		if err != nil {
-			mylog.Error("queryAcc: isEntityExists (id=%s) failed. err=%s", accName, err)
-			return nil, errors.New("queryAcc: isEntityExists failed.")
-		}
-
-		var retValues []byte
-		if accExist {
-			retValues = []byte("1")
-		} else {
-			retValues = []byte("0")
-		}
-
-		return retValues, nil
 	} else if function == "queryRackAlloc" {
-		//是否是管理员帐户，管理员用户才可以查
-		if !t.isAdmin(stub, accName) {
-			return nil, mylog.Errorf("%s can't query queryRackAlloc.", accName)
-		}
 
-		var argCount = fixedArgCount + 6
+		var argCount = fixedArgCount + 7
 		if len(args) < argCount {
 			return nil, mylog.Errorf("queryRackAlloc miss arg, got %d, need %d.", len(args), argCount)
 		}
@@ -501,6 +475,7 @@ func (t *KDALLOC) Query(stub shim.ChaincodeStubInterface, function string, args 
 		var txCount int64
 		var begTime int64
 		var endTime int64
+		var txAcc string
 
 		rackid = args[fixedArgCount]
 		allocKey = args[fixedArgCount+1]
@@ -522,14 +497,39 @@ func (t *KDALLOC) Query(stub shim.ChaincodeStubInterface, function string, args 
 		if err != nil {
 			return nil, mylog.Errorf("queryRackAlloc ParseInt for endTime(%s) failed. err=%s", args[fixedArgCount+5], err)
 		}
+		txAcc = args[fixedArgCount+6]
 
 		if len(allocKey) > 0 {
-			return t.getOneAllocTxRecd(stub, rackid, allocKey)
+			//是否是管理员帐户，管理员用户才可以查
+			if !t.isAdmin(stub, accName) {
+				return nil, mylog.Errorf("queryRackAlloc: %s can't query allocKey.", accName)
+			}
+
+			//查询某一次的分配情况（由allocKey检索）
+			return t.getAllocTxRecdByKey(stub, rackid, allocKey)
+		} else if len(txAcc) > 0 {
+			//是否是管理员帐户，管理员用户才可以查
+			if !t.isAdmin(stub, accName) && accName != txAcc {
+				return nil, mylog.Errorf("queryRackAlloc: %s can't query one acc.", accName)
+			}
+
+			//查询某一个账户的分配情况（由allocKey检索）
+			return t.getOneAccAllocTxRecds(stub, txAcc, begSeq, txCount, begTime, endTime)
 		} else {
+			//是否是管理员帐户，管理员用户才可以查
+			if !t.isAdmin(stub, accName) {
+				return nil, mylog.Errorf("queryRackAlloc: %s can't query rack.", accName)
+			}
+
+			//查询某一个货架的分配情况（由allocKey检索）
 			return t.getAllocTxRecds(stub, rackid, begSeq, txCount, begTime, endTime)
 		}
 
 	} else if function == "queryRackAllocCfg" {
+		if !t.isAdmin(stub, accName) {
+			return nil, mylog.Errorf("queryRackAllocCfg: %s can't query.", accName)
+		}
+
 		var argCount = fixedArgCount + 1
 		if len(args) < argCount {
 			return nil, mylog.Errorf("queryRackAllocCfg miss arg, got %d, need %d.", len(args), argCount)
@@ -599,7 +599,7 @@ func (t *KDALLOC) verifySign(stub shim.ChaincodeStubInterface, certificate []byt
 	return ok, err
 }
 
-func (t *KDALLOC) verifyIdentity(stub shim.ChaincodeStubInterface, ent *Entity, attrs *UserAttrs) (bool, error) {
+func (t *KDALLOC) verifyIdentity(stub shim.ChaincodeStubInterface, ent *AccountEntity, attrs *UserAttrs) (bool, error) {
 	//有时获取不到attr，这里做个判断
 	if len(attrs.UserName) > 0 && ent.User != attrs.UserName {
 		mylog.Errorf("verifyIdentity: user check failed(%s,%s).", ent.User, attrs.UserName)
@@ -644,9 +644,9 @@ func (t *KDALLOC) getUserAttrs(stub shim.ChaincodeStubInterface) (*UserAttrs, er
 	return &attrs, nil
 }
 
-func (t *KDALLOC) getEntity(stub shim.ChaincodeStubInterface, entName string) (*Entity, error) {
+func (t *KDALLOC) getEntity(stub shim.ChaincodeStubInterface, entName string) (*AccountEntity, error) {
 	var centerBankByte []byte
-	var cb Entity
+	var cb AccountEntity
 	var err error
 
 	centerBankByte, err = stub.GetState(entName)
@@ -682,7 +682,7 @@ func (t *KDALLOC) isEntityExists(stub shim.ChaincodeStubInterface, entName strin
 }
 
 //央行数据写入
-func (t *KDALLOC) setEntity(stub shim.ChaincodeStubInterface, cb *Entity) error {
+func (t *KDALLOC) setEntity(stub shim.ChaincodeStubInterface, cb *AccountEntity) error {
 
 	jsons, err := json.Marshal(cb)
 
@@ -707,7 +707,7 @@ const (
 
 func (t *KDALLOC) checkAccountName(accName string) error {
 	//会用':'作为分隔符分隔多个账户名，所以账户名不能含有':'
-	var invalidChars string = string(ALL_ACC_DELIM)
+	var invalidChars string = string(MULTI_STRING_DELIM)
 
 	if strings.ContainsAny(accName, invalidChars) {
 		mylog.Error("isAccountNameValid (acc=%s) failed.", accName)
@@ -725,10 +725,10 @@ func (t *KDALLOC) saveAccountName(stub shim.ChaincodeStubInterface, accName stri
 
 	var accs []byte
 	if accB == nil {
-		accs = append([]byte(accName), ALL_ACC_DELIM) //第一次添加accName，最后也要加上分隔符
+		accs = append([]byte(accName), MULTI_STRING_DELIM) //第一次添加accName，最后也要加上分隔符
 	} else {
 		accs = append(accB, []byte(accName)...)
-		accs = append(accs, ALL_ACC_DELIM)
+		accs = append(accs, MULTI_STRING_DELIM)
 	}
 
 	err = t.PutState_Ex(stub, ALL_ACC_KEY, accs)
@@ -760,7 +760,7 @@ func (t *KDALLOC) newAccount(stub shim.ChaincodeStubInterface, accName string, a
 		return nil, fmt.Errorf("account(%s) is eixsts.", accName)
 	}
 
-	var ent Entity
+	var ent AccountEntity
 	//var now = time.Now()
 
 	ent.EntID = accName
@@ -908,7 +908,8 @@ func (t *KDALLOC) setAllocEarnTx(stub shim.ChaincodeStubInterface, rackid, alloc
 	}
 	mylog.Debug("setAllocEarnTx return %s.", string(eatJson))
 
-	err = t.PutState_Ex(stub, t.getAllocTxKey(stub, rackid, seq), eatJson)
+	var txKey = t.getAllocTxKey(stub, rackid, seq)
+	err = t.PutState_Ex(stub, txKey, eatJson)
 	if err != nil {
 		return nil, mylog.Errorf("setAllocEarnTx  PutState_Ex failed.err=%s", err)
 	}
@@ -918,7 +919,65 @@ func (t *KDALLOC) setAllocEarnTx(stub shim.ChaincodeStubInterface, rackid, alloc
 		return nil, mylog.Errorf("setAllocEarnTx  setTransSeq failed.err=%s", err)
 	}
 
+	//记录每个账户的分成情况
+	//四种角色有可能是同一个人，所以判断一下，如果已保存过key，则不再保存
+	var checkMap = make(map[string]int)
+	err = t.setOneAccAllocEarnTx(stub, accs.Seller, txKey)
+	if err != nil {
+		return nil, mylog.Errorf("setAllocEarnTx  setOneAccAllocEarnTx(%s) failed.err=%s", accs.Seller, err)
+	}
+	checkMap[accs.Seller] = 0
+
+	if _, ok := checkMap[accs.Fielder]; !ok {
+		err = t.setOneAccAllocEarnTx(stub, accs.Fielder, txKey)
+		if err != nil {
+			return nil, mylog.Errorf("setAllocEarnTx  setOneAccAllocEarnTx(%s) failed.err=%s", accs.Fielder, err)
+		}
+		checkMap[accs.Fielder] = 0
+	}
+
+	if _, ok := checkMap[accs.Delivery]; !ok {
+		err = t.setOneAccAllocEarnTx(stub, accs.Delivery, txKey)
+		if err != nil {
+			return nil, mylog.Errorf("setAllocEarnTx  setOneAccAllocEarnTx(%s) failed.err=%s", accs.Delivery, err)
+		}
+		checkMap[accs.Delivery] = 0
+	}
+
+	if _, ok := checkMap[accs.Platform]; !ok {
+		err = t.setOneAccAllocEarnTx(stub, accs.Platform, txKey)
+		if err != nil {
+			return nil, mylog.Errorf("setAllocEarnTx  setOneAccAllocEarnTx(%s) failed.err=%s", accs.Platform, err)
+		}
+		checkMap[accs.Platform] = 0
+	}
+
 	return nil, nil
+}
+
+func (t *KDALLOC) setOneAccAllocEarnTx(stub shim.ChaincodeStubInterface, accName, txKey string) error {
+	var accTxKey = t.getOneAccAllocTxKey(accName)
+
+	txsB, err := stub.GetState(accTxKey)
+	if err != nil {
+		return mylog.Errorf("setOneAccAllocEarnTx: GetState err = %s", err)
+	}
+
+	var newTxsB []byte
+	if txsB == nil {
+		newTxsB = append([]byte(txKey), MULTI_STRING_DELIM) //第一次添加accName，最后也要加上分隔符
+	} else {
+		newTxsB = append(txsB, []byte(txKey)...)
+		newTxsB = append(newTxsB, MULTI_STRING_DELIM)
+	}
+
+	err = t.PutState_Ex(stub, accTxKey, newTxsB)
+	if err != nil {
+		mylog.Error("setOneAccAllocEarnTx PutState failed.err=%s", err)
+		return err
+	}
+
+	return nil
 }
 
 func (t *KDALLOC) getRolesAllocEarning(totalAmt int64, accs string, result map[string]int64) error {
@@ -985,6 +1044,10 @@ func (t *KDALLOC) getAllocTxKey(stub shim.ChaincodeStubInterface, rackid string,
 	return buf.String()
 }
 
+func (t *KDALLOC) getOneAccAllocTxKey(accName string) string {
+	return ACC_ALLOC_TX_PREFIX + accName
+}
+
 func (t *KDALLOC) getRackAllocPercentKey(rackid string) string {
 	return ALLOCPERCENT_PREFIX + rackid
 }
@@ -992,7 +1055,7 @@ func (t *KDALLOC) getGlobalRaciAllocPercentKey() string {
 	return GLOBAL_ALLOCPERCENT_KEY
 }
 
-func (t *KDALLOC) getOneAllocTxRecd(stub shim.ChaincodeStubInterface, rackid, allocKey string) ([]byte, error) {
+func (t *KDALLOC) getAllocTxRecdByKey(stub shim.ChaincodeStubInterface, rackid, allocKey string) ([]byte, error) {
 
 	var retTransInfo = []byte("[]") //默认为空数组。 因为和下面的查询所有记录使用同一个restful接口，所以这里也返回数组形式
 
@@ -1136,6 +1199,123 @@ func (t *KDALLOC) getAllocTxRecds(stub shim.ChaincodeStubInterface, rackid strin
 	}
 
 	return retTransInfo, nil
+}
+
+func (t *KDALLOC) getOneAccAllocTxRecds(stub shim.ChaincodeStubInterface, accName string, begIdx, count, begTime, endTime int64) ([]byte, error) {
+	var resultJson = []byte("[]") //默认为空数组
+	var accTxKey = t.getOneAccAllocTxKey(accName)
+
+	//begIdx从1开始，下面处理注意
+	if begIdx < 1 {
+		begIdx = 1
+	}
+	//endTime为负数，查询到最新时间
+	if endTime < 0 {
+		endTime = math.MaxInt64
+	}
+
+	if count == 0 {
+		mylog.Warn("getOneAccAllocTxRecds nothing to do(%d).", count)
+		return resultJson, nil
+	}
+	//count为负数，查询到最后
+	if count < 0 {
+		count = math.MaxInt64
+	}
+
+	txsB, err := stub.GetState(accTxKey)
+	if err != nil {
+		return nil, mylog.Errorf("getOneAccAllocTxRecds: GetState(accName=%s) err = %s", accName, err)
+	}
+	if txsB == nil {
+		return resultJson, nil
+	}
+
+	var qaeatArr []QueryAccEarningAllocTx = []QueryAccEarningAllocTx{}
+	var buf = bytes.NewBuffer(txsB)
+	var oneStringB []byte
+	var oneString string
+	var loop int64 = 0
+	var cnt int64 = 0
+	for {
+		if cnt >= count {
+			break
+		}
+		oneStringB, err = buf.ReadBytes(MULTI_STRING_DELIM)
+		if err != nil {
+			if err == io.EOF {
+				mylog.Debug("getOneAccAllocTxRecds proc %d recds, end.", loop)
+				break
+			}
+			return nil, mylog.Errorf("getOneAccAllocTxRecds ReadBytes failed. last=%s, err=%s", string(oneStringB), err)
+		}
+		loop++
+		if begIdx > loop {
+			continue
+		}
+
+		oneString = string(oneStringB[:len(oneStringB)-1]) //去掉末尾的分隔符
+		var pqaeat *QueryAccEarningAllocTx
+		pqaeat, err = t.procOneAccAllocTx(stub, oneString, accName)
+		if err != nil {
+			return nil, mylog.Errorf("getOneAccAllocTxRecds walker failed. acc=%s, err=%s", accName, err)
+		}
+		if pqaeat.DateTime >= begTime && pqaeat.DateTime <= endTime {
+			pqaeat.Serail = loop
+			qaeatArr = append(qaeatArr, *pqaeat)
+			cnt++
+		}
+	}
+
+	resultJson, err = json.Marshal(qaeatArr)
+	if err != nil {
+		return nil, mylog.Errorf("getOneAccAllocTxRecds Marshal failed. acc=%s, err=%s", accName, err)
+	}
+
+	return resultJson, nil
+}
+
+func (t *KDALLOC) procOneAccAllocTx(stub shim.ChaincodeStubInterface, txKey, accName string) (*QueryAccEarningAllocTx, error) {
+	eat, err := t.getAllocTxRecdEntity(stub, txKey)
+	if err != nil {
+		return nil, mylog.Errorf("procOneAccAllocTx getAllocTxRecdEntity failed. txKey=%s, err=%s", txKey, err)
+	}
+
+	var qaeat QueryAccEarningAllocTx
+	qaeat.AccName = accName
+	qaeat.DateTime = eat.DateTime
+	qaeat.Rackid = eat.Rackid
+	qaeat.TotalAmt = eat.TotalAmt
+	qaeat.GlobalSerial = eat.GlobalSerial
+	qaeat.RolesPercent = eat.RolesPercent
+	qaeat.RoleAmountMap = make(map[string]int64)
+	for role, accAmtMap := range eat.AmountMap {
+		for acc, amt := range accAmtMap {
+			if acc == accName {
+				qaeat.RoleAmountMap[role] += amt //防止每个角色的账户列表中含有同样的账户？
+			}
+		}
+	}
+
+	return &qaeat, nil
+}
+
+func (t *KDALLOC) getAllocTxRecdEntity(stub shim.ChaincodeStubInterface, txKey string) (*EarningAllocTx, error) {
+	txB, err := stub.GetState(txKey)
+	if err != nil {
+		return nil, mylog.Errorf("getAllocTxRecdEntity GetState(txKey=%s) failed. err=%s", txKey, err)
+	}
+	if txB == nil {
+		return nil, mylog.Errorf("getAllocTxRecdEntity GetState(txKey=%s) nil.", txKey)
+	}
+
+	var eat EarningAllocTx
+	err = json.Unmarshal(txB, &eat)
+	if err != nil {
+		return nil, mylog.Errorf("getAllocTxRecdEntity Unmarshal(txKey=%s) failed. err=%s", txKey, err)
+	}
+
+	return &eat, nil
 }
 
 func (t *KDALLOC) isAdmin(stub shim.ChaincodeStubInterface, accName string) bool {

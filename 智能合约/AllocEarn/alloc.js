@@ -334,7 +334,7 @@ function handle_query(params, res, req) {
                 var rackid = params.rid
                 var allocKey = params.ak
                 if (allocKey == undefined) 
-                    allocKey = ""  //查询所有分配情况
+                    allocKey = ""  //有值说明查询某次的分陪情况
 
                 var begSeq = params.bsq;
                 if (begSeq == undefined) 
@@ -352,12 +352,19 @@ function handle_query(params, res, req) {
                 if (endTime == undefined) 
                     endTime = "-1"  //-1表示查询到最新的时间
 
-                queryRequest.args.push(rackid, allocKey, begSeq, count, begTime, endTime)
+                var qAcc = params.qacc;
+                if (qAcc == undefined) 
+                    qAcc = ""    //有值说明查询某个账户的分配情况
+                
+                queryRequest.args.push(rackid, allocKey, begSeq, count, begTime, endTime, qAcc)
                 
             } else if (func == "queryRackAllocCfg") {
                 var rackid = params.rid
                 queryRequest.args.push(rackid)
                 
+            } else if (func == "queryState" ) {
+                var key = params.key
+                queryRequest.args.push(key)
             }
             
             // query
