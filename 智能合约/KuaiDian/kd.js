@@ -138,8 +138,8 @@ function handle_deploy(params, res, req){
             
             var deployRequest = {
                 fcn: "init",
-                args: [Date.now().toString()],
-                chaincodePath: "/usr/local/llwork/KuaiDian/ccpath",
+                args: [],  //deploy时不要加参数，否则每次部署的chainCodeId不一致
+                chaincodePath: "/usr/local/llwork/kuaidian/ccpath",
                 confidential: isConfidential,
             };
             
@@ -190,6 +190,8 @@ function handle_deploy(params, res, req){
 
 
 function handle_invoke(params, res, req) { 
+    logger.info("Enter Invoke")
+
     var body = {
         code : retCode.OK,
         msg: "OK",
@@ -197,10 +199,11 @@ function handle_invoke(params, res, req) {
     };
     
     var enrollUser = params.usr;
+    var func = params.func;
     
     chain.getUser(enrollUser, function (err, user) {
         if (err || !user.isEnrolled()) {
-            logger.error("invoke: failed to get user: %s ",enrollUser, err);
+            logger.error("invoke(%s): failed to get user: %s ", func, enrollUser, err);
             body.code=retCode.GETUSER_ERR;
             body.msg="tx error"
             res.send(body) 
@@ -209,7 +212,7 @@ function handle_invoke(params, res, req) {
 
         common.getCert(keyValStorePath, enrollUser, function (err, TCert) {
             if (err) {
-                logger.error("invoke: failed to getUserCert: %s. err=%s",enrollUser, err);
+                logger.error("invoke(%s): failed to getUserCert: %s. err=%s", func, enrollUser, err);
                 body.code=retCode.GETUSERCERT_ERR;
                 body.msg="tx error"
                 res.send(body) 
@@ -217,7 +220,6 @@ function handle_invoke(params, res, req) {
             }
 
             var ccId = params.ccId;
-            var func = params.func;
             var acc = params.acc;
             var invokeRequest = {
                 chaincodeID: ccId,
@@ -233,7 +235,7 @@ function handle_invoke(params, res, req) {
             } else if (func == "issue") {
                 var amt = params.amt;
                 invokeRequest.args.push(amt)
-                
+
             } else if (func == "transefer") {
                 var reacc = params.reacc;
                 var amt = params.amt;
@@ -243,12 +245,16 @@ function handle_invoke(params, res, req) {
                 var description = params.desc;
                 if (description == undefined)
                     description = ""
-                invokeRequest.args.push(reacc, transType, description, amt)
+                var sameEntSaveTrans = params.sest; //如果转出和转入账户相同，是否记录交易 0表示不记录 1表示记录
+                if (sameEntSaveTrans == undefined)
+                    sameEntSaveTrans = "1" //默认记录
+
+                invokeRequest.args.push(reacc, transType, description, amt, sameEntSaveTrans)
             } else if (func == "updateEnv") {
                 var key = params.key;
                 var value = params.val;
                 invokeRequest.args.push(key, value)
-            }         
+            }
 
             // invoke
             var tx = user.invoke(invokeRequest);
@@ -283,6 +289,8 @@ function handle_invoke(params, res, req) {
                 //去掉无用的信息,不打印
                 invokeRequest.chaincodeID = "*"
                 invokeRequest.userCert = "*"
+                if (func == "account" || func == "accountCB")
+                    invokeRequest.args[invokeRequest.args.length - 1] = "*"
                 logger.error("Invoke failed : request=%j, error=%j",invokeRequest,error);
             });           
         });
@@ -296,19 +304,27 @@ function handle_query(params, res, req) {
         result: ""
     };
 
+    logger.info("Enter Query")
+    
     var enrollUser = params.usr;  
     var func = params.func;
 
     chain.getUser(enrollUser, function (err, user) {
         if (err || !user.isEnrolled()) {
-            //如果是查询账户是否存在，这里返回不存在"0"
-            if (func == "isAccExists") {
+            //获取用户失败，或者用户没有登陆。一般情况是没有注册该用户。
+
+            if (func == "isAccExists") { //如果是查询账户是否存在，这里返回不存在"0"
+                body.result = "0"
+                res.send(body)
+                return
+            } else if (func == "getBalance") { //如果是查询账户余额，这里返回"0"
+                logger.warn("Query(%s): getUser failed, user %s not exsit.", func, enrollUser)
                 body.result = "0"
                 res.send(body)
                 return
             }
 
-            logger.error("Query: failed to get user: %s",err);
+            logger.error("Query(%s): failed to get user %s, err=%s", func, enrollUser, err);
             body.code=retCode.GETUSER_ERR;
             body.msg="tx error"
             res.send(body) 
@@ -317,7 +333,20 @@ function handle_query(params, res, req) {
 
         common.getCert(keyValStorePath, enrollUser, function (err, TCert) {
             if (err) {
-                logger.error("Query: failed to getUserCert: %s",enrollUser);
+                //目前发生错误的情况为证书文件不存在，是因为证书认证这个功能没加以前，就存在了一些用户 ，所以上面的getUser成功，而这里失败。 
+                //失败时，暂时特殊处理isAccExists和getBalance两个函数
+                if (func == "isAccExists") { //如果是查询账户是否存在，这里返回不存在"0"
+                    body.result = "0"
+                    res.send(body)
+                    return
+                } else if (func == "getBalance") { //如果是查询账户余额，这里返回"0"
+                    logger.warn("Query(%s): getCert failed, user %s not exsit.", func, enrollUser)
+                    body.result = "0"
+                    res.send(body)
+                    return
+                }
+            
+                logger.error("Query(%s): failed to getUserCert %s, err=%s", func, enrollUser, err);
                 body.code=retCode.GETUSERCERT_ERR;
                 body.msg="tx error"
                 res.send(body) 
@@ -329,7 +358,7 @@ function handle_query(params, res, req) {
             var ccId = params.ccId;
             
             var acc = params.acc;
-            if (acc ==undefined)  //acc可能不需要
+            if (acc == undefined)  //acc可能不需要
                 acc = ""
 
 
@@ -370,7 +399,8 @@ function handle_query(params, res, req) {
                 queryRequest.args.push(begSeq, count, translvl, begTime, endTime, qAcc)
                 
             } else if (func == "queryState"){
-                queryRequest.args.push(params.key)
+                var key = params.key
+                queryRequest.args.push(key)
             }
             
             // query
@@ -422,6 +452,8 @@ function handle_query(params, res, req) {
 
 function handle_register(params, res, req) { 
     var userName = params.usr;
+
+    logger.info("Enter Register")
 
     var body = {
         code : retCode.OK,

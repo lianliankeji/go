@@ -24,23 +24,28 @@ const (
 	ENT_PROJECT    = 3
 	ENT_PERSON     = 4
 
+	TRANS_PAY    = 0 //交易支出
+	TRANS_INCOME = 1 //交易收入
+
 	ATTR_USRROLE = "usrrole"
 	ATTR_USRNAME = "usrname"
 	ATTR_USRTYPE = "usrtype"
 
-	TRANSSEQ_PREFIX      = "__~!@#@!~_kd_transSeqPre__"         //序列号生成器的key的前缀。使用的是worldState存储
-	TRANSINFO_PREFIX     = "__~!@#@!~_kd_transInfoPre__"        //交易信息的key的前缀。使用的是worldState存储
-	CENTERBANK_ACC_KEY   = "__~!@#@!~_kd_centerBankAccKey__#$%" //央行账户的key。使用的是worldState存储
-	ALL_ACC_KEY          = "__~!@#@!~_kd_allAccInfo__#$%"       //存储所有账户名的key。使用的是worldState存储
-	ONE_ACC_TRANS_PREFIX = "__~!@#@!~_kd_oneAccTransPre__"      //存储单个用户的交易的key前缀
+	//因为目前账户entity的key是账户名，为了防止自己定义的如下key和账户名冲突，所以下面的key里都含有特殊字符
+	TRANSSEQ_PREFIX      = "!kd@txSeqPre~"          //序列号生成器的key的前缀。使用的是worldState存储
+	TRANSINFO_PREFIX     = "!kd@txInfoPre~"         //交易信息的key的前缀。使用的是worldState存储
+	ONE_ACC_TRANS_PREFIX = "!kd@oneAccTxPre~"       //存储单个账户的交易的key前缀
+	UER_ENTITY_PREFIX    = "!kd@usrEntPre~"         //存储某个用户的用户信息的key前缀。目前用户名和账户名相同，而账户entity的key是账户名，所以用户entity加个前缀区分
+	CENTERBANK_ACC_KEY   = "!kd@centerBankAccKey@!" //央行账户的key。使用的是worldState存储
+	ALL_ACC_KEY          = "!kd@allAccInfoKey@!"    //存储所有账户名的key。使用的是worldState存储
 
 	MULTI_STRING_DELIM = ':' //多个string的分隔符
 )
 
 type UserEntity struct {
-	EntID       string   `json:"id"`  //银行/企业/项目/个人ID
-	AccList     []string `json:"al"`  //此user的账户列表
+	EntID       string   `json:"id"`  //ID
 	AuthAccList []string `json:"aal"` //此user授权给了哪些账户
+	//AccList     []string `json:"al"`  //此user的账户列表   //目前一个用户就一个账户，暂时不用这个字段
 }
 
 //账户信息Entity
@@ -70,8 +75,9 @@ type QueryTrans struct {
 
 type PubTrans struct {
 	FromID       string `json:"fid"`  //发送方ID
-	ToID         string `json:"tid"`  //接收方ID
+	TransFlag    int    `json:"tsf"`  //交易标志，收入还是支出
 	Amount       int64  `json:"amt"`  //交易数额
+	ToID         string `json:"tid"`  //接收方ID
 	TransType    string `json:"tstp"` //交易类型，前端传入，透传
 	Description  string `json:"desc"` //交易描述
 	TxID         string `json:"txid"` //交易ID
@@ -95,10 +101,17 @@ type QueryBalance struct {
 	Message      string `json:"message"`      //对账附件信息
 }
 
+var ErrNilEntity = errors.New("nil entity.")
+
+/*
+   注意点：
+   1、 存储数量较少的字符串数组时，可以使用[]string类型；如果字符串数组的长度可能会非常庞大，则不要使用[]string类型,
+       可以使用[]byte直接存放在worldState中，每个字符串之间使用某种字符例如':'来分割，读取时使用bytes.Buffer.ReadBytes(':')来获取每一个字符串。
+       否则如果用[]string类型虽然处理上比较方便（marshal和unmarshal转换格式），但是unmarshal操作在记录量级较大时非常耗费时间，影响响应速度。
+       本合约中，每个用户的交易记录就使用[]byte直接存放的方式（没有单独记录用户的交易，而是把全局交易的key记录下来），因为交易记录可能会非常多。
+*/
 type KD struct {
 }
-
-var ErrNilEntity = errors.New("nil entity.")
 
 func (t *KD) Init(stub shim.ChaincodeStubInterface, function string, args []string) ([]byte, error) {
 	mylog.Debug("Enter Init")
@@ -121,12 +134,11 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 
 	var userName = args[0]
 	var accName = args[1]
-	var times int64 = 0
+	var invokeTime int64 = 0
 
-	times, err = strconv.ParseInt(args[2], 0, 64)
+	invokeTime, err = strconv.ParseInt(args[2], 0, 64)
 	if err != nil {
-		mylog.Error("Invoke convert times(%s) failed. err=%s", args[2], err)
-		return nil, errors.New("Invoke convert times failed.")
+		return nil, mylog.Errorf("Invoke convert invokeTime(%s) failed. err=%s", args[2], err)
 	}
 
 	var userAttrs *UserAttrs
@@ -185,7 +197,7 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 			}
 		}
 
-		return t.issueCoin(stub, accName, issueAmount, times)
+		return t.issueCoin(stub, accName, issueAmount, invokeTime)
 
 	} else if function == "account" {
 		mylog.Debug("Enter account")
@@ -205,7 +217,7 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 
 		usrType = 0
 
-		return t.newAccount(stub, accName, usrType, userName, userCert, times, false)
+		return t.newAccount(stub, accName, usrType, userName, userCert, invokeTime, false)
 
 	} else if function == "accountCB" {
 		mylog.Debug("Enter accountCB")
@@ -235,7 +247,7 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 			return nil, errors.New("Invoke(accountCB) account exists.")
 		}
 
-		_, err = t.newAccount(stub, accName, usrType, userName, userCert, times, true)
+		_, err = t.newAccount(stub, accName, usrType, userName, userCert, invokeTime, true)
 		if err != nil {
 			mylog.Error("Invoke(accountCB) openAccount failed. err=%s", err)
 			return nil, errors.New("Invoke(accountCB) openAccount failed.")
@@ -250,7 +262,7 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 		return nil, nil
 
 	} else if function == "transefer" {
-		var argCount = fixedArgCount + 4
+		var argCount = fixedArgCount + 5
 		if len(args) < argCount {
 			mylog.Error("Invoke(transefer) miss arg, got %d, at least need %d.", len(args), argCount)
 			return nil, errors.New("Invoke(transefer) miss arg.")
@@ -267,7 +279,13 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 		}
 		mylog.Debug("transAmount= %v", transAmount)
 
-		return t.transferCoin(stub, accName, toAcc, transType, description, transAmount, times)
+		var sameEntSaveTrans = args[fixedArgCount+4] //如果转出和转入账户相同，是否记录交易 0表示不记录 1表示记录
+		var sameEntSaveTransFlag bool = false
+		if sameEntSaveTrans == "1" {
+			sameEntSaveTransFlag = true
+		}
+
+		return t.transferCoin(stub, accName, toAcc, transType, description, transAmount, invokeTime, sameEntSaveTransFlag)
 
 	} else if function == "updateCert" {
 		if !t.isAdmin(stub, accName) {
@@ -377,8 +395,9 @@ func (t *KD) Query(stub shim.ChaincodeStubInterface, function string, args []str
 	userEnt, err = t.getEntity(stub, accName)
 	if err != nil {
 		if err == ErrNilEntity {
-			//如果是查询账户是否存在，如果是空，返回不存在
-			if function == "isAccExists" {
+			if function == "isAccExists" { //如果是查询账户是否存在，如果是空，返回不存在
+				return []byte("0"), nil
+			} else if function == "getBalance" { //如果是查询余额，如果账户不存，返回0
 				return []byte("0"), nil
 			}
 		}
@@ -404,7 +423,7 @@ func (t *KD) Query(stub shim.ChaincodeStubInterface, function string, args []str
 		mylog.Debug("retValue=%v, %s", retValue, string(retValue))
 
 		return retValue, nil
-	} else if function == "getTransInfo" {
+	} else if function == "getTransInfo" { //查询交易记录
 		var argCount = fixedArgCount + 6
 		if len(args) < argCount {
 			mylog.Error("queryTx miss arg, got %d, need %d.", len(args), argCount)
@@ -462,14 +481,14 @@ func (t *KD) Query(stub shim.ChaincodeStubInterface, function string, args []str
 			return t.queryAccTransInfos(stub, txAcc, begSeq, txCount, begTime, endTime)
 		}
 
-	} else if function == "checkAllAmt" { //所有账户中钱是否正确
+	} else if function == "getAllAccAmt" { //所有账户中钱是否正确
 		//是否是管理员帐户，管理员用户才可以查
 		if !t.isAdmin(stub, accName) {
 			return nil, mylog.Errorf("%s can't query balance.", accName)
 		}
 
-		return t.checkAllAmt(stub)
-	} else if function == "queryState" {
+		return t.getAllAccAmt(stub)
+	} else if function == "queryState" { //某个state的值
 		//是否是管理员帐户，管理员用户才可以查
 		if !t.isAdmin(stub, accName) {
 			return nil, mylog.Errorf("%s can't query state.", accName)
@@ -490,7 +509,7 @@ func (t *KD) Query(stub shim.ChaincodeStubInterface, function string, args []str
 		}
 
 		return retValues, nil
-	} else if function == "isAccExists" {
+	} else if function == "isAccExists" { //账户是否存在
 		accExist, err := t.isEntityExists(stub, accName)
 		if err != nil {
 			mylog.Error("accExists: isEntityExists (id=%s) failed. err=%s", accName, err)
@@ -627,6 +646,10 @@ func (t *KD) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName string
 		mylog.Warn("queryAccTransInfos nothing to do(%d).", count)
 		return retTransInfo, nil
 	}
+	//count为负数，查询到最后
+	if count < 0 {
+		count = math.MaxInt64
+	}
 
 	infoB, err := stub.GetState(t.getOneAccTransKey(accName))
 	if err != nil {
@@ -635,37 +658,41 @@ func (t *KD) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName string
 	if infoB == nil {
 		return retTransInfo, nil
 	}
-	var allTransList []string
-	err = json.Unmarshal(infoB, &allTransList)
-	if err != nil {
-		return nil, mylog.Errorf("queryAccTransInfos(%s) Unmarshal failed.err=%s", accName, err)
-	}
 
-	//begIdx是从1开始，数组从0开始
-	begIdx = begIdx - 1
-	var allLen = int64(len(allTransList))
-	if begIdx >= allLen {
-		mylog.Warn("queryAccTransInfos(%s) nothing to do(%d,%d).", accName, begIdx, allLen)
-		return retTransInfo, nil
-	}
-	if count < 0 {
-		count = allLen - begIdx
-	}
-
-	var transArr []QueryTrans = []QueryTrans{} //初始化为空，即使下面没查到数据也会返回'[]'
+	var transArr []QueryTrans = []QueryTrans{} //初始化为空数组，即使下面没查到数据也会返回'[]'
 	var loopCnt int64 = 0
-	for i := begIdx; i < allLen; i++ {
+	var trans *QueryTrans
+	var buf = bytes.NewBuffer(infoB)
+	var oneStringB []byte
+	var oneString string
+	var loop int64 = 0
+	for {
 		if loopCnt >= count {
 			break
 		}
-		trans, err := t.getQueryTransInfo(stub, allTransList[i])
+		oneStringB, err = buf.ReadBytes(MULTI_STRING_DELIM)
+		if err != nil {
+			if err == io.EOF {
+				mylog.Debug("queryAccTransInfos proc %d recds, end.", loop)
+				break
+			}
+			return nil, mylog.Errorf("queryAccTransInfos ReadBytes failed. last=%s, err=%s", string(oneStringB), err)
+		}
+		loop++
+		if begIdx > loop {
+			continue
+		}
+
+		oneString = string(oneStringB[:len(oneStringB)-1]) //去掉末尾的分隔符
+
+		trans, err = t.getQueryTransInfo(stub, oneString)
 		if err != nil {
 			mylog.Error("queryAccTransInfos(%s) getQueryTransInfo failed, err=%s.", accName, err)
 			continue
 		}
 		var qTrans QueryTrans
 		if trans.Time >= begTime && trans.Time <= endTime {
-			qTrans.Serial = int64(i + 1)
+			qTrans.Serial = loop
 			qTrans.PubTrans = trans.PubTrans
 			transArr = append(transArr, qTrans)
 			loopCnt++
@@ -680,7 +707,7 @@ func (t *KD) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName string
 	return retTransInfo, nil
 }
 
-func (t *KD) checkAllAmt(stub shim.ChaincodeStubInterface) ([]byte, error) {
+func (t *KD) getAllAccAmt(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	var qb QueryBalance
 	qb.IssueAmount = 0
 	qb.AccSumAmount = 0
@@ -688,23 +715,23 @@ func (t *KD) checkAllAmt(stub shim.ChaincodeStubInterface) ([]byte, error) {
 
 	accsB, err := stub.GetState(ALL_ACC_KEY)
 	if err != nil {
-		mylog.Error("checkAllAmt GetState failed. err=%s", err)
-		return nil, errors.New("checkAllAmt GetState failed.")
+		mylog.Error("getAllAccAmt GetState failed. err=%s", err)
+		return nil, errors.New("getAllAccAmt GetState failed.")
 	}
 	if accsB != nil {
 
 		cbAccB, err := t.getCenterBankAcc(stub)
 		if err != nil {
-			mylog.Error("checkAllAmt getCenterBankAcc failed. err=%s", err)
-			return nil, errors.New("checkAllAmt getCenterBankAcc failed.")
+			mylog.Error("getAllAccAmt getCenterBankAcc failed. err=%s", err)
+			return nil, errors.New("getAllAccAmt getCenterBankAcc failed.")
 		}
 		if cbAccB == nil {
 			qb.Message += "none centerBank;"
 		} else {
 			cbEnt, err := t.getEntity(stub, string(cbAccB))
 			if err != nil {
-				mylog.Error("checkAllAmt getCenterBankAcc failed. err=%s", err)
-				return nil, errors.New("checkAllAmt getCenterBankAcc failed.")
+				mylog.Error("getAllAccAmt getCenterBankAcc failed. err=%s", err)
+				return nil, errors.New("getAllAccAmt getCenterBankAcc failed.")
 			}
 			qb.IssueAmount = cbEnt.TotalAmount - cbEnt.RestAmount
 		}
@@ -718,7 +745,7 @@ func (t *KD) checkAllAmt(stub shim.ChaincodeStubInterface) ([]byte, error) {
 				if err == io.EOF {
 					break
 				} else {
-					mylog.Error("checkAllAmt ReadBytes failed. err=%s", err)
+					mylog.Error("getAllAccAmt ReadBytes failed. err=%s", err)
 					continue
 				}
 			}
@@ -727,7 +754,7 @@ func (t *KD) checkAllAmt(stub shim.ChaincodeStubInterface) ([]byte, error) {
 
 			ent, err = t.getEntity(stub, string(acc))
 			if err != nil {
-				mylog.Error("checkAllAmt getEntity(%s) failed. err=%s", string(acc), err)
+				mylog.Error("getAllAccAmt getEntity(%s) failed. err=%s", string(acc), err)
 				qb.Message += fmt.Sprintf("get account(%s) info failed;", string(acc))
 				continue
 			}
@@ -737,8 +764,8 @@ func (t *KD) checkAllAmt(stub shim.ChaincodeStubInterface) ([]byte, error) {
 
 	retValue, err := json.Marshal(qb)
 	if err != nil {
-		mylog.Error("checkAllAmt Marshal failed. err=%s", err)
-		return nil, errors.New("checkAllAmt Marshal failed.")
+		mylog.Error("getAllAccAmt Marshal failed. err=%s", err)
+		return nil, errors.New("getAllAccAmt Marshal failed.")
 	}
 
 	return retValue, nil
@@ -886,7 +913,7 @@ func (t *KD) setEntity(stub shim.ChaincodeStubInterface, cb *AccountEntity) erro
 }
 
 //发行
-func (t *KD) issueCoin(stub shim.ChaincodeStubInterface, cbID string, issueAmount, times int64) ([]byte, error) {
+func (t *KD) issueCoin(stub shim.ChaincodeStubInterface, cbID string, issueAmount, issueTime int64) ([]byte, error) {
 	mylog.Debug("Enter issueCoin")
 
 	var err error
@@ -911,8 +938,7 @@ func (t *KD) issueCoin(stub shim.ChaincodeStubInterface, cbID string, issueAmoun
 
 	err = t.setEntity(stub, cb)
 	if err != nil {
-		mylog.Error("setCenterBank failed. err=%s", err)
-		return nil, errors.New("setCenterBank failed.")
+		return nil, mylog.Errorf("issue: setCenterBank failed. err=%s", err)
 	}
 
 	//虚拟一个超级账户，给央行发行货币。因为给央行发行货币，是不需要转账的源头的
@@ -923,42 +949,60 @@ func (t *KD) issueCoin(stub shim.ChaincodeStubInterface, cbID string, issueAmoun
 	fromEntity.TotalAmount = math.MaxInt64
 	fromEntity.Owner = "fanxiaotian"
 
-	t.recordTranse(stub, &fromEntity, cb, "issue", "center bank issue coin.", issueAmount, times)
+	//这里只记录一下央行的收入，不记录支出
+	err = t.recordTranse(stub, cb, &fromEntity, TRANS_INCOME, "issue", "center bank issue coin.", issueAmount, issueTime)
+	if err != nil {
+		return nil, mylog.Errorf("issue: recordTranse failed. err=%s", err)
+	}
 
 	return nil, nil
 }
 
 //转账
-func (t *KD) transferCoin(stub shim.ChaincodeStubInterface, from, to, transType, description string, amount, times int64) ([]byte, error) {
+func (t *KD) transferCoin(stub shim.ChaincodeStubInterface, from, to, transType, description string, amount, transeTime int64, sameEntSaveTrans bool) ([]byte, error) {
 	mylog.Debug("Enter transferCoin")
 
 	var err error
 
 	if amount <= 0 {
-		mylog.Error("transferCoin failed. invalid amount(%d)", amount)
-		return nil, errors.New("transferCoin failed. invalid amount.")
+		return nil, mylog.Errorf("transferCoin failed. invalid amount(%d)", amount)
 	}
-	if from == to {
-		mylog.Error("transferCoin from equals to.")
-		return nil, errors.New("transferCoin from equals to.")
+
+	//如果账户相同，并且账户相同时不需要记录交易，直接返回
+	if from == to && !sameEntSaveTrans {
+		mylog.Warn("transferCoin from equals to.")
+		return nil, nil
 	}
 
 	var fromEntity, toEntity *AccountEntity
 	fromEntity, err = t.getEntity(stub, from)
 	if err != nil {
-		mylog.Error("getEntity(id=%s) failed. err=%s", from, err)
-		return nil, errors.New("getEntity from failed.")
+		return nil, mylog.Errorf("getEntity(id=%s) failed. err=%s", from, err)
 	}
 	toEntity, err = t.getEntity(stub, to)
 	if err != nil {
-		mylog.Error("getEntity(id=%s) failed. err=%s", to, err)
-		return nil, errors.New("getEntity to failed.")
+		return nil, mylog.Errorf("getEntity(id=%s) failed. err=%s", to, err)
 	}
 
 	if fromEntity.RestAmount < amount {
-		mylog.Error("fromEntity(id=%s) restAmount not enough.", from)
-		return nil, errors.New("fromEntity restAmount not enough.")
+		return nil, mylog.Errorf("fromEntity(id=%s) restAmount not enough.", from)
 	}
+
+	//如果账户相同，并且账户相同时需要记录交易，交易并返回
+	if from == to && sameEntSaveTrans {
+		err = t.recordTranse(stub, fromEntity, toEntity, TRANS_PAY, transType, description, amount, transeTime)
+		if err != nil {
+			return nil, mylog.Errorf("setEntity recordTranse fromEntity(id=%s) failed. err=%s", from, err)
+		}
+
+		err = t.recordTranse(stub, toEntity, fromEntity, TRANS_INCOME, transType, description, amount, transeTime)
+		if err != nil {
+			return nil, mylog.Errorf("setEntity recordTranse fromEntity(id=%s) failed. err=%s", from, err)
+		}
+		return nil, nil
+	}
+
+	//账户相同时为什么单独处理？  因为如果走了下面的流程，setEntity两次同一个账户，会导致账户余额变化。 除非在计算并设置完fromEntity之后，再获取一下toEntity，再计算toEntity，这样感觉太呆了
 
 	mylog.Debug("fromEntity before= %v", fromEntity)
 	mylog.Debug("toEntity before= %v", toEntity)
@@ -972,16 +1016,24 @@ func (t *KD) transferCoin(stub shim.ChaincodeStubInterface, from, to, transType,
 
 	err = t.setEntity(stub, fromEntity)
 	if err != nil {
-		mylog.Error("setEntity of fromEntity(id=%s) failed. err=%s", from, err)
-		return nil, errors.New("setEntity of from failed.")
-	}
-	err = t.setEntity(stub, toEntity)
-	if err != nil {
-		mylog.Error("setEntity of toEntity(id=%s) failed. err=%s", to, err)
-		return nil, errors.New("setEntity of to failed.")
+		return nil, mylog.Errorf("setEntity of fromEntity(id=%s) failed. err=%s", from, err)
 	}
 
-	err = t.recordTranse(stub, fromEntity, toEntity, transType, description, amount, times)
+	err = t.recordTranse(stub, fromEntity, toEntity, TRANS_PAY, transType, description, amount, transeTime)
+	if err != nil {
+		return nil, mylog.Errorf("setEntity recordTranse fromEntity(id=%s) failed. err=%s", from, err)
+	}
+
+	err = t.setEntity(stub, toEntity)
+	if err != nil {
+		return nil, mylog.Errorf("setEntity of toEntity(id=%s) failed. err=%s", to, err)
+	}
+
+	//两个账户的收入支出都记录交易
+	err = t.recordTranse(stub, toEntity, fromEntity, TRANS_INCOME, transType, description, amount, transeTime)
+	if err != nil {
+		return nil, mylog.Errorf("setEntity recordTranse fromEntity(id=%s) failed. err=%s", from, err)
+	}
 
 	return nil, err
 }
@@ -992,13 +1044,14 @@ const (
 )
 
 //记录交易。目前交易分为两种：一种是和央行打交道的，包括央行发行货币、央行给项目或企业转帐，此类交易普通用户不能查询；另一种是项目、企业、个人间互相转账，此类交易普通用户能查询
-func (t *KD) recordTranse(stub shim.ChaincodeStubInterface, fromEnt, toEnt *AccountEntity, transType, description string, amount, times int64) error {
+func (t *KD) recordTranse(stub shim.ChaincodeStubInterface, fromEnt, toEnt *AccountEntity, incomePayFlag int, transType, description string, amount, times int64) error {
 	var transInfo Transaction
 	//var now = time.Now()
 
 	transInfo.FromID = fromEnt.EntID
 	transInfo.FromType = fromEnt.EntType
 	transInfo.ToID = toEnt.EntID
+	transInfo.TransFlag = incomePayFlag
 	transInfo.ToType = toEnt.EntType
 	//transInfo.Time = now.Unix()*1000 + int64(now.Nanosecond()/1000000) //单位毫秒
 	transInfo.Time = times
@@ -1088,8 +1141,10 @@ func (t *KD) newAccount(stub shim.ChaincodeStubInterface, accName string, accTyp
 	}
 
 	if accExist {
-		mylog.Warn("account (id=%s) failed, already exists.", accName)
-		return nil, fmt.Errorf("account(%s) is eixsts.", accName)
+		/*  账户已存在时这里不返回错误。目前前端保证账户的唯一性，如果这里返回错误，那么前端需要再调用一次查询账户是否存在的接口，速度会慢一点
+		return nil, mylog.Errorf("account (id=%s) failed, already exists.", accName)
+		*/
+		return nil, nil
 	}
 
 	var ent AccountEntity
@@ -1106,8 +1161,7 @@ func (t *KD) newAccount(stub shim.ChaincodeStubInterface, accName string, accTyp
 
 	err = t.setEntity(stub, &ent)
 	if err != nil {
-		mylog.Error("openAccount setEntity (id=%s) failed. err=%s", accName, err)
-		return nil, errors.New("openAccount setEntity failed.")
+		return nil, mylog.Errorf("openAccount setEntity (id=%s) failed. err=%s", accName, err)
 	}
 
 	mylog.Debug("openAccount success: %v", ent)
@@ -1115,9 +1169,12 @@ func (t *KD) newAccount(stub shim.ChaincodeStubInterface, accName string, accTyp
 	//央行账户此处不保存
 	if !isCBAcc {
 		err = t.saveAccountName(stub, accName)
+		if err != nil {
+			return nil, mylog.Errorf("openAccount saveAccountName (id=%s) failed. err=%s", accName, err)
+		}
 	}
 
-	return nil, err
+	return nil, nil
 }
 
 var centerBankAccCache []byte = nil
@@ -1227,14 +1284,21 @@ func (t *KD) setTransInfo(stub shim.ChaincodeStubInterface, info *Transaction) e
 		return errors.New("setTransInfo PutState failed.")
 	}
 
-	//from和to账户都记录一次
+	/*
+		//from和to账户都记录一次，因为两个账户的交易记录只有一条
+		err = t.setOneAccTransInfo(stub, info.FromID, putKey)
+		if err != nil {
+			return mylog.Errorf("setTransInfo setOneAccTransInfo(%s) failed. err=%s", info.FromID, err)
+		}
+		err = t.setOneAccTransInfo(stub, info.ToID, putKey)
+		if err != nil {
+			return mylog.Errorf("setTransInfo setOneAccTransInfo(%s) failed. err=%s", info.ToID, err)
+		}
+	*/
+	//目前交易记录收入和支出都记录了，所以这里只用记录一次
 	err = t.setOneAccTransInfo(stub, info.FromID, putKey)
 	if err != nil {
 		return mylog.Errorf("setTransInfo setOneAccTransInfo(%s) failed. err=%s", info.FromID, err)
-	}
-	err = t.setOneAccTransInfo(stub, info.ToID, putKey)
-	if err != nil {
-		return mylog.Errorf("setTransInfo setOneAccTransInfo(%s) failed. err=%s", info.ToID, err)
 	}
 
 	//交易信息设置成功后，保存序列号
@@ -1268,22 +1332,15 @@ func (t *KD) setOneAccTransInfo(stub shim.ChaincodeStubInterface, accName, trans
 		return mylog.Errorf("setOneAccTransInfo GetState(%s) failed.err=%s", accName, err)
 	}
 
-	var transList []string
-	if tmpState != nil {
-		err = json.Unmarshal(tmpState, &transList)
-		if err != nil {
-			return mylog.Errorf("setOneAccTransInfo Unmarshal(%s) failed.err=%s", accName, err)
-		}
+	var newTxsB []byte
+	if tmpState == nil {
+		newTxsB = append([]byte(transKey), MULTI_STRING_DELIM) //每一次添加accName，最后都要加上分隔符，bytes.Buffer.ReadBytes(MULTI_STRING_DELIM)需要
+	} else {
+		newTxsB = append(tmpState, []byte(transKey)...)
+		newTxsB = append(newTxsB, MULTI_STRING_DELIM)
 	}
 
-	transList = append(transList, transKey)
-
-	jsonList, err := json.Marshal(transList)
-	if err != nil {
-		return mylog.Errorf("setOneAccTransInfo Marshal(%s) failed.err=%s", accName, err)
-	}
-
-	err = t.PutState_Ex(stub, accTransKey, jsonList)
+	err = t.PutState_Ex(stub, accTransKey, newTxsB)
 	if err != nil {
 		return mylog.Errorf("setOneAccTransInfo PutState_Ex(%s) failed.err=%s", accName, err)
 	}
