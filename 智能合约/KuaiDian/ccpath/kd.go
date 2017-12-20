@@ -33,11 +33,13 @@ const (
 
 	//因为目前账户entity的key是账户名，为了防止自己定义的如下key和账户名冲突，所以下面的key里都含有特殊字符
 	TRANSSEQ_PREFIX      = "!kd@txSeqPre~"          //序列号生成器的key的前缀。使用的是worldState存储
-	TRANSINFO_PREFIX     = "!kd@txInfoPre~"         //交易信息的key的前缀。使用的是worldState存储
+	TRANSINFO_PREFIX     = "!kd@txInfoPre~"         //全局交易信息的key的前缀。使用的是worldState存储
 	ONE_ACC_TRANS_PREFIX = "!kd@oneAccTxPre~"       //存储单个账户的交易的key前缀
 	UER_ENTITY_PREFIX    = "!kd@usrEntPre~"         //存储某个用户的用户信息的key前缀。目前用户名和账户名相同，而账户entity的key是账户名，所以用户entity加个前缀区分
 	CENTERBANK_ACC_KEY   = "!kd@centerBankAccKey@!" //央行账户的key。使用的是worldState存储
 	ALL_ACC_KEY          = "!kd@allAccInfoKey@!"    //存储所有账户名的key。使用的是worldState存储
+
+	RACK_SALE_ENC_CFG_PREFIX = "!kd@rackSECPre~" //货架销售奖励积分配置的key前缀
 
 	MULTI_STRING_DELIM = ':' //多个string的分隔符
 )
@@ -67,8 +69,15 @@ type UserAttrs struct {
 	UserType string `json:"type"`
 }
 
-//供查询的交易内容
-type QueryTrans struct {
+//查询的交易记录结果格式
+type QueryTransResult struct {
+	NextSerial   int64            `json:"nextser"` //因为是批量返回结果，表示下次要请求的序列号
+	MaxSerial    int64            `json:"maxser"`
+	TransRecords []QueryTransRecd `json:"records"`
+}
+
+//供查询的交易记录内容
+type QueryTransRecd struct {
 	Serial int64 `json:"ser"` //交易序列号，返回给查询结果用，储存时
 	PubTrans
 }
@@ -103,13 +112,6 @@ type QueryBalance struct {
 
 var ErrNilEntity = errors.New("nil entity.")
 
-/*
-   注意点：
-   1、 存储数量较少的字符串数组时，可以使用[]string类型；如果字符串数组的长度可能会非常庞大，则不要使用[]string类型,
-       可以使用[]byte直接存放在worldState中，每个字符串之间使用某种字符例如':'来分割，读取时使用bytes.Buffer.ReadBytes(':')来获取每一个字符串。
-       否则如果用[]string类型虽然处理上比较方便（marshal和unmarshal转换格式），但是unmarshal操作在记录量级较大时非常耗费时间，影响响应速度。
-       本合约中，每个用户的交易记录就使用[]byte直接存放的方式（没有单独记录用户的交易，而是把全局交易的key记录下来），因为交易记录可能会非常多。
-*/
 type KD struct {
 }
 
@@ -424,7 +426,7 @@ func (t *KD) Query(stub shim.ChaincodeStubInterface, function string, args []str
 
 		return retValue, nil
 	} else if function == "getTransInfo" { //查询交易记录
-		var argCount = fixedArgCount + 6
+		var argCount = fixedArgCount + 8
 		if len(args) < argCount {
 			mylog.Error("queryTx miss arg, got %d, need %d.", len(args), argCount)
 			return nil, errors.New("queryTx miss arg.")
@@ -436,6 +438,8 @@ func (t *KD) Query(stub shim.ChaincodeStubInterface, function string, args []str
 		var begTime int64
 		var endTime int64
 		var txAcc string
+		var queryMaxSeq int64
+		var queryOrder string
 
 		begSeq, err = strconv.ParseInt(args[fixedArgCount], 0, 64)
 		if err != nil {
@@ -466,19 +470,31 @@ func (t *KD) Query(stub shim.ChaincodeStubInterface, function string, args []str
 		//查询指定账户的交易记录
 		txAcc = args[fixedArgCount+5]
 
+		queryMaxSeq, err = strconv.ParseInt(args[fixedArgCount+6], 0, 64)
+		if err != nil {
+			return nil, mylog.Errorf("queryTx ParseInt for queryMaxSeq(%s) failed. err=%s", args[fixedArgCount+6], err)
+		}
+
+		queryOrder = args[fixedArgCount+7]
+
+		var isAsc = false
+		if queryOrder == "asc" {
+			isAsc = true
+		}
+
 		//如果没指定查询某个账户的交易，则返回所有的交易记录
 		if len(txAcc) == 0 {
 			//是否是管理员帐户，管理员用户才可以查所有交易记录
 			if !t.isAdmin(stub, accName) {
 				return nil, mylog.Errorf("%s can't query tx info.", accName)
 			}
-			return t.queryTransInfos(stub, transLvl, begSeq, txCount, begTime, endTime)
+			return t.queryTransInfos(stub, transLvl, begSeq, txCount, begTime, endTime, queryMaxSeq, isAsc)
 		} else {
 			//管理员用户 或者 用户自己才能查询某用户的交易记录
 			if !t.isAdmin(stub, accName) && accName != txAcc {
 				return nil, mylog.Errorf("%s can't query %s's tx info.", accName, txAcc)
 			}
-			return t.queryAccTransInfos(stub, txAcc, begSeq, txCount, begTime, endTime)
+			return t.queryAccTransInfos(stub, txAcc, begSeq, txCount, begTime, endTime, queryMaxSeq, isAsc)
 		}
 
 	} else if function == "getAllAccAmt" { //所有账户中钱是否正确
@@ -529,10 +545,20 @@ func (t *KD) Query(stub shim.ChaincodeStubInterface, function string, args []str
 	return nil, errors.New("unknown function.")
 }
 
-func (t *KD) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64, begIdx, count, begTime, endTime int64) ([]byte, error) {
+func (t *KD) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64, begIdx, count, begTime, endTime, queryMaxSeq int64, isAsc bool) ([]byte, error) {
 	var maxSeq int64
 	var err error
-	var retTransInfo []byte = []byte("[]") //返回的结果是一个json数组，所以如果结果为空，返回空数组
+
+	var retTransInfo []byte
+	var queryResult QueryTransResult
+	queryResult.NextSerial = -1
+	queryResult.MaxSerial = -1
+	queryResult.TransRecords = []QueryTransRecd{} //初始化为空，即使下面没查到数据也会返回'[]'
+
+	retTransInfo, err = json.Marshal(queryResult)
+	if err != nil {
+		return nil, mylog.Errorf("queryTransInfos Marshal failed.err=%s", err)
+	}
 
 	//begIdx从1开始， 因为保存交易时，从1开始编号
 	if begIdx < 1 {
@@ -561,10 +587,14 @@ func (t *KD) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64, 
 	}
 
 	//先获取当前最大的序列号
-	maxSeq, err = t.getTransSeq(stub, seqKey)
-	if err != nil {
-		mylog.Error("queryTransInfos getTransSeq failed. err=%s", err)
-		return nil, errors.New("queryTransInfos getTransSeq failed.")
+	if queryMaxSeq != -1 {
+		maxSeq = queryMaxSeq
+	} else {
+		maxSeq, err = t.getTransSeq(stub, seqKey)
+		if err != nil {
+			mylog.Error("queryTransInfos getTransSeq failed. err=%s", err)
+			return nil, errors.New("queryTransInfos getTransSeq failed.")
+		}
 	}
 
 	if begIdx > maxSeq {
@@ -576,53 +606,81 @@ func (t *KD) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64, 
 		count = maxSeq - begIdx + 1
 	}
 
-	/*
-		var retTransInfo = bytes.NewBuffer([]byte("["))
-		for i := begIdx; i <= endIdx; i++ {
-			key, _ := t.getTransInfoKey(stub, i)
-
-			tmpState, err := stub.GetState(key)
-			if err != nil {
-				mylog.Error("getTransInfo GetState(idx=%d) failed.err=%s", i, err)
-				//return nil, err
-				continue
-			}
-			if tmpState == nil {
-				mylog.Error("getTransInfo GetState nil(idx=%d).", i)
-				//return nil, errors.New("getTransInfo GetState nil.")
-				continue
-			}
-			//获取的TransInfo已经是JSON格式的了，这里直接给拼接为JSON数组，以提高效率。
-			retTransInfo.Write(tmpState)
-			retTransInfo.WriteByte(',')
-		}
-		retTransInfo.Truncate(retTransInfo.Len() - 1) //去掉最后的那个','
-		retTransInfo.WriteByte(']')
-	*/
-	var transArr []QueryTrans = []QueryTrans{} //初始化为空，即使下面没查到数据也会返回'[]'
 	var loopCnt int64 = 0
-	for loop := begIdx; loop <= maxSeq; loop++ {
-		//处理了count条时，不再处理
-		if loopCnt >= count {
-			break
-		}
+	var trans *Transaction
+	if isAsc { //升序
 
-		trans, err := t.getTransInfo(stub, t.getTransInfoKey(stub, loop))
-		if err != nil {
-			mylog.Error("getTransInfo getQueryTransInfo(idx=%d) failed.err=%s", loop, err)
-			continue
+		/*
+			var retTransInfo = bytes.NewBuffer([]byte("["))
+			for i := begIdx; i <= endIdx; i++ {
+				key, _ := t.getTransInfoKey(stub, i)
+
+				tmpState, err := stub.GetState(key)
+				if err != nil {
+					mylog.Error("getTransInfo GetState(idx=%d) failed.err=%s", i, err)
+					//return nil, err
+					continue
+				}
+				if tmpState == nil {
+					mylog.Error("getTransInfo GetState nil(idx=%d).", i)
+					//return nil, errors.New("getTransInfo GetState nil.")
+					continue
+				}
+				//获取的TransInfo已经是JSON格式的了，这里直接给拼接为JSON数组，以提高效率。
+				retTransInfo.Write(tmpState)
+				retTransInfo.WriteByte(',')
+			}
+			retTransInfo.Truncate(retTransInfo.Len() - 1) //去掉最后的那个','
+			retTransInfo.WriteByte(']')
+		*/
+		for loop := begIdx; loop <= maxSeq; loop++ {
+			//处理了count条时，不再处理
+			if loopCnt >= count {
+				break
+			}
+
+			trans, err = t.getTransInfo(stub, t.getTransInfoKey(stub, loop))
+			if err != nil {
+				mylog.Error("getTransInfo getQueryTransInfo(idx=%d) failed.err=%s", loop, err)
+				continue
+			}
+			//取匹配的transLvl
+			var qTrans QueryTransRecd
+			if trans.TransLvl&transLvl != 0 && trans.Time >= begTime && trans.Time <= endTime {
+				qTrans.Serial = trans.GlobalSerial
+				qTrans.PubTrans = trans.PubTrans
+				queryResult.TransRecords = append(queryResult.TransRecords, qTrans)
+				queryResult.NextSerial = qTrans.Serial + 1
+				queryResult.MaxSerial = maxSeq
+				loopCnt++
+			}
 		}
-		//取匹配的transLvl
-		var qTrans QueryTrans
-		if trans.TransLvl&transLvl != 0 && trans.Time >= begTime && trans.Time <= endTime {
-			qTrans.Serial = trans.GlobalSerial
-			qTrans.PubTrans = trans.PubTrans
-			transArr = append(transArr, qTrans)
-			loopCnt++
+	} else { //降序
+		for loop := maxSeq - begIdx + 1; loop >= 1; loop-- { //序列号从1开始的
+			//处理了count条时，不再处理
+			if loopCnt >= count {
+				break
+			}
+
+			trans, err = t.getTransInfo(stub, t.getTransInfoKey(stub, loop))
+			if err != nil {
+				mylog.Error("getTransInfo getQueryTransInfo(idx=%d) failed.err=%s", loop, err)
+				continue
+			}
+			//取匹配的transLvl
+			var qTrans QueryTransRecd
+			if trans.TransLvl&transLvl != 0 && trans.Time >= begTime && trans.Time <= endTime {
+				qTrans.Serial = maxSeq - trans.GlobalSerial + 1
+				qTrans.PubTrans = trans.PubTrans
+				queryResult.TransRecords = append(queryResult.TransRecords, qTrans)
+				queryResult.NextSerial = qTrans.Serial + 1
+				queryResult.MaxSerial = maxSeq
+				loopCnt++
+			}
 		}
 	}
 
-	retTransInfo, err = json.Marshal(transArr)
+	retTransInfo, err = json.Marshal(queryResult)
 	if err != nil {
 		return nil, mylog.Errorf("getTransInfo Marshal failed.err=%s", err)
 	}
@@ -630,8 +688,20 @@ func (t *KD) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64, 
 	return retTransInfo, nil
 }
 
-func (t *KD) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName string, begIdx, count, begTime, endTime int64) ([]byte, error) {
-	var retTransInfo []byte = []byte("[]") //返回的结果是一个json数组，所以如果结果为空，返回空数组
+func (t *KD) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName string, begIdx, count, begTime, endTime, queryMaxSeq int64, isAsc bool) ([]byte, error) {
+	var maxSeq int64
+	var err error
+
+	var retTransInfo []byte
+	var queryResult QueryTransResult
+	queryResult.NextSerial = -1
+	queryResult.MaxSerial = -1
+	queryResult.TransRecords = []QueryTransRecd{} //初始化为空，即使下面没查到数据也会返回'[]'
+
+	retTransInfo, err = json.Marshal(queryResult)
+	if err != nil {
+		return nil, mylog.Errorf("queryAccTransInfos Marshal failed.err=%s", err)
+	}
 
 	//begIdx统一从1开始，防止调用者有的以0开始，有的以1开始
 	if begIdx < 1 {
@@ -646,62 +716,151 @@ func (t *KD) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName string
 		mylog.Warn("queryAccTransInfos nothing to do(%d).", count)
 		return retTransInfo, nil
 	}
-	//count为负数，查询到最后
-	if count < 0 {
-		count = math.MaxInt64
-	}
 
-	infoB, err := stub.GetState(t.getOneAccTransKey(accName))
+	//先判断是否存在交易序列号了，如果不存在，说明还没有交易发生。 这里做这个判断是因为在 getTransSeq 里如果没有设置过序列号的key会自动设置一次，但是在query中无法执行PutStat，会报错
+	var seqKey = t.getAccTransSeqKey(accName)
+	test, err := stub.GetState(seqKey)
 	if err != nil {
-		return nil, mylog.Errorf("queryAccTransInfos(%s) GetState failed.err=%s", accName, err)
+		return nil, mylog.Errorf("queryAccTransInfos GetState failed. err=%s", err)
 	}
-	if infoB == nil {
+	if test == nil {
+		mylog.Info("queryAccTransInfos no trans saved.")
 		return retTransInfo, nil
 	}
 
-	var transArr []QueryTrans = []QueryTrans{} //初始化为空数组，即使下面没查到数据也会返回'[]'
-	var loopCnt int64 = 0
-	var trans *QueryTrans
-	var buf = bytes.NewBuffer(infoB)
-	var oneStringB []byte
-	var oneString string
-	var loop int64 = 0
-	for {
-		if loopCnt >= count {
-			break
-		}
-		oneStringB, err = buf.ReadBytes(MULTI_STRING_DELIM)
+	//先获取当前最大的序列号
+	if queryMaxSeq != -1 {
+		maxSeq = queryMaxSeq
+	} else {
+		maxSeq, err = t.getTransSeq(stub, seqKey)
 		if err != nil {
-			if err == io.EOF {
-				mylog.Debug("queryAccTransInfos proc %d recds, end.", loop)
-				break
-			}
-			return nil, mylog.Errorf("queryAccTransInfos ReadBytes failed. last=%s, err=%s", string(oneStringB), err)
-		}
-		loop++
-		if begIdx > loop {
-			continue
-		}
-
-		oneString = string(oneStringB[:len(oneStringB)-1]) //去掉末尾的分隔符
-
-		trans, err = t.getQueryTransInfo(stub, oneString)
-		if err != nil {
-			mylog.Error("queryAccTransInfos(%s) getQueryTransInfo failed, err=%s.", accName, err)
-			continue
-		}
-		var qTrans QueryTrans
-		if trans.Time >= begTime && trans.Time <= endTime {
-			qTrans.Serial = loop
-			qTrans.PubTrans = trans.PubTrans
-			transArr = append(transArr, qTrans)
-			loopCnt++
+			return nil, mylog.Errorf("queryAccTransInfos getTransSeq failed. err=%s", err)
 		}
 	}
 
-	retTransInfo, err = json.Marshal(transArr)
+	if begIdx > maxSeq {
+		mylog.Warn("queryAccTransInfos nothing to do(%d,%d).", begIdx, maxSeq)
+		return retTransInfo, nil
+	}
+
+	if count < 0 {
+		count = maxSeq - begIdx + 1
+	}
+	/*
+		infoB, err := stub.GetState(t.getOneAccTransKey(accName))
+		if err != nil {
+			return nil, mylog.Errorf("queryAccTransInfos(%s) GetState failed.err=%s", accName, err)
+		}
+		if infoB == nil {
+			return retTransInfo, nil
+		}
+
+		var transArr []QueryTransRecd = []QueryTransRecd{} //初始化为空数组，即使下面没查到数据也会返回'[]'
+		var loopCnt int64 = 0
+		var trans *QueryTransRecd
+		var buf = bytes.NewBuffer(infoB)
+		var oneStringB []byte
+		var oneString string
+		var loop int64 = 0
+		for {
+			if loopCnt >= count {
+				break
+			}
+			oneStringB, err = buf.ReadBytes(MULTI_STRING_DELIM)
+			if err != nil {
+				if err == io.EOF {
+					mylog.Debug("queryAccTransInfos proc %d recds, end.", loop)
+					break
+				}
+				return nil, mylog.Errorf("queryAccTransInfos ReadBytes failed. last=%s, err=%s", string(oneStringB), err)
+			}
+			loop++
+			if begIdx > loop {
+				continue
+			}
+
+			oneString = string(oneStringB[:len(oneStringB)-1]) //去掉末尾的分隔符
+
+			trans, err = t.getQueryTransInfo(stub, oneString)
+			if err != nil {
+				mylog.Error("queryAccTransInfos(%s) getQueryTransInfo failed, err=%s.", accName, err)
+				continue
+			}
+			var qTrans QueryTransRecd
+			if trans.Time >= begTime && trans.Time <= endTime {
+				qTrans.Serial = loop
+				qTrans.PubTrans = trans.PubTrans
+				transArr = append(transArr, qTrans)
+				loopCnt++
+			}
+		}
+	*/
+
+	var globTxKeyB []byte
+	var trans *Transaction
+	var loopCnt int64 = 0
+	if isAsc { //升序
+		for loop := begIdx; loop <= maxSeq; loop++ {
+			//处理了count条时，不再处理
+			if loopCnt >= count {
+				break
+			}
+
+			globTxKeyB, err = stub.GetState(t.getOneAccTransInfoKey(accName, loop))
+			if err != nil {
+				mylog.Errorf("queryAccTransInfos GetState(globTxKeyB,acc=%s,idx=%d) failed.err=%s", accName, loop, err)
+				continue
+			}
+
+			trans, err = t.getTransInfo(stub, string(globTxKeyB))
+			if err != nil {
+				mylog.Error("queryAccTransInfos getQueryTransInfo(idx=%d) failed.err=%s", loop, err)
+				continue
+			}
+
+			var qTrans QueryTransRecd
+			if trans.Time >= begTime && trans.Time <= endTime {
+				qTrans.Serial = loop
+				qTrans.PubTrans = trans.PubTrans
+				queryResult.TransRecords = append(queryResult.TransRecords, qTrans)
+				queryResult.NextSerial = qTrans.Serial + 1
+				queryResult.MaxSerial = maxSeq
+				loopCnt++
+			}
+		}
+	} else { //降序
+		for loop := maxSeq - begIdx + 1; loop >= 1; loop-- { //序列号从1开始的
+			//处理了count条时，不再处理
+			if loopCnt >= count {
+				break
+			}
+
+			globTxKeyB, err = stub.GetState(t.getOneAccTransInfoKey(accName, loop))
+			if err != nil {
+				mylog.Errorf("queryAccTransInfos GetState(globTxKeyB,acc=%s,idx=%d) failed.err=%s", accName, loop, err)
+				continue
+			}
+
+			trans, err := t.getTransInfo(stub, string(globTxKeyB))
+			if err != nil {
+				mylog.Error("queryAccTransInfos getQueryTransInfo(idx=%d) failed.err=%s", loop, err)
+				continue
+			}
+
+			var qTrans QueryTransRecd
+			if trans.Time >= begTime && trans.Time <= endTime {
+				qTrans.Serial = maxSeq - loop + 1
+				qTrans.PubTrans = trans.PubTrans
+				queryResult.TransRecords = append(queryResult.TransRecords, qTrans)
+				queryResult.NextSerial = qTrans.Serial + 1
+				queryResult.MaxSerial = maxSeq
+				loopCnt++
+			}
+		}
+	}
+	retTransInfo, err = json.Marshal(queryResult)
 	if err != nil {
-		return nil, mylog.Errorf("getTransInfo Marshal failed.err=%s", err)
+		return nil, mylog.Errorf("queryAccTransInfos Marshal failed.err=%s", err)
 	}
 
 	return retTransInfo, nil
@@ -1247,7 +1406,12 @@ func (t *KD) getTransInfoKey(stub shim.ChaincodeStubInterface, seq int64) string
 }
 
 func (t *KD) getGlobTransSeqKey(stub shim.ChaincodeStubInterface) string {
-	return TRANSSEQ_PREFIX + "global_"
+	return TRANSSEQ_PREFIX + "global"
+}
+
+//获取某个账户的trans seq key
+func (t *KD) getAccTransSeqKey(accName string) string {
+	return TRANSSEQ_PREFIX + "acc_" + accName
 }
 
 func (t *KD) setTransInfo(stub shim.ChaincodeStubInterface, info *Transaction) error {
@@ -1320,29 +1484,27 @@ func (t *KD) setTransInfo(stub shim.ChaincodeStubInterface, info *Transaction) e
 	return nil
 }
 
-func (t *KD) getOneAccTransKey(accName string) string {
-	return ONE_ACC_TRANS_PREFIX + accName
+func (t *KD) getOneAccTransInfoKey(accName string, seq int64) string {
+	return ONE_ACC_TRANS_PREFIX + accName + "_" + strconv.FormatInt(seq, 10)
 }
 
-func (t *KD) setOneAccTransInfo(stub shim.ChaincodeStubInterface, accName, transKey string) error {
-	var accTransKey = t.getOneAccTransKey(accName)
+func (t *KD) setOneAccTransInfo(stub shim.ChaincodeStubInterface, accName, GlobalTransKey string) error {
 
-	tmpState, err := stub.GetState(accTransKey)
+	seq, err := t.getTransSeq(stub, t.getAccTransSeqKey(accName))
 	if err != nil {
-		return mylog.Errorf("setOneAccTransInfo GetState(%s) failed.err=%s", accName, err)
+		return mylog.Errorf("setOneAccTransInfo getTransSeq failed.err=%s", err)
+	}
+	seq++
+
+	err = t.PutState_Ex(stub, t.getOneAccTransInfoKey(accName, seq), []byte(GlobalTransKey))
+	if err != nil {
+		return mylog.Errorf("setOneAccTransInfo PutState failed. err=%s", err)
 	}
 
-	var newTxsB []byte
-	if tmpState == nil {
-		newTxsB = append([]byte(transKey), MULTI_STRING_DELIM) //每一次添加accName，最后都要加上分隔符，bytes.Buffer.ReadBytes(MULTI_STRING_DELIM)需要
-	} else {
-		newTxsB = append(tmpState, []byte(transKey)...)
-		newTxsB = append(newTxsB, MULTI_STRING_DELIM)
-	}
-
-	err = t.PutState_Ex(stub, accTransKey, newTxsB)
+	//交易信息设置成功后，保存序列号
+	err = t.setTransSeq(stub, t.getAccTransSeqKey(accName), seq)
 	if err != nil {
-		return mylog.Errorf("setOneAccTransInfo PutState_Ex(%s) failed.err=%s", accName, err)
+		return mylog.Errorf("setOneAccTransInfo setTransSeq failed. err=%s", err)
 	}
 
 	return nil
@@ -1372,9 +1534,9 @@ func (t *KD) getTransInfo(stub shim.ChaincodeStubInterface, key string) (*Transa
 
 	return &trans, nil
 }
-func (t *KD) getQueryTransInfo(stub shim.ChaincodeStubInterface, key string) (*QueryTrans, error) {
+func (t *KD) getQueryTransInfo(stub shim.ChaincodeStubInterface, key string) (*QueryTransRecd, error) {
 	var err error
-	var trans QueryTrans
+	var trans QueryTransRecd
 
 	tmpState, err := stub.GetState(key)
 	if err != nil {

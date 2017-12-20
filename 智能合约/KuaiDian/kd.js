@@ -395,8 +395,16 @@ function handle_query(params, res, req) {
                 var qAcc = params.qacc;
                 if (qAcc == undefined) 
                     qAcc = ""
-                
-                queryRequest.args.push(begSeq, count, translvl, begTime, endTime, qAcc)
+
+                var maxSeq = params.msq;
+                if (maxSeq == undefined) 
+                    maxSeq = "-1" //不输入默认为-1
+ 
+                var order = params.ord;
+                if (order == undefined) 
+                    order = "desc" //不输入默认为降序，即从最新的数据查起
+ 
+                queryRequest.args.push(begSeq, count, translvl, begTime, endTime, qAcc, maxSeq, order)
                 
             } else if (func == "queryState"){
                 var key = params.key
