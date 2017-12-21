@@ -254,6 +254,22 @@ function handle_invoke(params, res, req) {
                 var key = params.key;
                 var value = params.val;
                 invokeRequest.args.push(key, value)
+            } else if (func == "setAllocCfg") {
+                var rackid = params.rid;
+                var seller = params.slr;
+                var platform = params.pfm;
+                var fielder = params.fld;
+                var delivery = params.dvy;
+                invokeRequest.args.push(rackid, seller, fielder, delivery, platform)
+            }else if (func == "allocEarning") {
+                var rackid = params.rid;
+                var seller = params.slr;
+                var platform = params.pfm;
+                var fielder = params.fld;
+                var delivery = params.dvy;
+                var totalAmt = params.tamt;
+                var allocKey = params.ak;  
+                invokeRequest.args.push(rackid, seller, fielder, delivery, platform, allocKey, totalAmt)
             }
 
             // invoke
@@ -405,6 +421,38 @@ function handle_query(params, res, req) {
                     order = "desc" //不输入默认为降序，即从最新的数据查起
  
                 queryRequest.args.push(begSeq, count, translvl, begTime, endTime, qAcc, maxSeq, order)
+                
+            } else if (func == "queryRackAlloc") {
+                var rackid = params.rid
+                var allocKey = params.ak
+                if (allocKey == undefined) 
+                    allocKey = ""  //有值说明查询某次的分陪情况
+
+                var begSeq = params.bsq;
+                if (begSeq == undefined) 
+                    begSeq = "0"
+                
+                var count = params.cnt;
+                if (count == undefined) 
+                    count = "-1"  //-1表示查询所有
+
+                var begTime = params.btm;
+                if (begTime == undefined)
+                    begTime = "0"
+
+                var endTime = params.etm;
+                if (endTime == undefined) 
+                    endTime = "-1"  //-1表示查询到最新的时间
+
+                var qAcc = params.qacc;
+                if (qAcc == undefined) 
+                    qAcc = ""    //有值说明查询某个账户的分配情况
+                
+                queryRequest.args.push(rackid, allocKey, begSeq, count, begTime, endTime, qAcc)
+                
+            } else if (func == "queryRackAllocCfg") {
+                var rackid = params.rid
+                queryRequest.args.push(rackid)
                 
             } else if (func == "queryState"){
                 var key = params.key
