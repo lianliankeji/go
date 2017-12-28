@@ -46,7 +46,7 @@ chain.addPeer(PEER_ADDRESS);
 
 
 chain.setDeployWaitTime(55); //http请求默认超时是60s（nginx），所以这里的超时时间要少于60s，否则http请求会超时失败
-chain.setInvokeWaitTime(10);
+chain.setInvokeWaitTime(20);
 
 // parse application/x-www-form-urlencoded  
 app.use(bodyParser.urlencoded({ extended: false }))  
@@ -261,7 +261,7 @@ function handle_invoke(params, res, req) {
                 var fielder = params.fld;
                 var delivery = params.dvy;
                 invokeRequest.args.push(rackid, seller, fielder, delivery, platform)
-            }else if (func == "allocEarning") {
+            } else if (func == "allocEarning") {
                 var rackid = params.rid;
                 var seller = params.slr;
                 var platform = params.pfm;
@@ -270,6 +270,25 @@ function handle_invoke(params, res, req) {
                 var totalAmt = params.tamt;
                 var allocKey = params.ak;  
                 invokeRequest.args.push(rackid, seller, fielder, delivery, platform, allocKey, totalAmt)
+            } else if (func == "setSESCfg") {
+                var rackid = params.rid;
+                var cfg = params.cfg;
+                invokeRequest.args.push(rackid, cfg)
+                
+            } else if (func == "encourageScoreForSales" || func == "encourageScoreForNewRack") {
+                var cfg = params.cfg;
+                var transType = params.tstp;
+                if (transType == undefined)
+                    transType = ""
+                var description = params.desc;
+                if (description == undefined)
+                    description = ""
+                var sameEntSaveTrans = params.sest; //如果转出和转入账户相同，是否记录交易 0表示不记录 1表示记录
+                if (sameEntSaveTrans == undefined)
+                    sameEntSaveTrans = "1" //默认记录
+                
+                invokeRequest.args.push(cfg, transType, description, sameEntSaveTrans)
+            
             }
 
             // invoke
@@ -450,7 +469,7 @@ function handle_query(params, res, req) {
                 
                 queryRequest.args.push(rackid, allocKey, begSeq, count, begTime, endTime, qAcc)
                 
-            } else if (func == "queryRackAllocCfg") {
+            } else if (func == "queryRackAllocCfg" || func == "getSESCfg") {
                 var rackid = params.rid
                 queryRequest.args.push(rackid)
                 

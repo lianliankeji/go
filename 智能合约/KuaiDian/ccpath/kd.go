@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	//"sort"
 	"strconv"
 	"strings"
 	//"time"
@@ -39,12 +40,16 @@ const (
 	CENTERBANK_ACC_KEY   = "!kd@centerBankAccKey@!" //央行账户的key。使用的是worldState存储
 	ALL_ACC_KEY          = "!kd@allAccInfoKey@!"    //存储所有账户名的key。使用的是worldState存储
 
-	RACK_SALE_ENC_CFG_PREFIX  = "!kd@rackSECPre~"       //货架销售奖励积分配置的key前缀
+	//销售分成相关
 	RACK_GLOBAL_ALLOCRATE_KEY = "!kd@globalAllocRate@!" //全局的收入分成比例
 	RACK_ALLOCRATE_PREFIX     = "!kd@allocRatePre~"     //每个货架的收入分成比例的key前缀
 	RACK_ALLOCTXSEQ_PREFIX    = "!kd@allocTxSeqPre~"    //每个货架的分成记录的序列号的key前缀
 	RACK_ALLOC_TX_PREFIX      = "!kd@alloctxPre__"      //每个货架收入分成交易记录
 	RACK_ACC_ALLOC_TX_PREFIX  = "!kd@acc_alloctxPre__"  //某个账户收入分成交易记录
+
+	//积分奖励相关
+	RACK_SALE_ENC_SCORE_CFG_PREFIX = "!kd@rackSESCPre~" //货架销售奖励积分比例分配配置的key前缀 销售奖励积分，简称SES
+	RACK_NEWRACK_ENC_SCORE_DEFAULT = 5000               //新开货架默认奖励的金额
 
 	MULTI_STRING_DELIM = ':' //多个string的分隔符
 
@@ -120,18 +125,26 @@ type QueryBalance struct {
 	Message      string `json:"message"`      //对账附件信息
 }
 
-type RolesPercent struct {
-	Seller   int64 `json:"slr"` //经营者分成比例 因为要和int64参与运算，这里都定义为int64
-	Fielder  int64 `json:"fld"` //场地提供者分成比例
-	Delivery int64 `json:"dvy"` //送货人分成比例
-	Platform int64 `json:"pfm"` //平台分成比例
+type RolesRate struct {
+	SellerRate   int64 `json:"slr"` //经营者分成比例 因为要和int64参与运算，这里都定义为int64
+	FielderRate  int64 `json:"fld"` //场地提供者分成比例
+	DeliveryRate int64 `json:"dvy"` //送货人分成比例
+	PlatformRate int64 `json:"pfm"` //平台分成比例
+}
+
+//每个角色分配的数额
+type RolesAllocAmount struct {
+	SellerAmount   int64 `json:"slrAmt"` //经营者分成比例 因为要和int64参与运算，这里都定义为int64
+	FielderAmount  int64 `json:"fldAmt"` //场地提供者分成比例
+	DeliveryAmount int64 `json:"dvyAmt"` //送货人分成比例
+	PlatformAmount int64 `json:"pfmAmt"` //平台分成比例
 }
 
 //货架收入分成比例
-type EarningAllocPercent struct {
-	Rackid string `json:"rid"`
-	RolesPercent
-	UpdateTime int64 `json:"uptm"`
+type EarningAllocRate struct {
+	Rackid     string `json:"rid"`
+	UpdateTime int64  `json:"uptm"`
+	RolesRate
 }
 
 type QueryEarningAllocTx struct {
@@ -146,7 +159,7 @@ type PubEarningAllocTx struct {
 	AmountMap    map[string]map[string]int64 `json:"amtmap"` //分成结果 {seller:{usr1:20}, Fielder：{usr2:20} ...}
 	GlobalSerial int64                       `json:"gser"`
 	DateTime     int64                       `json:"dtm"`
-	RolesPercent
+	RolesRate
 }
 
 type EarningAllocTx struct {
@@ -154,10 +167,10 @@ type EarningAllocTx struct {
 }
 
 type AllocAccs struct {
-	Seller   string `json:"slr"`
-	Fielder  string `json:"fld"`
-	Delivery string `json:"dvy"`
-	Platform string `json:"pfm"`
+	SellerAcc   string `json:"slracc"`
+	FielderAcc  string `json:"fldacc"`
+	DeliveryAcc string `json:"dvyacc"`
+	PlatformAcc string `json:"pfmacc"`
 }
 
 type QueryAccEarningAllocTx struct {
@@ -168,7 +181,31 @@ type QueryAccEarningAllocTx struct {
 	DateTime      int64            `json:"dtm"`
 	TotalAmt      int64            `json:"tamt"` //总金额
 	GlobalSerial  int64            `json:"gser"`
-	RolesPercent
+	RolesRate
+}
+
+//积分奖励比例
+type ScoreEncouragePercentCfg struct {
+	Rackid      string  `json:"rid"`  //货架id
+	UpdateTime  int64   `json:"uptm"` //更新时间
+	RangeList   []int64 `json:"rl"`   //区间list
+	PercentList []int   `json:"pl"`   //比例list
+	/* 0.6的环境 json.Marshal时不支持map[int64]int类型 err=json: unsupported type: map[int64]int.  改为两个数组来存放
+	   RangePercentMap map[int64]int `json:"rrm"`  //销售额区间奖励比例  百分比制 {2000:100, 2500:130, 3000:170, 99999999999:200} 表示小于2000奖励销售额的100%，2000-2500奖励130%，2500-3000奖励170%，大于3000小于999999999（一个极大值即可）奖励200%
+	*/
+
+}
+
+type RackRolesSales struct {
+	Rackid string `json:"rid"`  //货架id
+	Sales  int64  `json:"sale"` //销售额
+	AllocAccs
+}
+
+type RackRolesEncourageScores struct {
+	Rackid string `json:"rid"`   //货架id
+	Scores int64  `json:"score"` //奖励的积分
+	AllocAccs
 }
 
 var ErrNilEntity = errors.New("nil entity.")
@@ -191,13 +228,13 @@ func (t *KD) Init(stub shim.ChaincodeStubInterface, function string, args []stri
 	           return nil, mylog.Errorf("Invoke convert times(%s) failed. err=%s", args[0], err)
 	       }
 	*/
-
-	var eap EarningAllocPercent
+	//全局分成比例设置
+	var eap EarningAllocRate
 	eap.Rackid = "_global__rack___" //全局比例
-	eap.Platform = 3                //3%
-	eap.Fielder = 3                 //3%
-	eap.Delivery = 2                //2%
-	eap.Seller = 92                 //92%
+	eap.PlatformRate = 3            //3%
+	eap.FielderRate = 3             //3%
+	eap.DeliveryRate = 2            //2%
+	eap.SellerRate = 92             //92%
 	//eap.UpdateTime = times
 	eap.UpdateTime = 0
 
@@ -206,9 +243,33 @@ func (t *KD) Init(stub shim.ChaincodeStubInterface, function string, args []stri
 		return nil, mylog.Errorf("Init Marshal error, err=%s.", err)
 	}
 
-	err = t.PutState_Ex(stub, t.getGlobalRaciAllocPercentKey(), eapJson)
+	err = t.PutState_Ex(stub, t.getGlobalRackAllocRateKey(), eapJson)
 	if err != nil {
 		return nil, mylog.Errorf("Init PutState_Ex error, err=%s.", err)
+	}
+
+	//全局销售额区间奖励积分设置
+	var serc ScoreEncouragePercentCfg
+	serc.Rackid = "_global__rack___" //全局比例
+	serc.UpdateTime = 0
+	/*
+		serc.RangePercentMap = make(map[int64]int)
+		serc.RangePercentMap[2000] = 100
+		serc.RangePercentMap[2500] = 130
+		serc.RangePercentMap[3000] = 170
+		serc.RangePercentMap[math.MaxInt64] = 200
+	*/
+	serc.RangeList = []int64{2000, 2500, 3000, math.MaxInt64}
+	serc.PercentList = []int{100, 130, 170, 200}
+
+	sercJson, err := json.Marshal(serc)
+	if err != nil {
+		return nil, mylog.Errorf("Init Marshal(serc) error, err=%s.", err)
+	}
+
+	err = t.PutState_Ex(stub, t.getRackGlobalEncourageScoreKey(), sercJson)
+	if err != nil {
+		return nil, mylog.Errorf("Init PutState_Ex(serc) error, err=%s.", err)
 	}
 
 	return nil, nil
@@ -485,13 +546,13 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 			return nil, mylog.Errorf("Invoke(setAllocCfg) convert platform(%s) failed. err=%s", args[fixedArgCount+4], err)
 		}
 
-		var eap EarningAllocPercent
+		var eap EarningAllocRate
 
 		eap.Rackid = rackid
-		eap.Seller = seller
-		eap.Fielder = fielder
-		eap.Delivery = delivery
-		eap.Platform = platform
+		eap.SellerRate = seller
+		eap.FielderRate = fielder
+		eap.DeliveryRate = delivery
+		eap.PlatformRate = platform
 		eap.UpdateTime = invokeTime
 
 		eapJson, err := json.Marshal(eap)
@@ -499,7 +560,7 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 			return nil, mylog.Errorf("Invoke(setAllocCfg) Marshal error, err=%s.", err)
 		}
 
-		err = t.PutState_Ex(stub, t.getRackAllocPercentKey(rackid), eapJson)
+		err = t.PutState_Ex(stub, t.getRackAllocRateKey(rackid), eapJson)
 		if err != nil {
 			return nil, mylog.Errorf("Invoke(setAllocCfg) PutState_Ex error, err=%s.", err)
 		}
@@ -528,16 +589,16 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 			return nil, mylog.Errorf("Invoke(allocEarning) convert totalAmt(%s) failed. err=%s", args[fixedArgCount+6], err)
 		}
 
-		var eap EarningAllocPercent
+		var eap EarningAllocRate
 
-		eapB, err := stub.GetState(t.getRackAllocPercentKey(rackid))
+		eapB, err := stub.GetState(t.getRackAllocRateKey(rackid))
 		if err != nil {
 			return nil, mylog.Errorf("Invoke(allocEarning) GetState(rackid=%s) failed. err=%s", rackid, err)
 		}
 		if eapB == nil {
 			mylog.Warn("Invoke(allocEarning) GetState(rackid=%s) nil, try to get global.", rackid)
 			//没有为该货架单独配置，返回global配置
-			eapB, err = stub.GetState(t.getGlobalRaciAllocPercentKey())
+			eapB, err = stub.GetState(t.getGlobalRackAllocRateKey())
 			if err != nil {
 				return nil, mylog.Errorf("Invoke(allocEarning) GetState(global, rackid=%s) failed. err=%s", rackid, err)
 			}
@@ -552,12 +613,60 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 		}
 
 		var accs AllocAccs
-		accs.Seller = sellerAcc
-		accs.Fielder = fielderAcc
-		accs.Delivery = deliveryAcc
-		accs.Platform = platformAcc
+		accs.SellerAcc = sellerAcc
+		accs.FielderAcc = fielderAcc
+		accs.DeliveryAcc = deliveryAcc
+		accs.PlatformAcc = platformAcc
 
 		return t.setAllocEarnTx(stub, rackid, allocKey, totalAmt, &accs, &eap, invokeTime)
+	} else if function == "setSESCfg" { //设置每个货架的销售额奖励区间比例
+		if !t.isAdmin(stub, accName) {
+			return nil, mylog.Errorf("Invoke(setSESCfg) can't exec by %s.", accName)
+		}
+
+		var argCount = fixedArgCount + 2
+		if len(args) < argCount {
+			return nil, mylog.Errorf("Invoke(setSESCfg) miss arg, got %d, at least need %d.", len(args), argCount)
+		}
+
+		var rackid = args[fixedArgCount]
+		var cfgStr = args[fixedArgCount+1]
+
+		return t.setRackEncourageScoreCfg(stub, rackid, cfgStr, invokeTime)
+	} else if function == "encourageScoreForSales" { //根据销售额奖励积分
+		var argCount = fixedArgCount + 4
+		if len(args) < argCount {
+			return nil, mylog.Errorf("Invoke(encourageScoreForSales) miss arg, got %d, at least need %d.", len(args), argCount)
+		}
+
+		var paraStr = args[fixedArgCount]
+		var transType = args[fixedArgCount+1]
+		var transDesc = args[fixedArgCount+2]
+		var sameEntSaveTrans = args[fixedArgCount+3] //如果转出和转入账户相同，是否记录交易 0表示不记录 1表示记录
+		var sameEntSaveTransFlag bool = false
+		if sameEntSaveTrans == "1" {
+			sameEntSaveTransFlag = true
+		}
+
+		//使用登录的账户进行转账
+		return t.allocEncourageScoreForSales(stub, paraStr, accName, transType, transDesc, invokeTime, sameEntSaveTransFlag)
+	} else if function == "encourageScoreForNewRack" { //新开货架奖励积分
+		var argCount = fixedArgCount + 4
+		if len(args) < argCount {
+			return nil, mylog.Errorf("Invoke(encourageScoreForNewRack) miss arg, got %d, at least need %d.", len(args), argCount)
+		}
+
+		var paraStr = args[fixedArgCount]
+		var transType = args[fixedArgCount+1]
+		var transDesc = args[fixedArgCount+2]
+		var sameEntSaveTrans = args[fixedArgCount+3] //如果转出和转入账户相同，是否记录交易 0表示不记录 1表示记录
+		var sameEntSaveTransFlag bool = false
+		if sameEntSaveTrans == "1" {
+			sameEntSaveTransFlag = true
+		}
+
+		//使用登录的账户进行转账
+		return t.allocEncourageScoreForNewRack(stub, paraStr, accName, transType, transDesc, invokeTime, sameEntSaveTransFlag)
 	}
 
 	//event
@@ -809,23 +918,31 @@ func (t *KD) Query(stub shim.ChaincodeStubInterface, function string, args []str
 
 		var rackid = args[fixedArgCount]
 
-		eapB, err := stub.GetState(t.getRackAllocPercentKey(rackid))
+		eapB, err := t.getRackAllocCfg(stub, rackid, nil)
 		if err != nil {
-			return nil, mylog.Errorf("queryRackAllocCfg GetState(rackid=%s) failed. err=%s", rackid, err)
-		}
-		if eapB == nil {
-			mylog.Warn("queryRackAllocCfg GetState(rackid=%s) nil, try to get global.", rackid)
-			//没有为该货架单独配置，返回global配置
-			eapB, err = stub.GetState(t.getGlobalRaciAllocPercentKey())
-			if err != nil {
-				return nil, mylog.Errorf("queryRackAllocCfg GetState(global, rackid=%s) failed. err=%s", rackid, err)
-			}
-			if eapB == nil {
-				return nil, mylog.Errorf("queryRackAllocCfg GetState(global, rackid=%s) nil.", rackid)
-			}
+			return nil, mylog.Errorf("queryRackAllocCfg getRackAllocCfg(rackid=%s) failed. err=%s", rackid, err)
 		}
 
 		return eapB, nil
+	} else if function == "getSESCfg" {
+		if !t.isAdmin(stub, accName) {
+			return nil, mylog.Errorf("getSESCfg: %s can't query.", accName)
+		}
+
+		var argCount = fixedArgCount + 1
+		if len(args) < argCount {
+			return nil, mylog.Errorf("getSESCfg miss arg, got %d, need %d.", len(args), argCount)
+		}
+
+		var rackid = args[fixedArgCount]
+
+		sercB, err := t.getRackEncourageScoreCfg(stub, rackid, nil)
+		if err != nil {
+			return nil, mylog.Errorf("getSESCfg getRackEncourageScoreCfg(rackid=%s) failed. err=%s", rackid, err)
+		}
+
+		return sercB, nil
+
 	}
 
 	return nil, errors.New("unknown function.")
@@ -861,7 +978,7 @@ func (t *KD) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64, 
 	}
 
 	//先判断是否存在交易序列号了，如果不存在，说明还没有交易发生。 这里做这个判断是因为在 getTransSeq 里如果没有设置过序列号的key会自动设置一次，但是在query中无法执行PutStat，会报错
-	var seqKey = t.getGlobTransSeqKey(stub)
+	var seqKey = t.getGlobalTransSeqKey(stub)
 	test, err := stub.GetState(seqKey)
 	if err != nil {
 		mylog.Error("queryTransInfos GetState failed. err=%s", err)
@@ -1691,7 +1808,7 @@ func (t *KD) getTransInfoKey(stub shim.ChaincodeStubInterface, seq int64) string
 	return buf.String()
 }
 
-func (t *KD) getGlobTransSeqKey(stub shim.ChaincodeStubInterface) string {
+func (t *KD) getGlobalTransSeqKey(stub shim.ChaincodeStubInterface) string {
 	return TRANSSEQ_PREFIX + "global"
 }
 
@@ -1702,7 +1819,7 @@ func (t *KD) getAccTransSeqKey(accName string) string {
 
 func (t *KD) setTransInfo(stub shim.ChaincodeStubInterface, info *Transaction) error {
 	//先获取全局seq
-	seqGlob, err := t.getTransSeq(stub, t.getGlobTransSeqKey(stub))
+	seqGlob, err := t.getTransSeq(stub, t.getGlobalTransSeqKey(stub))
 	if err != nil {
 		mylog.Error("setTransInfo getTransSeq failed.err=%s", err)
 		return err
@@ -1752,7 +1869,7 @@ func (t *KD) setTransInfo(stub shim.ChaincodeStubInterface, info *Transaction) e
 	}
 
 	//交易信息设置成功后，保存序列号
-	err = t.setTransSeq(stub, t.getGlobTransSeqKey(stub), seqGlob)
+	err = t.setTransSeq(stub, t.getGlobalTransSeqKey(stub), seqGlob)
 	if err != nil {
 		mylog.Error("setTransInfo setTransSeq failed. err=%s", err)
 		return errors.New("setTransInfo setTransSeq failed.")
@@ -1846,12 +1963,12 @@ func (t *KD) getQueryTransInfo(stub shim.ChaincodeStubInterface, key string) (*Q
 }
 
 func (t *KD) setAllocEarnTx(stub shim.ChaincodeStubInterface, rackid, allocKey string, totalAmt int64,
-	accs *AllocAccs, eap *EarningAllocPercent, times int64) ([]byte, error) {
+	accs *AllocAccs, eap *EarningAllocRate, times int64) ([]byte, error) {
 
 	var eat EarningAllocTx
 	eat.Rackid = rackid
 	eat.AllocKey = allocKey
-	eat.RolesPercent = eap.RolesPercent
+	eat.RolesRate = eap.RolesRate
 	eat.TotalAmt = totalAmt
 
 	eat.AmountMap = make(map[string]map[string]int64)
@@ -1860,28 +1977,22 @@ func (t *KD) setAllocEarnTx(stub shim.ChaincodeStubInterface, rackid, allocKey s
 	eat.AmountMap[RACK_ROLE_DELIVERY] = make(map[string]int64)
 	eat.AmountMap[RACK_ROLE_PLATFORM] = make(map[string]int64)
 
-	var base = eap.Seller + eap.Fielder + eap.Delivery + eap.Platform
-
-	sellerAmt := totalAmt * eap.Seller / base
-	fielderAmt := totalAmt * eap.Fielder / base
-	deliveryAmt := totalAmt * eap.Delivery / base
-	//上面计算可能有四舍五入的情况，剩余的都放在平台账户
-	platformAmt := totalAmt - sellerAmt - fielderAmt - deliveryAmt
+	rolesAllocAmt := t.getRackRolesAllocAmt(eap, totalAmt)
 
 	var err error
-	err = t.getRolesAllocEarning(sellerAmt, accs.Seller, eat.AmountMap[RACK_ROLE_SELLER])
+	err = t.getRolesAllocEarning(rolesAllocAmt.SellerAmount, accs.SellerAcc, eat.AmountMap[RACK_ROLE_SELLER])
 	if err != nil {
 		return nil, mylog.Errorf("setAllocEarnTx getRolesAllocEarning 1 failed.err=%s", err)
 	}
-	err = t.getRolesAllocEarning(fielderAmt, accs.Fielder, eat.AmountMap[RACK_ROLE_FIELDER])
+	err = t.getRolesAllocEarning(rolesAllocAmt.FielderAmount, accs.FielderAcc, eat.AmountMap[RACK_ROLE_FIELDER])
 	if err != nil {
 		return nil, mylog.Errorf("setAllocEarnTx getRolesAllocEarning 2 failed.err=%s", err)
 	}
-	err = t.getRolesAllocEarning(deliveryAmt, accs.Delivery, eat.AmountMap[RACK_ROLE_DELIVERY])
+	err = t.getRolesAllocEarning(rolesAllocAmt.DeliveryAmount, accs.DeliveryAcc, eat.AmountMap[RACK_ROLE_DELIVERY])
 	if err != nil {
 		return nil, mylog.Errorf("setAllocEarnTx getRolesAllocEarning 3 failed.err=%s", err)
 	}
-	err = t.getRolesAllocEarning(platformAmt, accs.Platform, eat.AmountMap[RACK_ROLE_PLATFORM])
+	err = t.getRolesAllocEarning(rolesAllocAmt.PlatformAmount, accs.PlatformAcc, eat.AmountMap[RACK_ROLE_PLATFORM])
 	if err != nil {
 		return nil, mylog.Errorf("setAllocEarnTx getRolesAllocEarning 4 failed.err=%s", err)
 	}
@@ -1916,37 +2027,51 @@ func (t *KD) setAllocEarnTx(stub shim.ChaincodeStubInterface, rackid, allocKey s
 	//记录每个账户的分成情况
 	//四种角色有可能是同一个人，所以判断一下，如果已保存过key，则不再保存
 	var checkMap = make(map[string]int)
-	err = t.setOneAccAllocEarnTx(stub, accs.Seller, txKey)
+	err = t.setOneAccAllocEarnTx(stub, accs.SellerAcc, txKey)
 	if err != nil {
-		return nil, mylog.Errorf("setAllocEarnTx  setOneAccAllocEarnTx(%s) failed.err=%s", accs.Seller, err)
+		return nil, mylog.Errorf("setAllocEarnTx  setOneAccAllocEarnTx(%s) failed.err=%s", accs.SellerAcc, err)
 	}
-	checkMap[accs.Seller] = 0
+	checkMap[accs.SellerAcc] = 0
 
-	if _, ok := checkMap[accs.Fielder]; !ok {
-		err = t.setOneAccAllocEarnTx(stub, accs.Fielder, txKey)
+	if _, ok := checkMap[accs.FielderAcc]; !ok {
+		err = t.setOneAccAllocEarnTx(stub, accs.FielderAcc, txKey)
 		if err != nil {
-			return nil, mylog.Errorf("setAllocEarnTx  setOneAccAllocEarnTx(%s) failed.err=%s", accs.Fielder, err)
+			return nil, mylog.Errorf("setAllocEarnTx  setOneAccAllocEarnTx(%s) failed.err=%s", accs.FielderAcc, err)
 		}
-		checkMap[accs.Fielder] = 0
-	}
-
-	if _, ok := checkMap[accs.Delivery]; !ok {
-		err = t.setOneAccAllocEarnTx(stub, accs.Delivery, txKey)
-		if err != nil {
-			return nil, mylog.Errorf("setAllocEarnTx  setOneAccAllocEarnTx(%s) failed.err=%s", accs.Delivery, err)
-		}
-		checkMap[accs.Delivery] = 0
+		checkMap[accs.FielderAcc] = 0
 	}
 
-	if _, ok := checkMap[accs.Platform]; !ok {
-		err = t.setOneAccAllocEarnTx(stub, accs.Platform, txKey)
+	if _, ok := checkMap[accs.DeliveryAcc]; !ok {
+		err = t.setOneAccAllocEarnTx(stub, accs.DeliveryAcc, txKey)
 		if err != nil {
-			return nil, mylog.Errorf("setAllocEarnTx  setOneAccAllocEarnTx(%s) failed.err=%s", accs.Platform, err)
+			return nil, mylog.Errorf("setAllocEarnTx  setOneAccAllocEarnTx(%s) failed.err=%s", accs.DeliveryAcc, err)
 		}
-		checkMap[accs.Platform] = 0
+		checkMap[accs.DeliveryAcc] = 0
+	}
+
+	if _, ok := checkMap[accs.PlatformAcc]; !ok {
+		err = t.setOneAccAllocEarnTx(stub, accs.PlatformAcc, txKey)
+		if err != nil {
+			return nil, mylog.Errorf("setAllocEarnTx  setOneAccAllocEarnTx(%s) failed.err=%s", accs.PlatformAcc, err)
+		}
+		checkMap[accs.PlatformAcc] = 0
 	}
 
 	return nil, nil
+}
+
+func (t *KD) getRackRolesAllocAmt(eap *EarningAllocRate, totalAmt int64) *RolesAllocAmount {
+
+	var raa RolesAllocAmount
+	var base = eap.SellerRate + eap.FielderRate + eap.DeliveryRate + eap.PlatformRate
+
+	raa.SellerAmount = totalAmt * eap.SellerRate / base
+	raa.FielderAmount = totalAmt * eap.FielderRate / base
+	raa.DeliveryAmount = totalAmt * eap.DeliveryRate / base
+	//上面计算可能有四舍五入的情况，剩余的都放在平台账户
+	raa.PlatformAmount = totalAmt - raa.SellerAmount - raa.FielderAmount - raa.DeliveryAmount
+
+	return &raa
 }
 
 func (t *KD) setOneAccAllocEarnTx(stub shim.ChaincodeStubInterface, accName, txKey string) error {
@@ -2042,10 +2167,10 @@ func (t *KD) getOneAccAllocTxKey(accName string) string {
 	return RACK_ACC_ALLOC_TX_PREFIX + accName
 }
 
-func (t *KD) getRackAllocPercentKey(rackid string) string {
+func (t *KD) getRackAllocRateKey(rackid string) string {
 	return RACK_ALLOCRATE_PREFIX + rackid
 }
-func (t *KD) getGlobalRaciAllocPercentKey() string {
+func (t *KD) getGlobalRackAllocRateKey() string {
 	return RACK_GLOBAL_ALLOCRATE_KEY
 }
 
@@ -2281,7 +2406,7 @@ func (t *KD) procOneAccAllocTx(stub shim.ChaincodeStubInterface, txKey, accName 
 	qaeat.Rackid = eat.Rackid
 	qaeat.TotalAmt = eat.TotalAmt
 	qaeat.GlobalSerial = eat.GlobalSerial
-	qaeat.RolesPercent = eat.RolesPercent
+	qaeat.RolesRate = eat.RolesRate
 	qaeat.RoleAmountMap = make(map[string]int64)
 	for role, accAmtMap := range eat.AmountMap {
 		for acc, amt := range accAmtMap {
@@ -2311,6 +2436,383 @@ func (t *KD) getAllocTxRecdEntity(stub shim.ChaincodeStubInterface, txKey string
 
 	return &eat, nil
 }
+
+func (t *KD) getRackAllocCfg(stub shim.ChaincodeStubInterface, rackid string, peap *EarningAllocRate) ([]byte, error) {
+	var eapB []byte
+	var err error
+
+	eapB, err = stub.GetState(t.getRackAllocRateKey(rackid))
+	if err != nil {
+		return nil, mylog.Errorf("getRackAllocCfg GetState(rackid=%s) failed. err=%s", rackid, err)
+	}
+	if eapB == nil {
+		mylog.Warn("getRackAllocCfg GetState(rackid=%s) nil, try to get global.", rackid)
+		//没有为该货架单独配置，返回global配置
+		eapB, err = stub.GetState(t.getGlobalRackAllocRateKey())
+		if err != nil {
+			return nil, mylog.Errorf("getRackAllocCfg GetState(global, rackid=%s) failed. err=%s", rackid, err)
+		}
+		if eapB == nil {
+			return nil, mylog.Errorf("getRackAllocCfg GetState(global, rackid=%s) nil.", rackid)
+		}
+	}
+
+	if peap != nil {
+		err = json.Unmarshal(eapB, peap)
+		if err != nil {
+			return nil, mylog.Errorf("getRackAllocCfg Unmarshal failed. err=%s", rackid, err)
+		}
+	}
+
+	return eapB, err
+}
+
+/* ----------------------- 积分奖励相关 ----------------------- */
+func (t *KD) getRackGlobalEncourageScoreKey() string {
+	return RACK_SALE_ENC_SCORE_CFG_PREFIX + "global"
+}
+func (t *KD) getRackEncourageScoreKey(rackid string) string {
+	return RACK_SALE_ENC_SCORE_CFG_PREFIX + "rack_" + rackid
+}
+
+func (t *KD) setRackEncourageScoreCfg(stub shim.ChaincodeStubInterface, rackid, cfgStr string, invokeTime int64) ([]byte, error) {
+	//配置格式如下 "2000:150;3000:170..."，防止输入错误，先去除两边的空格，然后再去除两边的';'（防止split出来空字符串）
+	var newCfg = strings.Trim(strings.TrimSpace(cfgStr), ";")
+
+	var sepc ScoreEncouragePercentCfg
+	sepc.Rackid = rackid
+	sepc.UpdateTime = invokeTime
+
+	var rangeRatArr []string
+
+	var err error
+	var rang int64
+	var percent int
+
+	//含有";"，表示有多条配置，没有则说明只有一条配置
+	if strings.Contains(newCfg, ";") {
+		rangeRatArr = strings.Split(newCfg, ";")
+
+	} else {
+		rangeRatArr = append(rangeRatArr, newCfg)
+	}
+
+	var rangePercentMap = make(map[int64]int)
+	for _, rangeRate := range rangeRatArr {
+		if !strings.Contains(rangeRate, ":") {
+			return nil, mylog.Errorf("setRackEncourageScoreCfg  rangeRate parse error, '%s' has no ':'.", rangeRate)
+		}
+		var pair = strings.Split(rangeRate, ":")
+		if len(pair) != 2 {
+			return nil, mylog.Errorf("setRackEncourageScoreCfg  rangeRate parse error, '%s' format error 1.", rangeRate)
+		}
+		//"-"表示正无穷
+		if pair[0] == "-" {
+			rang = math.MaxInt64
+		} else {
+			rang, err = strconv.ParseInt(pair[0], 0, 64)
+			if err != nil {
+				return nil, mylog.Errorf("setRackEncourageScoreCfg  rangeRate parse error, '%s' format error 2.", rangeRate)
+			}
+		}
+		percent, err = strconv.Atoi(pair[1])
+		if err != nil {
+			return nil, mylog.Errorf("setRackEncourageScoreCfg  rangeRate parse error, '%s' format error 3.", rangeRate)
+		}
+
+		//sepc.RangePercentMap[rang] = percent
+		rangePercentMap[rang] = percent
+	}
+
+	for rang, _ := range rangePercentMap {
+		sepc.RangeList = append(sepc.RangeList, rang)
+	}
+
+	//升序排序
+	var cnt = len(sepc.RangeList)
+	for i := 0; i < cnt; i++ {
+		for j := i + 1; j < cnt; j++ {
+			if sepc.RangeList[i] > sepc.RangeList[j] {
+				sepc.RangeList[j], sepc.RangeList[i] = sepc.RangeList[i], sepc.RangeList[j]
+			}
+		}
+	}
+
+	for i := 0; i < cnt; i++ {
+		sepc.PercentList = append(sepc.PercentList, rangePercentMap[sepc.RangeList[i]])
+	}
+
+	sepcJson, err := json.Marshal(sepc)
+	if err != nil {
+		return nil, mylog.Errorf("setRackEncourageScoreCfg Marshal failed. err=%s", err)
+	}
+
+	err = t.PutState_Ex(stub, t.getRackEncourageScoreKey(rackid), sepcJson)
+	if err != nil {
+		return nil, mylog.Errorf("setRackEncourageScoreCfg PutState_Ex failed. err=%s", err)
+	}
+
+	return nil, nil
+}
+
+func (t *KD) getRackEncourageScoreCfg(stub shim.ChaincodeStubInterface, rackid string, psepc *ScoreEncouragePercentCfg) ([]byte, error) {
+
+	var sepcB []byte
+	var err error
+
+	sepcB, err = stub.GetState(t.getRackEncourageScoreKey(rackid))
+	if err != nil {
+		return nil, mylog.Errorf("getRackEncourageScoreCfg GetState failed.rackid=%s err=%s", rackid, err)
+	}
+
+	if sepcB == nil {
+		mylog.Warn("getRackEncourageScoreCfg: can not find cfg for %s, will use golobal.", rackid)
+		sepcB, err = stub.GetState(t.getRackGlobalEncourageScoreKey())
+		if err != nil {
+			return nil, mylog.Errorf("getRackEncourageScoreCfg GetState(global cfg) failed.rackid=%s err=%s", rackid, err)
+		}
+	}
+
+	if psepc != nil {
+		err = json.Unmarshal(sepcB, psepc)
+		if err != nil {
+			return nil, mylog.Errorf("getRackEncourageScoreCfg Unmarshal failed.rackid=%s err=%s", rackid, err)
+		}
+	}
+
+	return sepcB, nil
+}
+
+func (t *KD) allocEncourageScoreForSales(stub shim.ChaincodeStubInterface, paraStr string, transFromAcc, transType, transDesc string, invokeTime int64, sameEntSaveTx bool) ([]byte, error) {
+	//配置格式如下 "货架id1,销售额,货架经营者账户,场地提供者账户,送货人账户,平台账户;货架id2,销售额,货架经营者账户,场地提供者账户,送货人账户,平台账户;...."，
+	//防止输入错误，先去除两边的空格，然后再去除两边的';'（防止split出来空字符串）
+	var newStr = strings.Trim(strings.TrimSpace(paraStr), ";")
+
+	var rrsList []RackRolesSales
+
+	var rackRolesSalesArr []string
+
+	var err error
+
+	//含有";"，表示有多条配置，没有则说明只有一条配置
+	if strings.Contains(newStr, ";") {
+		rackRolesSalesArr = strings.Split(newStr, ";")
+	} else {
+		rackRolesSalesArr = append(rackRolesSalesArr, newStr)
+	}
+
+	var eleDelim = ","
+	var rackRolesSales string
+	for _, v := range rackRolesSalesArr {
+		rackRolesSales = strings.Trim(strings.TrimSpace(v), eleDelim)
+		if !strings.Contains(rackRolesSales, rackRolesSales) {
+			mylog.Errorf("encourageScoreBySales  rackRolesSales parse error, '%s' has no '%s'.", rackRolesSales, eleDelim)
+			continue
+		}
+		var eles = strings.Split(rackRolesSales, eleDelim)
+		if len(eles) != 6 {
+			mylog.Errorf("encourageScoreBySales  rackRolesSales parse error, '%s' format error 1.", rackRolesSales)
+			continue
+		}
+
+		var rrs RackRolesSales
+
+		rrs.Rackid = eles[0]
+		rrs.Sales, err = strconv.ParseInt(eles[1], 0, 64)
+		if err != nil {
+			mylog.Errorf("encourageScoreBySales  rackRolesSales parse error, '%s' format error 2.", rackRolesSales)
+			continue
+		}
+
+		rrs.Sales = rrs.Sales / 100 //输入的单位为分，这里计算以元为单位
+
+		rrs.AllocAccs.SellerAcc = eles[2]
+		rrs.AllocAccs.FielderAcc = eles[3]
+		rrs.AllocAccs.DeliveryAcc = eles[4]
+		rrs.AllocAccs.PlatformAcc = eles[5]
+
+		rrsList = append(rrsList, rrs)
+	}
+
+	for _, rrs := range rrsList {
+		encourageScore, err := t.getRackEncourgeScoreBySales(stub, rrs.Rackid, rrs.Sales)
+		if err != nil {
+			mylog.Errorf("encourageScoreBySales  getRackEncourgePercentBySales failed, error=%s.", err)
+			continue
+		}
+
+		var rres RackRolesEncourageScores
+		rres.Rackid = rrs.Rackid
+		rres.Scores = encourageScore
+		rres.AllocAccs = rrs.AllocAccs
+
+		//销售奖励积分时，货架经营者要补偿销售额同等的积分
+		err = t.allocEncourageScore(stub, &rres, transFromAcc, transType, transDesc, invokeTime, sameEntSaveTx, rrs.Sales)
+		if err != nil {
+			mylog.Errorf("encourageScoreBySales allocEncourageScore failed, error=%s.", err)
+			continue
+		}
+	}
+
+	return nil, nil
+}
+
+func (t *KD) getRackEncourgeScoreBySales(stub shim.ChaincodeStubInterface, rackid string, sales int64) (int64, error) {
+	var err error
+	var sepc ScoreEncouragePercentCfg
+	_, err = t.getRackEncourageScoreCfg(stub, rackid, &sepc)
+	if err != nil {
+		return 0, mylog.Errorf("getRackEncourgePercent getRackEncourageScoreCfg failed.rackid=%s err=%s", rackid, err)
+	}
+
+	/*
+		var sortedRange []int64
+		for rang, _ := range sepc.RangePercentMap {
+			sortedRange = append(sortedRange, rang)
+		}
+
+		//升序排序
+		var cnt = len(sortedRange)
+		for i := 0; i < cnt; i++ {
+			for j := i + 1; j < cnt; j++ {
+				if sortedRange[i] > sortedRange[j] {
+					sortedRange[j], sortedRange[i] = sortedRange[i], sortedRange[j]
+				}
+			}
+		}
+
+		for _, v := range sortedRange {
+			if sales <= v {
+				return int64(sepc.RangePercentMap[v]) * sales / 100, nil //营业额乘以百分比
+			}
+		}
+	*/
+	for i, v := range sepc.RangeList {
+		if sales <= v {
+			return int64(sepc.PercentList[i]) * sales / 100, nil //营业额乘以百分比
+		}
+	}
+
+	return sales, nil
+}
+
+func (t *KD) allocEncourageScore(stub shim.ChaincodeStubInterface, rrs *RackRolesEncourageScores, transFromAcc, transType, transDesc string, invokeTime int64, sameEntSaveTx bool, sellerComps int64) error {
+	var ear EarningAllocRate
+	_, err := t.getRackAllocCfg(stub, rrs.Rackid, &ear)
+	if err != nil {
+		return mylog.Errorf("allocEncourageScore getRackAllocCfg failed,Rackid=%s,  error=%s.", rrs.Rackid, err)
+	}
+
+	var hasErr = false
+	var failedAccList []string
+
+	rolesAllocScore := t.getRackRolesAllocAmt(&ear, rrs.Scores)
+
+	_, err = t.transferCoin(stub, transFromAcc, rrs.SellerAcc, transType, transDesc,
+		rolesAllocScore.SellerAmount+sellerComps, invokeTime, sameEntSaveTx)
+	if err != nil {
+		mylog.Errorf("allocEncourageScore: transferCoin(SellerAcc=%s) failed, error=%s.", rrs.SellerAcc, err)
+		hasErr = true
+		failedAccList = append(failedAccList, rrs.SellerAcc)
+	}
+
+	_, err = t.transferCoin(stub, transFromAcc, rrs.FielderAcc, transType, transDesc,
+		rolesAllocScore.FielderAmount, invokeTime, sameEntSaveTx)
+	if err != nil {
+		mylog.Errorf("allocEncourageScore: transferCoin(FielderAcc=%s) failed, error=%s.", rrs.FielderAcc, err)
+		hasErr = true
+		failedAccList = append(failedAccList, rrs.FielderAcc)
+	}
+
+	_, err = t.transferCoin(stub, transFromAcc, rrs.DeliveryAcc, transType, transDesc,
+		rolesAllocScore.DeliveryAmount, invokeTime, sameEntSaveTx)
+	if err != nil {
+		mylog.Errorf("allocEncourageScore: transferCoin(DeliveryAcc=%s) failed, error=%s.", rrs.DeliveryAcc, err)
+		hasErr = true
+		failedAccList = append(failedAccList, rrs.DeliveryAcc)
+	}
+
+	_, err = t.transferCoin(stub, transFromAcc, rrs.PlatformAcc, transType, transDesc,
+		rolesAllocScore.PlatformAmount, invokeTime, sameEntSaveTx)
+	if err != nil {
+		mylog.Errorf("allocEncourageScore: transferCoin(PlatformAcc=%s) failed, error=%s.", rrs.PlatformAcc, err)
+		hasErr = true
+		failedAccList = append(failedAccList, rrs.PlatformAcc)
+	}
+
+	if hasErr {
+		return fmt.Errorf("allocEncourageScore: transferCoin faied, acc=%s", strings.Join(failedAccList, ";"))
+	}
+
+	return nil
+}
+
+func (t *KD) allocEncourageScoreForNewRack(stub shim.ChaincodeStubInterface, paraStr string, transFromAcc, transType, transDesc string, invokeTime int64, sameEntSaveTx bool) ([]byte, error) {
+	//配置格式如下 "货架1,货架经营者账户,场地提供者账户,送货人账户,平台账户,奖励金额(可省略);货架2,货架经营者账户,场地提供者账户,送货人账户,平台账户,奖励金额(可省略);...."，
+	//防止输入错误，先去除两边的空格，然后再去除两边的';'（防止split出来空字符串）
+	var newStr = strings.Trim(strings.TrimSpace(paraStr), ";")
+
+	var rresList []RackRolesEncourageScores
+
+	var rackRolesScoreArr []string
+
+	var err error
+
+	//含有";"，表示有多条配置，没有则说明只有一条配置
+	if strings.Contains(newStr, ";") {
+		rackRolesScoreArr = strings.Split(newStr, ";")
+
+	} else {
+		rackRolesScoreArr = append(rackRolesScoreArr, newStr)
+	}
+
+	var eleDelim = ","
+	var rackRolesScore string
+	for _, v := range rackRolesScoreArr {
+		rackRolesScore = strings.Trim(strings.TrimSpace(v), eleDelim)
+		if !strings.Contains(rackRolesScore, rackRolesScore) {
+			mylog.Errorf("allocEncourageScoreForNewRack  rackRolesSales parse error, '%s' has no '%s'.", rackRolesScore, eleDelim)
+			continue
+		}
+		var eles = strings.Split(rackRolesScore, eleDelim)
+		//至少包含货架id，四个角色
+		if len(eles) < 5 {
+			mylog.Errorf("allocEncourageScoreForNewRack  rackRolesSales parse error, '%s' format error 1.", rackRolesScore)
+			continue
+		}
+
+		var rres RackRolesEncourageScores
+
+		rres.Rackid = eles[0]
+		rres.AllocAccs.SellerAcc = eles[1]
+		rres.AllocAccs.FielderAcc = eles[2]
+		rres.AllocAccs.DeliveryAcc = eles[3]
+		rres.AllocAccs.PlatformAcc = eles[4]
+		if len(eles) >= 6 {
+			rres.Scores, err = strconv.ParseInt(eles[5], 0, 64)
+			if err != nil {
+				mylog.Errorf("allocEncourageScoreForNewRack  rackRolesSales parse error, '%s' format error 2.", rackRolesScore)
+				continue
+			}
+		} else {
+			rres.Scores = RACK_NEWRACK_ENC_SCORE_DEFAULT
+		}
+
+		rresList = append(rresList, rres)
+	}
+
+	for _, rres := range rresList {
+		err = t.allocEncourageScore(stub, &rres, transFromAcc, transType, transDesc, invokeTime, sameEntSaveTx, 0)
+		if err != nil {
+			mylog.Errorf("allocEncourageScoreForNewRack allocEncourageScore failed, error=%s.", err)
+			continue
+		}
+	}
+
+	return nil, nil
+}
+
+/* ----------------------- 积分奖励相关 ----------------------- */
 
 func (t *KD) isAdmin(stub shim.ChaincodeStubInterface, accName string) bool {
 	//获取管理员帐号(央行账户作为管理员帐户)
