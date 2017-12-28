@@ -51,6 +51,13 @@ const (
 	RACK_SALE_ENC_SCORE_CFG_PREFIX = "!kd@rackSESCPre~" //货架销售奖励积分比例分配配置的key前缀 销售奖励积分，简称SES
 	RACK_NEWRACK_ENC_SCORE_DEFAULT = 5000               //新开货架默认奖励的金额
 
+	//货架融资相关
+	RACK_FINANCE_CFG_PREFIX = "!kd@rack_FinacCfgPre~"          //货架融资配置的key前缀
+	FINACINFO_PREFIX        = "!kd@rack_FinacInfoPre~"         //理财发行信息的key的前缀。使用的是worldState存储
+	RACKINFO_PREFIX         = "!kd@rack_RackInfoPre~"          //货架信息的key的前缀。使用的是worldState存储
+	RACKFINACINFO_PREFIX    = "!kd@rack_RackFinacInfoPre~"     //货架融资信息的key的前缀。使用的是worldState存储
+	RACKFINACHISTORY_KEY    = "!kd@rack_RackFinacHistoryKey@!" //货架融资发行的历史信息
+
 	MULTI_STRING_DELIM = ':' //多个string的分隔符
 
 	RACK_ROLE_SELLER   = "slr"
@@ -76,6 +83,7 @@ type AccountEntity struct {
 	Owner           string            `json:"own"`   //该实例所属的用户
 	OwnerCert       []byte            `json:"ocert"` //证书
 	AuthUserCertMap map[string][]byte `json:"aucm"`  //授权用户证书 格式：{user1:cert1, user2:cert2}  因为可能会涉及到某些用户会授权之后操作其他用户的账户，所以map中不仅包含自己的证书，还包含授权用户的证书
+	AccEnt_Ext_RackFinance
 }
 
 type UserAttrs struct {
@@ -208,6 +216,80 @@ type RackRolesEncourageScores struct {
 	AllocAccs
 }
 
+/*----------------- 货架融资 ---------------------------*/
+//货架融资相关配置
+type PubRackFinanceCfg struct {
+	ProfitsPercent       int   `json:"prop"` //货架利润率。本来利润应该是根据实际销售额减去成本来计算，但是目前没有这么精确计算每件商品的销售，先用暂时使用利润率×销售额来计算利润。
+	InvestProfitsPercent int   `json:"ivpp"` //投资货架的投资人，利润分成的比例。比如投资人投了1000块钱，货架赚了200，那么百分之几分给投资人，因为货架经营者也要拿一部分利润。
+	InvestCap            int64 `json:"ivc"`  //货架支撑的投资容量。即货架能支持多少投资
+}
+type RackFinanceCfg struct {
+	Rackid     string `json:"rid"`
+	UpdateTime int64  `json:"uptm"`
+	PubRackFinanceCfg
+}
+type FinancialInfo struct {
+	FID       string   `json:"fid"`   //发行理财id，每期一个id。可以以年月日为id
+	RackList  []string `json:"rlst"`  //本期有多少货架参与融资
+	Time      int64    `json:"time"`  //创建时间
+	SerialNum int64    `json:"serNo"` //序列号
+}
+
+//货架信息 保存在链上
+type RackInfo struct {
+	RackID    string   `json:"rid"`   //货架id
+	FinacList []string `json:"flst"`  //货架参与过哪些融资
+	Time      int64    `json:"time"`  //创建时间
+	SerialNum int64    `json:"serNo"` //序列号
+}
+
+type CostEarnInfo struct {
+	//WareCost        int64 `json:"wc"`  //商品成本
+	//TransportCost   int64 `json:"tpc"` //运输成本
+	//MaintenanceCost int64 `json:"mtc"` //维护成本
+	//TraderCost      int64 `json:"tc"`  //零售商成本
+	//WareEarning     int64 `json:"we"`  //卖出商品收益
+	//BrandEarning    int64 `json:"be"`  //品牌收益
+	WareSales int64 `json:"ws"` //商品销售额
+}
+
+//货架融资信息 保存在链上
+type RackFinancInfo struct {
+	RackID             string            `json:"rid"`  //货架id
+	FID                string            `json:"fid"`  //发行理财id
+	DataTime           int64             `json:"dt"`   //创建时间
+	SerialNum          int64             `json:"ser"`  //序列号
+	AmountFinca        int64             `json:"amtf"` //实际投资额度
+	CEInfo             CostEarnInfo      `json:"cei"`  //成本及收益
+	RFCfg              PubRackFinanceCfg `json:"rfc"`
+	RolesAllocRate     RolesRate         `json:"rar"`
+	UserAmountMap      map[string]int64  `json:"uamp"` //每个用户投资的金额
+	UserProfitMap      map[string]int64  `json:"upmp"` //每个用户收益的金额
+	PayFinanceUserList []string          `json:"pful"` //退出投资的用户列表
+	/*如果用户本期未提取的投资，本金会自动转到下期（但是这个结构中的金额是不动的），所以每个用户的所有本金
+	  需要从最新的的理财中获取， 而收益从历史的每一次投资获取。
+	*/
+}
+
+type RackFinancHistory struct {
+	PreCurrFID [2]string `json:"pcfid"` //前一次和本次的融资id  第一个位置为前一期融资id，第二个位置为本期融资id
+}
+
+//货架融资，给账户信息附加的信息
+type AccEnt_Ext_RackFinance struct {
+	RFInfoMap map[string]int `json:"rfim"` //用户参与投资的货架融资信息，保存RackFinancInfo的两个key，rackid和financeId。用map是因为容易删除，因为用户提取积分后，会删除这两个key。map的value无意义。
+	LatestFid string         `json:"lfid"` //用户购买的最新一期的理财
+}
+
+type QueryFinac struct {
+	FinancialInfo
+	RFInfoList []RackFinancInfo `json:"rfList"`
+}
+type QueryRack struct {
+	RackInfo
+	RFInfoList []RackFinancInfo `json:"rfList"`
+}
+
 var ErrNilEntity = errors.New("nil entity.")
 
 type KD struct {
@@ -267,9 +349,26 @@ func (t *KD) Init(stub shim.ChaincodeStubInterface, function string, args []stri
 		return nil, mylog.Errorf("Init Marshal(serc) error, err=%s.", err)
 	}
 
-	err = t.PutState_Ex(stub, t.getRackGlobalEncourageScoreKey(), sercJson)
+	err = t.PutState_Ex(stub, t.getGlobalRackEncourageScoreKey(), sercJson)
 	if err != nil {
 		return nil, mylog.Errorf("Init PutState_Ex(serc) error, err=%s.", err)
+	}
+
+	var rfc RackFinanceCfg
+	rfc.Rackid = "_global__rack___" //全局
+	rfc.UpdateTime = 0
+	rfc.ProfitsPercent = 20       //20%的利润率
+	rfc.InvestProfitsPercent = 90 //90%的利润分给投资人
+	rfc.InvestCap = 2000
+
+	rfcJson, err := json.Marshal(rfc)
+	if err != nil {
+		return nil, mylog.Errorf("Init Marshal(rfc) error, err=%s.", err)
+	}
+
+	err = t.PutState_Ex(stub, t.getGlobalRackFinancCfgKey(), rfcJson)
+	if err != nil {
+		return nil, mylog.Errorf("Init PutState_Ex(rfc) error, err=%s.", err)
 	}
 
 	return nil, nil
@@ -667,6 +766,95 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 
 		//使用登录的账户进行转账
 		return t.allocEncourageScoreForNewRack(stub, paraStr, accName, transType, transDesc, invokeTime, sameEntSaveTransFlag)
+	} else if function == "buyFinance" {
+		var argCount = fixedArgCount + 7
+		if len(args) < argCount {
+			return nil, mylog.Errorf("Invoke(buyFinancial) miss arg, got %d, at least need %d.", len(args), argCount)
+		}
+
+		var rackid = args[fixedArgCount]
+		var financid = args[fixedArgCount+1]
+		var payee = args[fixedArgCount+2]
+		var amount int64
+		amount, err = strconv.ParseInt(args[fixedArgCount+3], 0, 64)
+		if err != nil {
+			return nil, mylog.Errorf("Invoke(buyFinancial) convert amount(%s) failed. err=%s", args[fixedArgCount+3], err)
+		}
+
+		var transType = args[fixedArgCount+4]
+		var transDesc = args[fixedArgCount+5]
+		var sameEntSaveTrans = args[fixedArgCount+6] //如果转出和转入账户相同，是否记录交易 0表示不记录 1表示记录
+		var sameEntSaveTransFlag bool = false
+		if sameEntSaveTrans == "1" {
+			sameEntSaveTransFlag = true
+		}
+
+		//每次购买时，肯定是购买最新一期的理财，设置为当前的fid
+		err = t.setCurrentFid(stub, financid)
+		if err != nil {
+			return nil, mylog.Errorf("Invoke(buyFinancial) setCurrentFid failed, err=%s.", err)
+		}
+
+		//使用登录的账户进行转账
+		return t.userBuyFinance(stub, accName, rackid, financid, payee, transType, transDesc, amount, invokeTime, sameEntSaveTransFlag, false)
+	} else if function == "financeIssueFinish" {
+		if !t.isAdmin(stub, accName) {
+			return nil, mylog.Errorf("Invoke(financeIssueFinish) can't exec by %s.", accName)
+		}
+
+		var argCount = fixedArgCount + 1
+		if len(args) < argCount {
+			return nil, mylog.Errorf("Invoke(financeIssueFinish) miss arg, got %d, at least need %d.", len(args), argCount)
+		}
+
+		var financid = args[fixedArgCount]
+
+		err = t.setCurrentFid(stub, financid)
+		if err != nil {
+			return nil, mylog.Errorf("Invoke(financeIssueFinish) setCurrentFid failed, err=%s.", err)
+		}
+
+		err = t.financeRenewal(stub, financid, invokeTime)
+		if err != nil {
+			return nil, mylog.Errorf("Invoke(financeIssueFinish) financeRenewal failed, err=%s.", err)
+		}
+
+		return nil, nil
+	} else if function == "payFinance" {
+		var argCount = fixedArgCount + 5
+		if len(args) < argCount {
+			return nil, mylog.Errorf("Invoke(payFinance) miss arg, got %d, at least need %d.", len(args), argCount)
+		}
+
+		var rackid = args[fixedArgCount]
+		var reacc = args[fixedArgCount+1]
+		var transType = args[fixedArgCount+2]
+		var transDesc = args[fixedArgCount+3]
+		var sameEntSaveTrans = args[fixedArgCount+4] //如果转出和转入账户相同，是否记录交易 0表示不记录 1表示记录
+		var sameEntSaveTransFlag bool = false
+		if sameEntSaveTrans == "1" {
+			sameEntSaveTransFlag = true
+		}
+
+		err = t.payUserFinance(stub, accName, reacc, rackid, invokeTime, transType, transDesc, sameEntSaveTransFlag)
+		if err != nil {
+			return nil, mylog.Errorf("Invoke(payFinance) payUserFinance failed, err=%s.", err)
+		}
+
+		return nil, nil
+	} else if function == "financeBouns" {
+		if !t.isAdmin(stub, accName) {
+			return nil, mylog.Errorf("Invoke(financeBouns) can't exec by %s.", accName)
+		}
+
+		var argCount = fixedArgCount + 2
+		if len(args) < argCount {
+			return nil, mylog.Errorf("Invoke(payFinance) miss arg, got %d, at least need %d.", len(args), argCount)
+		}
+
+		var fid = args[fixedArgCount]
+		var rackSalesCfg = args[fixedArgCount+1]
+		return t.financeBonus(stub, fid, rackSalesCfg, invokeTime)
 	}
 
 	//event
@@ -943,6 +1131,21 @@ func (t *KD) Query(stub shim.ChaincodeStubInterface, function string, args []str
 
 		return sercB, nil
 
+	} else if function == "getRackFinanceProfit" {
+		var argCount = fixedArgCount + 1
+		if len(args) < argCount {
+			return nil, mylog.Errorf("getRackFinanceProfit miss arg, got %d, need %d.", len(args), argCount)
+		}
+
+		var rackid = args[fixedArgCount]
+
+		var profit int64
+		profit, err = t.getUserFinanceProfit(stub, accName, rackid)
+		if err != nil {
+			return nil, mylog.Errorf("getRackFinanceProfit getUserFinanceProfit(rackid=%s) failed. err=%s", rackid, err)
+		}
+
+		return []byte(strconv.FormatInt(profit, 10)), nil
 	}
 
 	return nil, errors.New("unknown function.")
@@ -1526,8 +1729,12 @@ func (t *KD) transferCoin(stub shim.ChaincodeStubInterface, from, to, transType,
 
 	var err error
 
-	if amount <= 0 {
+	if amount < 0 {
 		return nil, mylog.Errorf("transferCoin failed. invalid amount(%d)", amount)
+	}
+
+	if amount == 0 {
+		return nil, nil
 	}
 
 	//如果账户相同，并且账户相同时不需要记录交易，直接返回
@@ -2468,7 +2675,7 @@ func (t *KD) getRackAllocCfg(stub shim.ChaincodeStubInterface, rackid string, pe
 }
 
 /* ----------------------- 积分奖励相关 ----------------------- */
-func (t *KD) getRackGlobalEncourageScoreKey() string {
+func (t *KD) getGlobalRackEncourageScoreKey() string {
 	return RACK_SALE_ENC_SCORE_CFG_PREFIX + "global"
 }
 func (t *KD) getRackEncourageScoreKey(rackid string) string {
@@ -2567,7 +2774,7 @@ func (t *KD) getRackEncourageScoreCfg(stub shim.ChaincodeStubInterface, rackid s
 
 	if sepcB == nil {
 		mylog.Warn("getRackEncourageScoreCfg: can not find cfg for %s, will use golobal.", rackid)
-		sepcB, err = stub.GetState(t.getRackGlobalEncourageScoreKey())
+		sepcB, err = stub.GetState(t.getGlobalRackEncourageScoreKey())
 		if err != nil {
 			return nil, mylog.Errorf("getRackEncourageScoreCfg GetState(global cfg) failed.rackid=%s err=%s", rackid, err)
 		}
@@ -2603,15 +2810,18 @@ func (t *KD) allocEncourageScoreForSales(stub shim.ChaincodeStubInterface, paraS
 
 	var eleDelim = ","
 	var rackRolesSales string
+	var errList []string
 	for _, v := range rackRolesSalesArr {
 		rackRolesSales = strings.Trim(strings.TrimSpace(v), eleDelim)
-		if !strings.Contains(rackRolesSales, rackRolesSales) {
+		if !strings.Contains(rackRolesSales, eleDelim) {
 			mylog.Errorf("encourageScoreBySales  rackRolesSales parse error, '%s' has no '%s'.", rackRolesSales, eleDelim)
+			errList = append(errList, rackRolesSales)
 			continue
 		}
 		var eles = strings.Split(rackRolesSales, eleDelim)
 		if len(eles) != 6 {
 			mylog.Errorf("encourageScoreBySales  rackRolesSales parse error, '%s' format error 1.", rackRolesSales)
+			errList = append(errList, rackRolesSales)
 			continue
 		}
 
@@ -2621,6 +2831,7 @@ func (t *KD) allocEncourageScoreForSales(stub shim.ChaincodeStubInterface, paraS
 		rrs.Sales, err = strconv.ParseInt(eles[1], 0, 64)
 		if err != nil {
 			mylog.Errorf("encourageScoreBySales  rackRolesSales parse error, '%s' format error 2.", rackRolesSales)
+			errList = append(errList, rrs.Rackid)
 			continue
 		}
 
@@ -2638,6 +2849,7 @@ func (t *KD) allocEncourageScoreForSales(stub shim.ChaincodeStubInterface, paraS
 		encourageScore, err := t.getRackEncourgeScoreBySales(stub, rrs.Rackid, rrs.Sales)
 		if err != nil {
 			mylog.Errorf("encourageScoreBySales  getRackEncourgePercentBySales failed, error=%s.", err)
+			errList = append(errList, rrs.Rackid)
 			continue
 		}
 
@@ -2650,8 +2862,13 @@ func (t *KD) allocEncourageScoreForSales(stub shim.ChaincodeStubInterface, paraS
 		err = t.allocEncourageScore(stub, &rres, transFromAcc, transType, transDesc, invokeTime, sameEntSaveTx, rrs.Sales)
 		if err != nil {
 			mylog.Errorf("encourageScoreBySales allocEncourageScore failed, error=%s.", err)
+			errList = append(errList, rrs.Rackid)
 			continue
 		}
+	}
+
+	if len(errList) > 0 {
+		return nil, mylog.Errorf("encourageScoreBySales: has some err,[%s].", strings.Join(errList, ";"))
 	}
 
 	return nil, nil
@@ -2768,16 +2985,19 @@ func (t *KD) allocEncourageScoreForNewRack(stub shim.ChaincodeStubInterface, par
 
 	var eleDelim = ","
 	var rackRolesScore string
+	var errList []string
 	for _, v := range rackRolesScoreArr {
 		rackRolesScore = strings.Trim(strings.TrimSpace(v), eleDelim)
-		if !strings.Contains(rackRolesScore, rackRolesScore) {
+		if !strings.Contains(rackRolesScore, eleDelim) {
 			mylog.Errorf("allocEncourageScoreForNewRack  rackRolesSales parse error, '%s' has no '%s'.", rackRolesScore, eleDelim)
+			errList = append(errList, rackRolesScore)
 			continue
 		}
 		var eles = strings.Split(rackRolesScore, eleDelim)
 		//至少包含货架id，四个角色
 		if len(eles) < 5 {
 			mylog.Errorf("allocEncourageScoreForNewRack  rackRolesSales parse error, '%s' format error 1.", rackRolesScore)
+			errList = append(errList, rackRolesScore)
 			continue
 		}
 
@@ -2792,6 +3012,7 @@ func (t *KD) allocEncourageScoreForNewRack(stub shim.ChaincodeStubInterface, par
 			rres.Scores, err = strconv.ParseInt(eles[5], 0, 64)
 			if err != nil {
 				mylog.Errorf("allocEncourageScoreForNewRack  rackRolesSales parse error, '%s' format error 2.", rackRolesScore)
+				errList = append(errList, rres.Rackid)
 				continue
 			}
 		} else {
@@ -2805,14 +3026,742 @@ func (t *KD) allocEncourageScoreForNewRack(stub shim.ChaincodeStubInterface, par
 		err = t.allocEncourageScore(stub, &rres, transFromAcc, transType, transDesc, invokeTime, sameEntSaveTx, 0)
 		if err != nil {
 			mylog.Errorf("allocEncourageScoreForNewRack allocEncourageScore failed, error=%s.", err)
+			errList = append(errList, rres.Rackid)
 			continue
 		}
+	}
+
+	if len(errList) > 0 {
+		return nil, mylog.Errorf("allocEncourageScoreForNewRack: some err,[%s].", strings.Join(errList, ";"))
 	}
 
 	return nil, nil
 }
 
 /* ----------------------- 积分奖励相关 ----------------------- */
+
+/* ----------------------- 货架融资相关 ----------------------- */
+func (t *KD) getGlobalRackFinancCfgKey() string {
+	return RACK_FINANCE_CFG_PREFIX + "global"
+}
+func (t *KD) getRackFinancCfgKey(rackid string) string {
+	return RACK_FINANCE_CFG_PREFIX + "rack_" + rackid
+}
+
+func (t *KD) getRackFinancCfg(stub shim.ChaincodeStubInterface, rackid string, prfc *RackFinanceCfg) ([]byte, error) {
+
+	var rfcB []byte
+	var err error
+
+	rfcB, err = stub.GetState(t.getRackFinancCfgKey(rackid))
+	if err != nil {
+		return nil, mylog.Errorf("getRackFinancCfg GetState failed.rackid=%s err=%s", rackid, err)
+	}
+
+	if rfcB == nil {
+		mylog.Warn("getRackFinancCfg: can not find cfg for %s, will use golobal.", rackid)
+		rfcB, err = stub.GetState(t.getGlobalRackFinancCfgKey())
+		if err != nil {
+			return nil, mylog.Errorf("getRackFinancCfg GetState(global cfg) failed.rackid=%s err=%s", rackid, err)
+		}
+	}
+
+	if prfc != nil {
+		err = json.Unmarshal(rfcB, prfc)
+		if err != nil {
+			return nil, mylog.Errorf("getRackFinancCfg Unmarshal failed.rackid=%s err=%s", rackid, err)
+		}
+	}
+
+	return rfcB, nil
+}
+
+func (t *KD) getFinacInfoKey(fiId string) string {
+	return FINACINFO_PREFIX + fiId
+}
+func (t *KD) getRackInfoKey(rId string) string {
+	return RACKINFO_PREFIX + rId
+}
+func (t *KD) getRackFinacInfoKey(rackId, finacId string) string {
+	return RACKFINACINFO_PREFIX + rackId + "_" + finacId
+}
+
+func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, fid, payee, transType, desc string, amount, invokeTime int64, sameEntSaveTx, isRenewal bool) ([]byte, error) {
+	var fiacInfoKey = t.getFinacInfoKey(fid)
+	fiB, err := stub.GetState(fiacInfoKey)
+	if err != nil {
+		return nil, mylog.Errorf("userBuyFinance:  GetState(%s) failed. err=%s.", fiacInfoKey, err)
+	}
+	var fi FinancialInfo
+	if fiB == nil {
+		fi.FID = fid
+		fi.Time = invokeTime
+	} else {
+		err = json.Unmarshal(fiB, &fi)
+		if err != nil {
+			return nil, mylog.Errorf("userBuyFinance:  Unmarshal(fib) failed. err=%s.", err)
+		}
+		//一般不会出现此情况
+		if fi.FID != fid {
+			return nil, mylog.Errorf("userBuyFinance:  fid missmatch(%s).", fi.FID)
+		}
+	}
+
+	var rackInfoKey = t.getRackInfoKey(rackid)
+	riB, err := stub.GetState(rackInfoKey)
+	if err != nil {
+		return nil, mylog.Errorf("userBuyFinance:  GetState(%s) failed. err=%s.", rackInfoKey, err)
+	}
+	var ri RackInfo
+	if riB == nil {
+		ri.RackID = rackid
+		ri.Time = invokeTime
+	} else {
+		err = json.Unmarshal(riB, &ri)
+		if err != nil {
+			return nil, mylog.Errorf("userBuyFinance:  Unmarshal(riB) failed. err=%s.", err)
+		}
+		//一般不会出现此情况
+		if ri.RackID != rackid {
+			return nil, mylog.Errorf("userBuyFinance:  rackid missmatch(%s).", ri.RackID)
+		}
+	}
+
+	//写入货架融资信息
+	rackFinacInfoKey := t.getRackFinacInfoKey(rackid, fid)
+	rfiB, err := stub.GetState(rackFinacInfoKey)
+	if err != nil {
+		return nil, mylog.Errorf("userBuyFinance:  GetState(%s) failed. err=%s.", rackFinacInfoKey, err)
+	}
+	var rfi RackFinancInfo
+	if rfiB == nil {
+		rfi.RackID = rackid
+		rfi.FID = fid
+		rfi.DataTime = invokeTime
+		rfi.SerialNum = 0 /////
+		rfi.AmountFinca = amount
+		rfi.UserAmountMap = make(map[string]int64)
+		rfi.UserAmountMap[accName] = amount
+
+		var rfc RackFinanceCfg
+		_, err = t.getRackFinancCfg(stub, rackid, &rfc)
+		if err != nil {
+			return nil, mylog.Errorf("financeBonus:  getRackFinancCfg failed. err=%s.", err)
+		}
+
+		var ear EarningAllocRate
+		_, err = t.getRackAllocCfg(stub, rackid, &ear)
+		if err != nil {
+			return nil, mylog.Errorf("financeBonus:  getRackAllocCfg failed. err=%s.", err)
+		}
+
+		rfi.RFCfg = rfc.PubRackFinanceCfg
+		rfi.RolesAllocRate = ear.RolesRate
+	} else {
+		err = json.Unmarshal(rfiB, &rfi)
+		if err != nil {
+			return nil, mylog.Errorf("userBuyFinance:  Unmarshal RackFinancInfo failed. err=%s.", err)
+		}
+		rfi.AmountFinca += amount
+		_, ok := rfi.UserAmountMap[accName]
+		if ok {
+			//如果用户已提取了收益，又来买，那么从新记录投资额，不能累计，否则会把前一次的累计进来。
+			if t.StrSliceContains(rfi.PayFinanceUserList, accName) {
+				rfi.AmountFinca -= rfi.UserAmountMap[accName] //实际投资额度要减去上一次的
+				rfi.UserAmountMap[accName] = amount
+				rfi.PayFinanceUserList = t.StrSliceDelete(rfi.PayFinanceUserList, accName)
+			} else {
+				rfi.UserAmountMap[accName] += amount
+			}
+		} else {
+			rfi.UserAmountMap[accName] = amount
+		}
+	}
+
+	var rfc RackFinanceCfg
+	_, err = t.getRackFinancCfg(stub, rackid, &rfc)
+	if err != nil {
+		return nil, mylog.Errorf("userBuyFinance:  getRackFinancCfg failed. err=%s.", err)
+	}
+
+	//看该货架是否有历史投资，如果有的话，这些投资会自动转到当前融资，就会导致超额。
+	var historyFinance int64 = 0
+	if !isRenewal { //自动续期时，不需要计算历史投资，因为续期的金额就是历史投资额
+		pfid, err := t.getPreviousFid(stub)
+		if err != nil {
+			return nil, mylog.Errorf("userBuyFinance: getPreviousFid failed. err=%s.", err)
+		}
+
+		mylog.Debug("userBuyFinance: pfid=%s", pfid)
+
+		//有前一期的fid时才计算。如果没有说明没有历史投资
+		if len(pfid) > 0 {
+			historyFinance, err = t.getRackHistoryFinance(stub, rackid, pfid)
+			if err != nil {
+				return nil, mylog.Errorf("userBuyFinance: getRackHistoryFinance failed. err=%s.", err)
+			}
+		}
+	}
+
+	//融资额度超出货架支持能力
+	if rfi.AmountFinca+historyFinance > rfc.InvestCap {
+		return nil, mylog.Errorf("userBuyFinance:  AmountFinca > rack's capacity. (%d,%d,%d)", rfi.AmountFinca, historyFinance, rfc.InvestCap)
+	}
+
+	//用户给融资方转账
+	if !isRenewal {
+		_, err = t.transferCoin(stub, accName, payee, transType, desc, amount, invokeTime, sameEntSaveTx)
+		if err != nil {
+			return nil, mylog.Errorf("userBuyFinance: transferCoin failed. err=%s.", err)
+		}
+	}
+
+	//转账成功后在用户entity中写入相应信息
+	accEnt, err := t.getEntity(stub, accName)
+	if err != nil {
+		return nil, mylog.Errorf("userBuyFinance: getEntity failed. err=%s.", err)
+	}
+	if accEnt.RFInfoMap == nil {
+		accEnt.RFInfoMap = make(map[string]int)
+	}
+	accEnt.RFInfoMap[t.getMapKey4RackFinance(rackid, fid)] = 0
+	accEnt.LatestFid = fid
+
+	err = t.setEntity(stub, accEnt)
+	if err != nil {
+		return nil, mylog.Errorf("userBuyFinance: setEntity failed. err=%s.", err)
+	}
+
+	mylog.Debug("userBuyFinance: ent=%v", *accEnt)
+
+	if !t.StrSliceContains(fi.RackList, ri.RackID) {
+		fi.RackList = append(fi.RackList, ri.RackID)
+	}
+	fiJson, err := json.Marshal(fi)
+	if err != nil {
+		return nil, mylog.Errorf("userBuyFinance:  Marshal failed. err=%s.", err)
+	}
+
+	if !t.StrSliceContains(ri.FinacList, fi.FID) {
+		ri.FinacList = append(ri.FinacList, fi.FID)
+	}
+
+	riJson, err := json.Marshal(ri)
+	if err != nil {
+		return nil, mylog.Errorf("userBuyFinance:  Marshal failed. err=%s.", err)
+	}
+	rfiJson, err := json.Marshal(rfi)
+	if err != nil {
+		return nil, mylog.Errorf("userBuyFinance:  Marshal failed. err=%s.", err)
+	}
+
+	err = t.PutState_Ex(stub, rackFinacInfoKey, rfiJson)
+	if err != nil {
+		return nil, mylog.Errorf("userBuyFinance:  PutState failed. err=%s.", err)
+	}
+
+	err = t.PutState_Ex(stub, rackInfoKey, riJson)
+	if err != nil {
+		return nil, mylog.Errorf("userBuyFinance:  PutState failed. err=%s.", err)
+	}
+
+	err = t.PutState_Ex(stub, fiacInfoKey, fiJson)
+	if err != nil {
+		return nil, mylog.Errorf("userBuyFinance:  PutState failed. err=%s.", err)
+	}
+
+	mylog.Debug("userBuyFinance: ri=%v fi=%v rfi=%v", ri, fi, rfi)
+
+	return nil, nil
+}
+
+func (t *KD) financeBonus(stub shim.ChaincodeStubInterface, fid, rackales string, invokeTime int64) ([]byte, error) {
+	//配置格式如下 "货架1:销售额;货架2:销售额"，
+	//防止输入错误，先去除两边的空格，然后再去除两边的';'（防止split出来空字符串）
+	var newStr = strings.Trim(strings.TrimSpace(rackales), ";")
+
+	var rackSalesArr []string
+
+	var err error
+
+	//含有";"，表示有多条配置，没有则说明只有一条配置
+	if strings.Contains(newStr, ";") {
+		rackSalesArr = strings.Split(newStr, ";")
+	} else {
+		rackSalesArr = append(rackSalesArr, newStr)
+	}
+
+	var eleDelim = ":"
+	var rackSales string
+	var errRackList []string
+	for _, v := range rackSalesArr {
+		rackSales = strings.Trim(strings.TrimSpace(v), eleDelim)
+		if !strings.Contains(rackSales, eleDelim) {
+			mylog.Errorf("financeBonus: rackSales parse error, '%s' has no '%s'.", rackSales, eleDelim)
+			errRackList = append(errRackList, rackSales)
+			continue
+		}
+		var eles = strings.Split(rackSales, eleDelim)
+		if len(eles) < 2 {
+			mylog.Errorf("financeBonus: rackSales parse error, '%s' format error 1.", rackSales)
+			errRackList = append(errRackList, rackSales)
+			continue
+		}
+
+		var rackid = eles[0]
+		var sales int64
+		sales, err = strconv.ParseInt(eles[1], 0, 64)
+		if err != nil {
+			mylog.Errorf("financeBonus: sales parse error, '%s' format error 2.", rackSales)
+			errRackList = append(errRackList, rackid)
+			continue
+		}
+
+		err = t.financeBonus4OneRack(stub, rackid, fid, sales, invokeTime)
+		if err != nil {
+			mylog.Errorf("financeBonus: financeBonus4OneRack failed, err=%s", err)
+			errRackList = append(errRackList, rackid)
+			continue
+		}
+	}
+
+	if len(errRackList) > 0 {
+		return nil, mylog.Errorf("financeBonus: has some err,[%s]", strings.Join(errRackList, ";"))
+	}
+
+	return nil, nil
+}
+
+func (t *KD) financeBonus4OneRack(stub shim.ChaincodeStubInterface, rackid, fid string, sales, invokeTime int64) error {
+	var rackFinacInfoKey = t.getRackFinacInfoKey(rackid, fid)
+
+	rfiB, err := stub.GetState(rackFinacInfoKey)
+	if err != nil {
+		return mylog.Errorf("financeBonus:  GetState(%s) failed. err=%s.", rackFinacInfoKey, err)
+	}
+	if rfiB == nil {
+		return mylog.Errorf("financeBonus:  FinancialInfo not exists.")
+	}
+	var rfi RackFinancInfo
+	err = json.Unmarshal(rfiB, &rfi)
+	if err != nil {
+		return mylog.Errorf("financeBonus:  Unmarshal failed. err=%s.", err)
+	}
+
+	rfi.CEInfo.WareSales = sales
+
+	//货架利润
+	var rackProfit = rfi.CEInfo.WareSales * int64(rfi.RFCfg.ProfitsPercent) / 100
+	//经营者获取的利润
+	var sellerProfit = rackProfit * rfi.RolesAllocRate.SellerRate / (rfi.RolesAllocRate.SellerRate + rfi.RolesAllocRate.FielderRate + rfi.RolesAllocRate.DeliveryRate + rfi.RolesAllocRate.PlatformRate)
+	//分给投资者的利润
+	var profit = sellerProfit * int64(rfi.RFCfg.InvestProfitsPercent) / 100
+
+	profit = profit / 100 //利润的单位为分，一块钱兑一积分
+
+	mylog.Debug("financeBonus:rfi.RFCfg=%v, rfi.RolesAllocRate=%v", rfi.RFCfg, rfi.RolesAllocRate)
+	mylog.Debug("financeBonus:rackProfit=%d, sellerProfit=%d, profit=%d", rackProfit, sellerProfit, profit)
+
+	var amtCheck int64 = 0
+	var profitCheck int64 = 0
+	var accProfit int64
+	if rfi.UserProfitMap == nil {
+		rfi.UserProfitMap = make(map[string]int64)
+	}
+
+	for acc, amt := range rfi.UserAmountMap {
+		amtCheck += amt
+		accProfit = amt * profit / rfi.AmountFinca
+		rfi.UserProfitMap[acc] = accProfit
+		profitCheck += accProfit
+	}
+	if profitCheck > profit || amtCheck != rfi.AmountFinca {
+		return mylog.Errorf("financeBonus:  bonus check(%d,%d,%d,%d) failed.", profitCheck, profit, amtCheck, rfi.AmountFinca)
+	}
+	mylog.Debug("financeBonus:  rfi=%v", rfi)
+
+	rfiJson, err := json.Marshal(rfi)
+	if err != nil {
+		return mylog.Errorf("financeBonus:  Marshal failed. err=%s.", err)
+	}
+
+	err = t.PutState_Ex(stub, rackFinacInfoKey, rfiJson)
+	if err != nil {
+		return mylog.Errorf("financeBonus:  PutState failed. err=%s.", err)
+	}
+
+	mylog.Debug("financeBonus: rfi=%v", rfi)
+
+	return nil
+}
+
+var currentFidCache string
+
+func (t *KD) setCurrentFid(stub shim.ChaincodeStubInterface, currentFid string) error {
+	//因为会调用多次，所以用cache加速一下
+	if len(currentFidCache) > 0 && currentFidCache == currentFid {
+		return nil
+	}
+
+	hisB, err := stub.GetState(RACKFINACHISTORY_KEY)
+	if err != nil {
+		return mylog.Errorf("setCurrentFid: GetState failed. err=%s.", err)
+	}
+	var his RackFinancHistory
+	if hisB == nil {
+		his.PreCurrFID[1] = currentFid
+		currentFidCache = currentFid
+	} else {
+		err = json.Unmarshal(hisB, &his)
+		if err != nil {
+			return mylog.Errorf("setCurrentFid: Unmarshal failed. err=%s.", err)
+		}
+		//该函数可能调用多次，如果和当前值相同，不用再设置
+		if his.PreCurrFID[1] == currentFid {
+			currentFidCache = currentFid
+			return nil
+		}
+
+		his.PreCurrFID[0] = his.PreCurrFID[1]
+		his.PreCurrFID[1] = currentFid
+		currentFidCache = currentFid
+	}
+
+	hisB, err = json.Marshal(his)
+	if err != nil {
+		return mylog.Errorf("setCurrentFid: Marshal failed. err=%s.", err)
+	}
+
+	err = t.PutState_Ex(stub, RACKFINACHISTORY_KEY, hisB)
+	if err != nil {
+		return mylog.Errorf("setCurrentFid: PutState_Ex failed. err=%s.", err)
+	}
+
+	mylog.Debug("setCurrentFid: his=%v", his)
+
+	return nil
+}
+
+func (t *KD) getRecentlyFid(stub shim.ChaincodeStubInterface, getCurrent bool) (string, error) {
+	hisB, err := stub.GetState(RACKFINACHISTORY_KEY)
+	if err != nil {
+		return "", mylog.Errorf("setCurrentFid: GetState failed. err=%s.", err)
+	}
+	if hisB == nil {
+		//return "", mylog.Errorf("setCurrentFid: nil info.")
+		return "", nil //如果第一次执行，这个可能为空
+	}
+
+	var his RackFinancHistory
+	err = json.Unmarshal(hisB, &his)
+	if err != nil {
+		return "", mylog.Errorf("setCurrentFid: Unmarshal failed. err=%s.", err)
+	}
+
+	if getCurrent {
+		return his.PreCurrFID[1], nil
+	} else {
+		return his.PreCurrFID[0], nil
+	}
+
+}
+func (t *KD) getPreviousFid(stub shim.ChaincodeStubInterface) (string, error) {
+	return t.getRecentlyFid(stub, false)
+}
+func (t *KD) getLatestFid(stub shim.ChaincodeStubInterface) (string, error) {
+	return t.getRecentlyFid(stub, true)
+}
+
+func (t *KD) getUserInvestAmount(stub shim.ChaincodeStubInterface, accName, rackid, fid string) (int64, error) {
+	/*
+	   fid, err := t.getLatestFid(stub)
+	   if err != nil {
+	   	return 0, mylog.Errorf("getUserHistoryFinance: getLatestFid failed. err=%s.", err)
+	   }
+	*/
+
+	ent, err := t.getEntity(stub, accName)
+	if err != nil {
+		return 0, mylog.Errorf("getUserHistoryFinance: getEntity failed. err=%s.", err)
+	}
+
+	var rfkey = t.getMapKey4RackFinance(rackid, fid)
+
+	if ent.RFInfoMap == nil {
+		mylog.Debug("getUserHistoryFinance: pair(%v) not exists in %s's acc.", rfkey, accName)
+		return 0, nil
+	}
+
+	if _, ok := ent.RFInfoMap[rfkey]; !ok {
+		mylog.Debug("getUserHistoryFinance: pair(%v) not exists in %s's acc.", rfkey, accName)
+		return 0, nil
+	}
+
+	rfiB, err := stub.GetState(t.getRackFinacInfoKey(rackid, fid))
+	if err != nil {
+		return 0, mylog.Errorf("getUserHistoryFinance:  GetState failed. err=%s.", err)
+	}
+	//ent中记录了该条记录，肯定是有的，没有则报错
+	if rfiB == nil {
+		return 0, mylog.Errorf("getUserHistoryFinance:  FinancialInfo not exists.")
+	}
+	var rfi RackFinancInfo
+	err = json.Unmarshal(rfiB, &rfi)
+	if err != nil {
+		return 0, mylog.Errorf("getUserHistoryFinance:  Unmarshal failed. err=%s.", err)
+	}
+	//投资记录没有该账户，报错
+	if _, ok := rfi.UserAmountMap[accName]; !ok {
+		return 0, mylog.Errorf("getUserHistoryFinance: acc not exists in UserAmountMap.")
+	}
+
+	return rfi.UserAmountMap[accName], nil
+}
+
+func (t *KD) getRackHistoryFinance(stub shim.ChaincodeStubInterface, rackid, fid string) (int64, error) {
+	/*
+		    fid, err := t.getLatestFid(stub)
+			if err != nil {
+				return 0, mylog.Errorf("getRackHistoryFinance: getLatestFid failed. err=%s.", err)
+			}
+	*/
+
+	rfiB, err := stub.GetState(t.getRackFinacInfoKey(rackid, fid))
+	if err != nil {
+		return 0, mylog.Errorf("getRackHistoryFinance:  GetState failed. err=%s.", err)
+	}
+	if rfiB == nil {
+		mylog.Debug("getRackHistoryFinance: rfiB is nil.")
+		return 0, nil
+	}
+	var rfi RackFinancInfo
+	err = json.Unmarshal(rfiB, &rfi)
+	if err != nil {
+		return 0, mylog.Errorf("getRackHistoryFinance:  Unmarshal failed. err=%s.", err)
+	}
+	var totalAmt int64 = 0
+	for _, v := range rfi.UserAmountMap {
+		totalAmt += v
+	}
+
+	return totalAmt, nil
+}
+
+func (t *KD) financeRenewal(stub shim.ChaincodeStubInterface, currentFid string, invokeTime int64) error {
+	//看上期的理财中，哪些没有提取的自动续期
+	preFid, err := t.getPreviousFid(stub)
+	if err != nil {
+		return mylog.Errorf("financeRenewal: getPreviousFid failed. err=%s.", err)
+	}
+
+	mylog.Debug("financeRenewal: preFid=%s", preFid)
+
+	//没有上期理财，说明是第一次，退出
+	if len(preFid) == 0 {
+		mylog.Debug("financeRenewal: no preFid.")
+		return nil
+	}
+
+	if preFid == currentFid {
+		return mylog.Errorf("financeRenewal: preFid == currentFid, error.")
+	}
+
+	fiB, err := stub.GetState(t.getFinacInfoKey(preFid))
+	if err != nil {
+		return mylog.Errorf("financeRenewal: GetState(fi=%s) failed. err=%s.", preFid, err)
+	}
+
+	var fi FinancialInfo
+	err = json.Unmarshal(fiB, &fi)
+	if err != nil {
+		return mylog.Errorf("financeRenewal: Unmarshal failed. err=%s.", err)
+	}
+
+	for _, rackid := range fi.RackList {
+		rfiB, err := stub.GetState(t.getRackFinacInfoKey(rackid, preFid))
+		if err != nil {
+			return mylog.Errorf("financeRenewal: GetState(rfi=%s,%s) failed. err=%s.", rackid, preFid, err)
+		}
+		if rfiB == nil {
+			continue
+		}
+
+		var rfi RackFinancInfo
+		err = json.Unmarshal(rfiB, &rfi)
+		if err != nil {
+			return mylog.Errorf("financeRenewal: Unmarshal(rfi=%s,%s) failed. err=%s.", rackid, preFid, err)
+		}
+		//退出融资的人数等于融资的人数，说明全退出了
+		if len(rfi.PayFinanceUserList) == len(rfi.UserAmountMap) {
+			continue
+		}
+
+		for acc, amt := range rfi.UserAmountMap {
+			if t.StrSliceContains(rfi.PayFinanceUserList, acc) {
+				continue
+			}
+
+			mylog.Debug("financeRenewal: renewal for %s,%s", rackid, currentFid)
+
+			_, err = t.userBuyFinance(stub, acc, rackid, currentFid, "", "", "", amt, invokeTime, true, true)
+			if err != nil {
+				return mylog.Errorf("financeRenewal: userBuyFinance(rfi=%s,%s,%s) failed. err=%s.", rackid, preFid, acc, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (t *KD) payUserFinance(stub shim.ChaincodeStubInterface, accName, reacc, rackid string, invokeTime int64, transType, desc string, sameEntSaveTx bool) error {
+	reaccEnt, err := t.getEntity(stub, reacc)
+	if err != nil {
+		return mylog.Errorf("payUserFinance: getEntity(acc=%s) failed. err=%s.", reacc, err)
+	}
+	mylog.Debug("payUserFinance: before reaccEnt = %v", reaccEnt)
+
+	if reaccEnt.RFInfoMap == nil || len(reaccEnt.RFInfoMap) == 0 {
+		mylog.Debug("payUserFinance: RFInfoMap empty.")
+		return nil
+	}
+
+	//获取用户投资的本金  最近一期投资的额度为本金，因为投资会自动续期
+	var investAmt int64 = 0
+	investAmt, err = t.getUserInvestAmount(stub, reacc, rackid, reaccEnt.LatestFid)
+	if err != nil {
+		return mylog.Errorf("payUserFinance: getUserInvestAmount failed. err=%s.", err)
+	}
+
+	mylog.Debug("payUserFinance: acc=%s investAmt=%d (%s,%s)", reacc, investAmt, rackid, reaccEnt.LatestFid)
+
+	var profit int64 = 0
+	var delKeyList []string
+	for rfkey, _ := range reaccEnt.RFInfoMap {
+		r, f := t.getRackFinanceFromMapKey(rfkey)
+		if r != rackid {
+			continue
+		}
+
+		var rfiKey = t.getRackFinacInfoKey(rackid, f)
+		rfiB, err := stub.GetState(rfiKey)
+		if err != nil {
+			return mylog.Errorf("payUserFinance:  GetState(%s,%s) failed. err=%s.", rackid, f, err)
+		}
+		//ent中记录了该条记录，肯定是有的，没有则报错
+		if rfiB == nil {
+			return mylog.Errorf("payUserFinance:  FinancialInfo(%s,%s) not exists.", rackid, f)
+		}
+		var rfi RackFinancInfo
+		err = json.Unmarshal(rfiB, &rfi)
+		if err != nil {
+			return mylog.Errorf("payUserFinance:  Unmarshal(%s,%s) failed. err=%s.", rackid, f, err)
+		}
+
+		if rfi.UserProfitMap != nil {
+			profit += rfi.UserProfitMap[reacc]
+		}
+
+		rfi.PayFinanceUserList = append(rfi.PayFinanceUserList, reacc)
+		rfiB, err = json.Marshal(rfi)
+		if err != nil {
+			return mylog.Errorf("payUserFinance:  Marshal(%s,%s) failed. err=%s.", rackid, f, err)
+		}
+
+		err = t.PutState_Ex(stub, rfiKey, rfiB)
+		if err != nil {
+			return mylog.Errorf("payUserFinance:  PutState_Ex(%s,%s) failed. err=%s.", rackid, f, err)
+		}
+
+		mylog.Debug("payUserFinance: acc=%s rfi=%v", reacc, rfi)
+
+		//delete(reaccEnt.RFInfoMap, rfkey)
+		delKeyList = append(delKeyList, rfkey)
+	}
+
+	var totalAmt = investAmt + profit
+
+	mylog.Debug("payUserFinance: %s will pay %d to %s.", accName, totalAmt, reacc)
+
+	_, err = t.transferCoin(stub, accName, reacc, transType, desc, totalAmt, invokeTime, sameEntSaveTx)
+	if err != nil {
+		return mylog.Errorf("payUserFinance:  transferCoin(%s) failed. err=%s.", reacc, err)
+	}
+
+	//转账之后， reacc会发生变化，所以必须再取一次entity
+	reaccEnt, err = t.getEntity(stub, reacc)
+	if err != nil {
+		return mylog.Errorf("payUserFinance: getEntity2(acc=%s) failed. err=%s.", reacc, err)
+	}
+
+	//成功之后再删除key
+	for _, p := range delKeyList {
+		delete(reaccEnt.RFInfoMap, p)
+	}
+
+	err = t.setEntity(stub, reaccEnt)
+	if err != nil {
+		return mylog.Errorf("payUserFinance:  setEntity(%s) failed. err=%s.", reacc, err)
+	}
+
+	mylog.Debug("payUserFinance: after reaccEnt = %v", *reaccEnt)
+
+	return nil
+}
+
+const rackFinanceKeyDelim = "_@!&!@_"
+
+func (t *KD) getMapKey4RackFinance(rackid, fid string) string {
+	return rackid + rackFinanceKeyDelim + fid
+}
+func (t *KD) getRackFinanceFromMapKey(key string) (string, string) {
+	pair := strings.Split(key, rackFinanceKeyDelim)
+	return pair[0], pair[1]
+}
+
+func (t *KD) getUserFinanceProfit(stub shim.ChaincodeStubInterface, accName, rackid string) (int64, error) {
+	accEnt, err := t.getEntity(stub, accName)
+	if err != nil {
+		return 0, mylog.Errorf("getUserFinanceProfit: getEntity(acc=%s) failed. err=%s.", accName, err)
+	}
+	mylog.Debug("getUserFinanceProfit:  accEnt = %v", accEnt)
+
+	if accEnt.RFInfoMap == nil || len(accEnt.RFInfoMap) == 0 {
+		mylog.Debug("getUserFinanceProfit: RFInfoMap empty.")
+		return 0, nil
+	}
+
+	var profit int64 = 0
+
+	for rfkey, _ := range accEnt.RFInfoMap {
+		r, f := t.getRackFinanceFromMapKey(rfkey)
+		if r != rackid {
+			continue
+		}
+
+		var rfiKey = t.getRackFinacInfoKey(rackid, f)
+		rfiB, err := stub.GetState(rfiKey)
+		if err != nil {
+			return profit, mylog.Errorf("getUserFinanceProfit:  GetState(%s,%s) failed. err=%s.", rackid, f, err)
+		}
+		//ent中记录了该条记录，肯定是有的，没有则报错
+		if rfiB == nil {
+			return profit, mylog.Errorf("getUserFinanceProfit:  FinancialInfo(%s,%s) not exists.", rackid, f)
+		}
+		var rfi RackFinancInfo
+		err = json.Unmarshal(rfiB, &rfi)
+		if err != nil {
+			return profit, mylog.Errorf("getUserFinanceProfit:  Unmarshal(%s,%s) failed. err=%s.", rackid, f, err)
+		}
+
+		if rfi.UserProfitMap != nil {
+			profit += rfi.UserProfitMap[accName]
+		}
+	}
+
+	return profit, nil
+}
+
+/* ----------------------- 货架融资相关 end ----------------------- */
 
 func (t *KD) isAdmin(stub shim.ChaincodeStubInterface, accName string) bool {
 	//获取管理员帐号(央行账户作为管理员帐户)
@@ -2836,6 +3785,27 @@ func (t *KD) PutState_Ex(stub shim.ChaincodeStubInterface, key string, value []b
 		return mylog.Errorf("PutState_Ex key err.")
 	}
 	return stub.PutState(key, value)
+}
+func (t *KD) StrSliceContains(list []string, value string) bool {
+	for _, v := range list {
+		if v == value {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (t *KD) StrSliceDelete(list []string, value string) []string {
+	var newList []string
+
+	for _, v := range list {
+		if v != value {
+			newList = append(newList, v)
+		}
+	}
+
+	return newList
 }
 
 func main() {

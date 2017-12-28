@@ -46,7 +46,7 @@ chain.addPeer(PEER_ADDRESS);
 
 
 chain.setDeployWaitTime(55); //http请求默认超时是60s（nginx），所以这里的超时时间要少于60s，否则http请求会超时失败
-chain.setInvokeWaitTime(20);
+chain.setInvokeWaitTime(10);
 
 // parse application/x-www-form-urlencoded  
 app.use(bodyParser.urlencoded({ extended: false }))  
@@ -288,7 +288,48 @@ function handle_invoke(params, res, req) {
                     sameEntSaveTrans = "1" //默认记录
                 
                 invokeRequest.args.push(cfg, transType, description, sameEntSaveTrans)
-            
+                
+            } else if (func == "buyFinance") {
+                var rackid = params.rid;
+                var financid = params.fid;
+                var payee = params.pee;
+                var amout = params.amt;
+                var transType = params.tstp;
+                if (transType == undefined)
+                    transType = ""
+                var description = params.desc;
+                if (description == undefined)
+                    description = ""
+                var sameEntSaveTrans = params.sest; //如果转出和转入账户相同，是否记录交易 0表示不记录 1表示记录
+                if (sameEntSaveTrans == undefined)
+                    sameEntSaveTrans = "1" //默认记录
+                
+                invokeRequest.args.push(rackid, financid, payee, amout, transType, description, sameEntSaveTrans)
+                
+            } else if (func == "financeIssueFinish") {
+                var financid = params.fid;
+                invokeRequest.args.push(financid)
+                
+            } else if (func == "payFinance") {
+                var rackid = params.rid;
+                var payee = params.pee;
+                var transType = params.tstp;
+                if (transType == undefined)
+                    transType = ""
+                var description = params.desc;
+                if (description == undefined)
+                    description = ""
+                var sameEntSaveTrans = params.sest; //如果转出和转入账户相同，是否记录交易 0表示不记录 1表示记录
+                if (sameEntSaveTrans == undefined)
+                    sameEntSaveTrans = "1" //默认记录
+                
+                invokeRequest.args.push(rackid, payee, transType, description, sameEntSaveTrans)
+                
+            } else if (func == "financeBouns") {
+                var financid = params.fid;
+                var rackSalesCfg = params.rscfg;
+                invokeRequest.args.push(financid, rackSalesCfg)
+                
             }
 
             // invoke
@@ -307,7 +348,7 @@ function handle_invoke(params, res, req) {
                 }
                 
                 //去掉无用的信息,不打印
-                invokeRequest.chaincodeID = "*"
+                invokeRequest.chaincodeID = invokeRequest.chaincodeID.substr(0,3) + "*" //打印前四个字符，看id是否正确
                 invokeRequest.userCert = "*"
                 if (func == "account" || func == "accountCB")
                     invokeRequest.args[invokeRequest.args.length - 1] = "*"
@@ -322,7 +363,7 @@ function handle_invoke(params, res, req) {
                 }
 
                 //去掉无用的信息,不打印
-                invokeRequest.chaincodeID = "*"
+                invokeRequest.chaincodeID = invokeRequest.chaincodeID.substr(0,3) + "*" //打印前四个字符，看id是否正确
                 invokeRequest.userCert = "*"
                 if (func == "account" || func == "accountCB")
                     invokeRequest.args[invokeRequest.args.length - 1] = "*"
@@ -476,6 +517,9 @@ function handle_query(params, res, req) {
             } else if (func == "queryState"){
                 var key = params.key
                 queryRequest.args.push(key)
+            } else if (func == "getRackFinanceProfit") {
+                var rackid = params.rid
+                queryRequest.args.push(rackid)
             }
             
             // query
@@ -499,8 +543,8 @@ function handle_query(params, res, req) {
                 }
                 
                 //去掉无用的信息,不打印
-                queryRequest.userCert = "*"
-                queryRequest.chaincodeID = "*"
+                queryRequest.userCert = "*" 
+                queryRequest.chaincodeID = queryRequest.chaincodeID.substr(0,3) + "*" //打印前四个字符，看id是否正确
                 var maxPrtLen = 256
                 if (resultStr.length > maxPrtLen)
                     resultStr = resultStr.substr(0, maxPrtLen) + "......"
@@ -518,7 +562,7 @@ function handle_query(params, res, req) {
                 
                 //去掉无用的信息,不打印
                 queryRequest.userCert = "*"
-                queryRequest.chaincodeID = "*"
+                queryRequest.chaincodeID = queryRequest.chaincodeID.substr(0,3) + "*" //打印前四个字符，看id是否正确
                 logger.error("Query failed : request=%j, error=%j",queryRequest,error.msg);
             });
         })
