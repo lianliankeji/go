@@ -330,6 +330,35 @@ function handle_invoke(params, res, req) {
                 var rackSalesCfg = params.rscfg;
                 invokeRequest.args.push(financid, rackSalesCfg)
                 
+            } else if (func == "setFinanceCfg") {
+                var rackid = params.rid;
+                var profitsPercent = params.prop;
+                var investProfitsPercent = params.ivpp;
+                var investCapacity = params.ivc;
+                invokeRequest.args.push(rackid, profitsPercent, investProfitsPercent, investCapacity)
+                
+            } else if (func == "updateCert") {
+                var upUser = params.uusr;
+                var upAcc = params.uacc;
+                var upCert = params.ucert;
+                invokeRequest.args.push(upUser, upAcc, upCert)
+                
+            } else if (func == "AuthCert") {
+                var authAcc = params.aacc;
+                var authUser = params.ausr;
+                var authCert = params.acert;
+                invokeRequest.args.push(authAcc, authUser, authCert)
+                
+            } else if (func == "setWorldState") {
+                var fileName = params.fnm;
+                var needHash = params.hash;
+                if (needHash == undefined)
+                    needHash = "0"
+                var sameKeyOverwrite = params.skow;
+                if (sameKeyOverwrite == undefined)
+                    sameKeyOverwrite = "1"  //默认相同的key覆盖
+                
+                invokeRequest.args.push(fileName, needHash, sameKeyOverwrite)
             }
 
             // invoke
@@ -390,11 +419,12 @@ function handle_query(params, res, req) {
             //获取用户失败，或者用户没有登陆。一般情况是没有注册该用户。
 
             if (func == "isAccExists") { //如果是查询账户是否存在，这里返回不存在"0"
+                logger.warn("Query(%s): getUser failed, user %s not exsit, return 0.", func, enrollUser)
                 body.result = "0"
                 res.send(body)
                 return
             } else if (func == "getBalance") { //如果是查询账户余额，这里返回"0"
-                logger.warn("Query(%s): getUser failed, user %s not exsit.", func, enrollUser)
+                logger.warn("Query(%s): getUser failed, user %s not exsit, return 0.", func, enrollUser)
                 body.result = "0"
                 res.send(body)
                 return
@@ -412,11 +442,12 @@ function handle_query(params, res, req) {
                 //目前发生错误的情况为证书文件不存在，是因为证书认证这个功能没加以前，就存在了一些用户 ，所以上面的getUser成功，而这里失败。 
                 //失败时，暂时特殊处理isAccExists和getBalance两个函数
                 if (func == "isAccExists") { //如果是查询账户是否存在，这里返回不存在"0"
+                    logger.warn("Query(%s): getCert failed, user %s not exsit, return 0.", func, enrollUser)
                     body.result = "0"
                     res.send(body)
                     return
                 } else if (func == "getBalance") { //如果是查询账户余额，这里返回"0"
-                    logger.warn("Query(%s): getCert failed, user %s not exsit.", func, enrollUser)
+                    logger.warn("Query(%s): getCert failed, user %s not exsit, return 0.", func, enrollUser)
                     body.result = "0"
                     res.send(body)
                     return
@@ -434,16 +465,17 @@ function handle_query(params, res, req) {
             var ccId = params.ccId;
             
             var acc = params.acc;
+            /* 现在都需要账户acc
             if (acc == undefined)  //acc可能不需要
                 acc = ""
-
+            */
 
             var queryRequest = {
                 chaincodeID: ccId,
                 fcn: func,
                 attrs: getCertAttrKeys, //代码里会获取用户的attr，这里要开启
                 userCert: TCert,
-                args: [enrollUser, acc],
+                args: [enrollUser, acc, Date.now() + ""],
                 confidential: isConfidential
             };   
             
@@ -510,7 +542,7 @@ function handle_query(params, res, req) {
                 
                 queryRequest.args.push(rackid, allocKey, begSeq, count, begTime, endTime, qAcc)
                 
-            } else if (func == "queryRackAllocCfg" || func == "getSESCfg") {
+            } else if (func == "getRackAllocCfg" || func == "getSESCfg" || func == "getRackFinanceCfg") {
                 var rackid = params.rid
                 queryRequest.args.push(rackid)
                 
@@ -520,6 +552,18 @@ function handle_query(params, res, req) {
             } else if (func == "getRackFinanceProfit") {
                 var rackid = params.rid
                 queryRequest.args.push(rackid)
+            } else if (func == "getRackRestFinanceCapacity") {
+                var rackid = params.rid
+                var fid = params.fid
+                queryRequest.args.push(rackid, fid)
+            } else if (func == "getWorldState") {
+                var needHash = params.hash
+                if (needHash == undefined) 
+                    needHash = "0"    //默认不用hash
+                var flushLimit = params.flmt
+                if (flushLimit == undefined) 
+                    flushLimit = "-1"    //默认不用hash
+                queryRequest.args.push(needHash, flushLimit)
             }
             
             // query
