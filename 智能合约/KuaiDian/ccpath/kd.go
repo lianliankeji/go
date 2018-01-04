@@ -277,13 +277,14 @@ type RackFinancInfo struct {
 	CEInfo             CostEarnInfo      `json:"cei"`  //成本及收益
 	RFCfg              PubRackFinanceCfg `json:"rfc"`
 	RolesAllocRate     RolesRate         `json:"rar"`
-	UserAmountMap      map[string]int64  `json:"uamp"` //每个用户投资的金额
+	UserAmountMap      map[string]int64  `json:"uamp"` //每个用户投资的金额（包括新买的和续期的）
 	UserProfitMap      map[string]int64  `json:"upmp"` //每个用户收益的金额
+	UserRenewalMap     map[string]int64  `json:"urmp"` //每个用户续期的金额
 	Stage              int               `json:"stg"`  //处于什么阶段
 	PayFinanceUserList []string          `json:"pful"` //退出投资的用户列表
 	/*
-		    如果用户本期未提取的投资，本金会自动转到下期（但是这个结构中的金额是不动的），所以每个用户的所有本金
-			需要从最新的的理财中获取， 而收益从历史的每一次投资获取。
+	   如果用户本期未提取的投资，本金会自动转到下期（但是这个结构中的金额是不动的），所以每个用户的所有本金
+	   需要从最新的的理财中获取， 而收益从历史的每一次投资获取。
 	*/
 }
 
@@ -2036,12 +2037,12 @@ func (t *KD) verifySign(stub shim.ChaincodeStubInterface, certificate []byte) (b
 
 func (t *KD) verifyIdentity(stub shim.ChaincodeStubInterface, userName string, ent *AccountEntity, attrs *UserAttrs) (bool, error) {
 	/*
-		因为用到了认证用户，不能使用属性中的用户名来验证了。因为属性中存的是ent.Owner
-			//有时获取不到attr，这里做个判断，如果获取到再判断是否和账户中的用户相同
-			if len(attrs.UserName) > 0 && ent.Owner != attrs.UserName {
-				mylog.Errorf("verifyIdentity: user check failed(%s,%s).", ent.Owner, attrs.UserName)
-				return false, mylog.Errorf("verifyIdentity: user check failed(%s,%s).", ent.Owner, attrs.UserName)
-			}
+	   因为用到了认证用户，不能使用属性中的用户名来验证了。因为属性中存的是ent.Owner
+	       //有时获取不到attr，这里做个判断，如果获取到再判断是否和账户中的用户相同
+	       if len(attrs.UserName) > 0 && ent.Owner != attrs.UserName {
+	           mylog.Errorf("verifyIdentity: user check failed(%s,%s).", ent.Owner, attrs.UserName)
+	           return false, mylog.Errorf("verifyIdentity: user check failed(%s,%s).", ent.Owner, attrs.UserName)
+	       }
 	*/
 	var cert []byte
 
@@ -3638,18 +3639,22 @@ func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, f
 		rfi.AmountFinca = amount
 		rfi.UserAmountMap = make(map[string]int64)
 		rfi.UserAmountMap[accName] = amount
+		rfi.UserRenewalMap = make(map[string]int64)
+		if isRenewal {
+			rfi.UserRenewalMap[accName] = amount
+		}
 		rfi.Stage = FINANC_STAGE_ISSUE_BEGING
 
 		var rfc RackFinanceCfg
 		_, err = t.getRackFinancCfg(stub, rackid, &rfc)
 		if err != nil {
-			return nil, mylog.Errorf("financeBonus:  getRackFinancCfg failed. err=%s.", err)
+			return nil, mylog.Errorf("userBuyFinance:  getRackFinancCfg failed. err=%s.", err)
 		}
 
 		var ear EarningAllocRate
 		_, err = t.getRackAllocCfg(stub, rackid, &ear)
 		if err != nil {
-			return nil, mylog.Errorf("financeBonus:  getRackAllocCfg failed. err=%s.", err)
+			return nil, mylog.Errorf("userBuyFinance:  getRackAllocCfg failed. err=%s.", err)
 		}
 
 		rfi.RFCfg = rfc.PubRackFinanceCfg
@@ -3668,16 +3673,25 @@ func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, f
 		rfi.AmountFinca += amount
 		_, ok := rfi.UserAmountMap[accName]
 		if ok {
-			//如果用户已提取了收益，又来买，那么从新记录投资额，不能累计，否则会把前一次的累计进来。
+			//如果用户已提取了，又来买，那么从新记录投资额，不能累计，否则会把前一次的累计进来。
 			if t.StrSliceContains(rfi.PayFinanceUserList, accName) {
 				rfi.AmountFinca -= rfi.UserAmountMap[accName] //实际投资额度要减去上一次的
 				rfi.UserAmountMap[accName] = amount
+				if isRenewal {
+					rfi.UserRenewalMap[accName] = amount
+				}
 				rfi.PayFinanceUserList = t.StrSliceDelete(rfi.PayFinanceUserList, accName)
 			} else {
 				rfi.UserAmountMap[accName] += amount
+				if isRenewal {
+					rfi.UserRenewalMap[accName] = amount
+				}
 			}
 		} else {
 			rfi.UserAmountMap[accName] = amount
+			if isRenewal {
+				rfi.UserRenewalMap[accName] = amount
+			}
 		}
 	}
 
@@ -3870,7 +3884,6 @@ func (t *KD) financeBonus4OneRack(stub shim.ChaincodeStubInterface, rackid, fid 
 	profit = profit / 100 //利润的单位为分，一块钱兑一积分
 
 	mylog.Debug("financeBonus:rfi.RFCfg=%+v, rfi.RolesAllocRate=%+v", rfi.RFCfg, rfi.RolesAllocRate)
-	mylog.Debug("financeBonus:rackProfit=%d, sellerProfit=%d, profit=%d", rackProfit, sellerProfit, profit)
 
 	var amtCheck int64 = 0
 	var profitCheck int64 = 0
@@ -3881,10 +3894,13 @@ func (t *KD) financeBonus4OneRack(stub shim.ChaincodeStubInterface, rackid, fid 
 
 	var cost = rfi.CEInfo.WareSales * int64(100-rfi.RFCfg.ProfitsPercent) / 100 //成本
 
+	mylog.Debug("financeBonus:rackProfit=%d, sellerProfit=%d, profit=%d, cost=%d", rackProfit, sellerProfit, profit, cost)
+
 	for acc, amt := range rfi.UserAmountMap {
 		amtCheck += amt
 		//accProfit = amt * profit / rfi.AmountFinca
-		accProfit = amt * profit / cost //分母不使用投资总额，使用当期成本
+		//accProfit = amt * profit / (cost / 100) //分母不使用投资总额，使用当期成本, cost的单位为分，所以要再除以100
+		accProfit = amt * profit / rfi.RFCfg.InvestCapacity
 		rfi.UserProfitMap[acc] = accProfit
 		profitCheck += accProfit
 	}

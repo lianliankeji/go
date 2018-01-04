@@ -117,6 +117,8 @@ function handle_test(params, res, req){
     return
 }
 
+const globalCcid = "ea915e67314a1ad8bc8270156a880518ea33f41f5be571bf83a51879da84f2fa"
+
 // restfull
 function handle_deploy(params, res, req){  
     var body = {
@@ -220,6 +222,10 @@ function handle_invoke(params, res, req) {
             }
 
             var ccId = params.ccId;
+            if (ccId ==undefined || ccId.length == 0) {
+                ccId = globalCcid
+            }
+            
             var acc = params.acc;
             var invokeRequest = {
                 chaincodeID: ccId,
@@ -463,7 +469,10 @@ function handle_query(params, res, req) {
             logger.debug("**** query Enrolled ****");
   
             var ccId = params.ccId;
-            
+            if (ccId ==undefined || ccId.length == 0) {
+                ccId = globalCcid
+            }
+
             var acc = params.acc;
             /* 现在都需要账户acc
             if (acc == undefined)  //acc可能不需要
