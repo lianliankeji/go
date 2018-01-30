@@ -56,16 +56,22 @@ const (
 	RACK_NEWRACK_ENC_SCORE_DEFAULT = 5000               //新开货架默认奖励的金额
 
 	//货架融资相关
-	RACK_FINANCE_CFG_PREFIX = "!kd@rack_FinacCfgPre~"          //货架融资配置的key前缀
-	FINACINFO_PREFIX        = "!kd@rack_FinacInfoPre~"         //理财发行信息的key的前缀。使用的是worldState存储
-	RACKINFO_PREFIX         = "!kd@rack_RackInfoPre~"          //货架信息的key的前缀。使用的是worldState存储
-	RACKFINACINFO_PREFIX    = "!kd@rack_RackFinacInfoPre~"     //货架融资信息的key的前缀。使用的是worldState存储
-	RACKFINACHISTORY_KEY    = "!kd@rack_RackFinacHistoryKey@!" //货架融资发行的历史信息
+	RACK_FINANCE_CFG_PREFIX    = "!kd@rack_FinacCfgPre~"             //货架融资配置的key前缀
+	FINACINFO_PREFIX           = "!kd@rack_FinacInfoPre~"            //理财发行信息的key的前缀。使用的是worldState存储
+	RACKINFO_PREFIX            = "!kd@rack_RackInfoPre~"             //货架信息的key的前缀。使用的是worldState存储
+	RACKFINACINFO_PREFIX       = "!kd@rack_RackFinacInfoPre~"        //货架融资信息的key的前缀。使用的是worldState存储
+	RACKFINACHISTORY_KEY       = "!kd@rack_RackFinacHistoryKey@!"    //货架融资发行的历史信息
+	RACKFINACISSUEFINISHID_KEY = "!kd@rack_RackFinacIssueFinIdKey@!" //货架融资发行完毕的期号
+
+	RACKFINAC_INVEST = 0 //融资明细中的投资
+	RACKFINAC_PROFIT = 1 //融资明细中的收益
 
 	RACK_GLOBAL_CFG_RACK_ID = "_global__rack___" //货架全局配置的id
 
 	MULTI_STRING_DELIM = ':' //多个string的分隔符
 	INVALID_MD5_VALUE  = "-"
+
+	ACC_INVALID_CHAR_SET = ",;:/\\" //账户中不能包含的字符
 
 	RACK_ROLE_SELLER   = "slr"
 	RACK_ROLE_FIELDER  = "fld"
@@ -97,6 +103,7 @@ type AccountEntity struct {
 	Owner           string            `json:"own"`   //该实例所属的用户
 	OwnerCert       []byte            `json:"ocert"` //证书
 	AuthUserCertMap map[string][]byte `json:"aucm"`  //授权用户证书 格式：{user1:cert1, user2:cert2}  因为可能会涉及到某些用户会授权之后操作其他用户的账户，所以map中不仅包含自己的证书，还包含授权用户的证书
+	Cipher          []byte            `json:"cip"`   //Cipher
 	AccEnt_Ext_RackFinance
 }
 
@@ -308,6 +315,21 @@ type QueryRack struct {
 	RFInfoList []RackFinancInfo `json:"rfList"`
 }
 
+//查询用，不记入链
+type QueryRackFinanceTx struct {
+	NextSerial     int64             `json:"nextser"` //因为是批量返回结果，表示下次要请求的序列号
+	FinanceRecords []RackFinanceRecd `json:"records"`
+}
+
+//查询用，不记入链
+type RackFinanceRecd struct {
+	RackId  string `json:"rid"`
+	FId     string `json:"fid"`
+	AccName string `json:"acc"`
+	Amount  string `json:"amt"`
+	Type    string `json:"type"` //投资、收益
+}
+
 var ErrNilEntity = errors.New("nil entity.")
 
 type KD struct {
@@ -377,7 +399,7 @@ func (t *KD) Init(stub shim.ChaincodeStubInterface, function string, args []stri
 	rfc.UpdateTime = 0
 	rfc.ProfitsPercent = 20       //20%的利润率
 	rfc.InvestProfitsPercent = 90 //90%的利润分给投资人
-	rfc.InvestCapacity = 2000
+	rfc.InvestCapacity = 2000     //目前是积分投资，单位为积分的单位
 
 	rfcJson, err := json.Marshal(rfc)
 	if err != nil {
@@ -414,7 +436,7 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 	}
 
 	var userAttrs *UserAttrs
-	var userEnt *AccountEntity = nil
+	var accountEnt *AccountEntity = nil
 
 	userAttrs, err = t.getUserAttrs(stub)
 	if err != nil {
@@ -424,13 +446,13 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 	//开户时和更新证书时不需要校验证书。 开户时证书还没传入无法验证；更新证书如果是admin的证书损坏或更新，也不能验证。
 	if function != "account" && function != "accountCB" && function != "updateCert" {
 
-		userEnt, err = t.getAccountEntity(stub, accName)
+		accountEnt, err = t.getAccountEntity(stub, accName)
 		if err != nil {
 			return nil, mylog.Errorf("Invoke getAccountEntity failed. err=%s", err)
 		}
 
 		//校验修改Entity的用户身份，只有Entity的所有者才能修改自己的Entity
-		if ok, _ := t.verifyIdentity(stub, userName, userEnt, userAttrs); !ok {
+		if ok, _ := t.verifyIdentity(stub, userName, accountEnt, userAttrs); !ok {
 			fmt.Println("verify and account(%s) failed. \n", accName)
 			return nil, errors.New("user and account check failed.")
 		}
@@ -547,7 +569,7 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 		var transAmount int64
 		transAmount, err = strconv.ParseInt(args[fixedArgCount+3], 0, 64)
 		if err != nil {
-			return nil, mylog.Errorf("convert issueAmount(%s) failed. err=%s", args[fixedArgCount+3], err)
+			return nil, mylog.Errorf("Invoke(transefer): convert issueAmount(%s) failed. err=%s", args[fixedArgCount+3], err)
 		}
 		mylog.Debug("transAmount= %+v", transAmount)
 
@@ -555,6 +577,59 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 		var sameEntSaveTransFlag bool = false
 		if sameEntSaveTrans == "1" {
 			sameEntSaveTransFlag = true
+		}
+
+		return t.transferCoin(stub, accName, toAcc, transType, description, transAmount, invokeTime, sameEntSaveTransFlag)
+
+	} else if function == "transeferUsePwd" {
+		var argCount = fixedArgCount + 6
+		if len(args) < argCount {
+			mylog.Error("Invoke(transeferUsePwd) miss arg, got %d, at least need %d.", len(args), argCount)
+			return nil, errors.New("Invoke(transeferUsePwd) miss arg.")
+		}
+
+		var toAcc = args[fixedArgCount]
+		var transType = args[fixedArgCount+1]
+		var description = args[fixedArgCount+2]
+
+		var transAmount int64
+		transAmount, err = strconv.ParseInt(args[fixedArgCount+3], 0, 64)
+		if err != nil {
+			return nil, mylog.Errorf("Invoke(transeferUsePwd): convert issueAmount(%s) failed. err=%s", args[fixedArgCount+3], err)
+		}
+		mylog.Debug("transAmount= %+v", transAmount)
+
+		var sameEntSaveTrans = args[fixedArgCount+4] //如果转出和转入账户相同，是否记录交易 0表示不记录 1表示记录
+		var sameEntSaveTransFlag bool = false
+		if sameEntSaveTrans == "1" {
+			sameEntSaveTransFlag = true
+		}
+
+		var pwd = args[fixedArgCount+5]
+
+		/*
+			salt, err := base64.StdEncoding.DecodeString(args[fixedArgCount+6])
+			if err != nil {
+				return nil, mylog.Errorf("Invoke(transeferUsePwd): DecodeString failed. err=%s, str=%s", err, args[fixedArgCount+6])
+			}
+		*/
+
+		//验证密码
+		setPwd, err := t.IsSetAccountPasswd(stub, accName, accountEnt)
+		if err != nil {
+			return nil, mylog.Errorf("Invoke(transeferUsePwd): IsSetAccountPasswd failed. err=%s, acc=%s", err, accName)
+		}
+		if setPwd {
+			ok, err := t.AuthAccountPasswd(stub, accName, pwd, accountEnt)
+			if err != nil || !ok {
+				return nil, mylog.Errorf("Invoke(transeferUsePwd): AuthAccountPasswd failed. err=%s, ok=%v", err, ok)
+			}
+		} else {
+
+			err = t.setAccountPasswd(stub, accName, pwd, nil, accountEnt)
+			if err != nil {
+				return nil, mylog.Errorf("Invoke(transeferUsePwd): setAccountPasswd failed. err=%s", err)
+			}
 		}
 
 		return t.transferCoin(stub, accName, toAcc, transType, description, transAmount, invokeTime, sameEntSaveTransFlag)
@@ -1032,122 +1107,12 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 			sameKeyOverwrite = true
 		}
 
-		var inFile = fmt.Sprintf("/home/%s", fileName)
-		fHandle, err := os.OpenFile(inFile, os.O_RDONLY, 0755)
-		if err != nil {
-			return nil, mylog.Errorf("setWorldState: OpenFile failed. err=%s", err)
-		}
-		defer fHandle.Close()
-
-		type SetWorldStateResult struct {
-			KeyCount int64  `json:"keyCount"`
-			ReadErr  bool   `json:"readErr"`
-			FileLine int64  `json:"fileLine"`
-			FileSize int64  `json:"fileSize"`
-			RunTime  string `json:"runTime"`
-		}
-
-		var swsr SetWorldStateResult
-		swsr.ReadErr = false
-
-		var reader = bufio.NewReader(fHandle)
-
-		var begTime = time.Now()
-
-		for {
-			lineB, err := reader.ReadBytes('\n')
-			if err != nil {
-				if err == io.EOF {
-					mylog.Debug("setWorldState: reader end.")
-					break
-				}
-
-				swsr.ReadErr = true
-				mylog.Errorf("setWorldState: ReadBytes failed. err=%s", err)
-				continue
-			}
-
-			swsr.FileLine++
-			swsr.FileSize += int64(len(lineB))
-
-			var oneRecd []string
-			err = json.Unmarshal(lineB, &oneRecd)
-			if err != nil {
-				mylog.Errorf("setWorldState: Unmarshal failed. line=%s err=%s", string(lineB), err)
-				continue
-			}
-			if len(oneRecd) < 2 {
-				mylog.Errorf("setWorldState: oneRecd format error. oneRecd=%v", oneRecd)
-				continue
-			}
-			var key = oneRecd[0]
-			var value = oneRecd[1]
-
-			if !sameKeyOverwrite {
-				testB, err := stub.GetState(key)
-				if err != nil {
-					mylog.Errorf("setWorldState: GetState failed. key=%s err=%s", key, err)
-					continue
-				}
-				if testB != nil {
-					mylog.Debug("setWorldState: has key '%s', not Overwrite.", key)
-					continue
-				}
-			}
-
-			if needHash {
-				if len(oneRecd) < 3 {
-					mylog.Debug("setWorldState: no hash value, no check.")
-				} else {
-					var md5val = oneRecd[2]
-					if md5val == INVALID_MD5_VALUE {
-						mylog.Debug("setWorldState: hash value is invalid, no check.")
-					} else {
-						var hash = md5.New()
-						_, err = io.WriteString(hash, key+value)
-						if err != nil {
-							mylog.Errorf("setWorldState: md5 create failed. key=%s.", key)
-							continue
-						} else {
-							var newMd5 = hex.EncodeToString(hash.Sum(nil))
-							if md5val != newMd5 {
-								mylog.Errorf("setWorldState: md5 check failed. key=%s.", key)
-								continue
-							}
-						}
-					}
-				}
-			}
-
-			valueB, err := base64.StdEncoding.DecodeString(value)
-			if err != nil {
-				mylog.Errorf("setWorldState: DecodeString failed. value=%s err=%s", value, err)
-				continue
-			}
-
-			err = t.PutState_Ex(stub, key, valueB)
-			if err != nil {
-				mylog.Errorf("setWorldState: PutState_Ex failed. key=%s err=%s", key, err)
-				continue
-			}
-
-			swsr.KeyCount++
-
-			mylog.Debug("setWorldState: PutState_Ex Ok, key=%s.", key)
-		}
-
-		var endTime = time.Now()
-		var runTime = endTime.Sub(begTime)
-		swsr.RunTime = runTime.String()
-
-		mylog.Info("setWorldState: result=%+v.", swsr)
-
-		return nil, nil
+		return t.loadWorldState(stub, fileName, needHash, sameKeyOverwrite)
 	}
 
 	//event
 	stub.SetEvent("success", []byte("invoke success"))
-	return nil, errors.New("unknown Invoke.")
+	return nil, mylog.Errorf("unknown Invoke.")
 }
 
 // Query callback representing the query of a chaincode
@@ -1267,19 +1232,16 @@ func (t *KD) Query(stub shim.ChaincodeStubInterface, function string, args []str
 			isAsc = true
 		}
 
-		//如果没指定查询某个账户的交易，则返回所有的交易记录
-		if len(txAcc) == 0 {
-			//是否是管理员帐户，管理员用户才可以查所有交易记录
-			if !t.isAdmin(stub, accName) {
-				return nil, mylog.Errorf("%s can't query tx info.", accName)
+		if t.isAdmin(stub, accName) {
+			//管理员账户时，如果不传入txAcc，则查询所有交易记录；否则查询指定账户交易记录
+			if len(txAcc) == 0 {
+				return t.queryTransInfos(stub, transLvl, begSeq, txCount, begTime, endTime, queryMaxSeq, isAsc)
+			} else {
+				return t.queryAccTransInfos(stub, txAcc, begSeq, txCount, begTime, endTime, queryMaxSeq, isAsc)
 			}
-			return t.queryTransInfos(stub, transLvl, begSeq, txCount, begTime, endTime, queryMaxSeq, isAsc)
 		} else {
-			//管理员用户 或者 用户自己才能查询某用户的交易记录
-			if !t.isAdmin(stub, accName) && accName != txAcc {
-				return nil, mylog.Errorf("%s can't query %s's tx info.", accName, txAcc)
-			}
-			return t.queryAccTransInfos(stub, txAcc, begSeq, txCount, begTime, endTime, queryMaxSeq, isAsc)
+			//非管理员账户，只能查询自己的交易记录，忽略txAcc参数
+			return t.queryAccTransInfos(stub, accName, begSeq, txCount, begTime, endTime, queryMaxSeq, isAsc)
 		}
 
 	} else if function == "getAllAccAmt" { //所有账户中钱是否正确
@@ -1370,22 +1332,19 @@ func (t *KD) Query(stub shim.ChaincodeStubInterface, function string, args []str
 
 			//查询某一次的分配情况（由allocKey检索）
 			return t.getAllocTxRecdByKey(stub, rackid, allocKey)
-		} else if len(txAcc) > 0 {
-			//是否是管理员帐户，管理员用户才可以查
-			if !t.isAdmin(stub, accName) && accName != txAcc {
-				return nil, mylog.Errorf("queryRackAlloc: %s can't query one acc.", accName)
-			}
-
-			//查询某一个账户的分配情况
-			return t.getOneAccAllocTxRecds(stub, txAcc, begSeq, txCount, begTime, endTime)
 		} else {
-			//是否是管理员帐户，管理员用户才可以查
-			if !t.isAdmin(stub, accName) {
-				return nil, mylog.Errorf("queryRackAlloc: %s can't query rack.", accName)
+			if t.isAdmin(stub, accName) {
+				if len(txAcc) > 0 {
+					//查询某一个账户的分配情况
+					return t.getOneAccAllocTxRecds(stub, txAcc, begSeq, txCount, begTime, endTime)
+				} else {
+					//查询某一个货架的分配情况
+					return t.getAllocTxRecds(stub, rackid, begSeq, txCount, begTime, endTime)
+				}
+			} else {
+				//非管理员账户，只能查询自己的交易记录，忽略txAcc参数
+				return t.getOneAccAllocTxRecds(stub, accName, begSeq, txCount, begTime, endTime)
 			}
-
-			//查询某一个货架的分配情况
-			return t.getAllocTxRecds(stub, rackid, begSeq, txCount, begTime, endTime)
 		}
 
 	} else if function == "getRackAllocCfg" {
@@ -1506,108 +1465,17 @@ func (t *KD) Query(stub shim.ChaincodeStubInterface, function string, args []str
 			flushLimit = 4096
 		}
 
-		keysIter, err := stub.RangeQueryState("", "")
-		if err != nil {
-			return nil, mylog.Errorf("getWorldState: keys operation failed. Error accessing state: %s", err)
-		}
-		defer keysIter.Close()
-
-		var outFile = "/home/worldstate_" + strconv.FormatInt(queryTime, 10)
-		fHandle, err := os.OpenFile(outFile, os.O_RDWR|os.O_CREATE, 0755)
-		if err != nil {
-			return nil, mylog.Errorf("getWorldState: OpenFile failed. err=%s", err)
-		}
-		//defer fHandle.Close()  手工close，因为后面要重命名这个文件
-
-		type QueryWorldState struct {
-			KeyCount   int64    `json:"keyCount"`
-			ErrKeyList []string `json:"errKeyList"`
-			GetNextErr bool     `json:"getNextErr"`
-			FileLine   int64    `json:"fileLine"`
-			FileSize   int64    `json:"fileSize"`
-			RunTime    string   `json:"runTime"`
+		return t.dumpWorldState(stub, queryTime, flushLimit, needHash)
+	} else if function == "getInfoForWeb" {
+		//是否是管理员帐户，管理员用户才可以查
+		if !t.isAdmin(stub, accName) {
+			return nil, mylog.Errorf("%s can't query InfoForWeb.", accName)
 		}
 
-		var writer = bufio.NewWriter(fHandle)
-		var qws QueryWorldState
-		qws.GetNextErr = false
-
-		var begTime = time.Now()
-		var flushSize = 0
-		for keysIter.HasNext() {
-			qws.KeyCount++
-			key, valB, iterErr := keysIter.Next()
-			if iterErr != nil {
-				mylog.Errorf("getWorldState: getNext failed, %s", err)
-				qws.GetNextErr = true
-				continue
-			}
-			var oneRecd []string
-
-			var valStr = base64.StdEncoding.EncodeToString(valB)
-
-			oneRecd = append(oneRecd, key)
-			oneRecd = append(oneRecd, valStr)
-
-			if needHash {
-				//对key和value做md5校验
-				var hash = md5.New()
-				_, err = io.WriteString(hash, key+valStr)
-				if err != nil {
-					oneRecd = append(oneRecd, INVALID_MD5_VALUE) //计算hash出错，写入INVALID_MD5_VALUE
-				} else {
-					oneRecd = append(oneRecd, hex.EncodeToString(hash.Sum(nil)))
-				}
-			}
-
-			jsonRecd, err := json.Marshal(oneRecd)
-			if err != nil {
-				mylog.Errorf("getWorldState: Marshal failed. key=%s, err=%s", key, err)
-				qws.ErrKeyList = append(qws.ErrKeyList, key)
-				continue
-			}
-			jsonRecd = append(jsonRecd, '\n') //每一个行一个keyValue
-
-			_, err = writer.Write(jsonRecd)
-			if err != nil {
-				mylog.Errorf("getWorldState: Write failed. key=%s, err=%s", key, err)
-				qws.ErrKeyList = append(qws.ErrKeyList, key)
-				continue
-			}
-
-			var writeLen = len(jsonRecd)
-			flushSize += writeLen
-
-			if flushSize >= flushLimit {
-				writer.Flush()
-				flushSize = 0
-			}
-
-			qws.FileLine++
-			qws.FileSize += int64(writeLen)
-		}
-
-		writer.Flush()
-		fHandle.Close() //注意关闭文件句柄
-
-		var newOutFile = fmt.Sprintf("%s_%d_%d", outFile, qws.FileLine, qws.FileSize)
-		os.Rename(outFile, newOutFile)
-
-		var endTime = time.Now()
-		var runTime = endTime.Sub(begTime)
-		qws.RunTime = runTime.String()
-
-		mylog.Info("getWorldState: result=%+v.", qws)
-
-		retJson, err := json.Marshal(qws)
-		if err != nil {
-			return nil, mylog.Errorf("getWorldState: Marshal failed. err=%s", err)
-		}
-
-		return retJson, nil
+		return t.getInfo4Web(stub)
 	}
 
-	return nil, errors.New("unknown function.")
+	return nil, mylog.Errorf("unknown function.")
 }
 
 func (t *KD) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64, begIdx, count, begTime, endTime, queryMaxSeq int64, isAsc bool) ([]byte, error) {
@@ -1704,7 +1572,7 @@ func (t *KD) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64, 
 				break
 			}
 
-			trans, err = t.getTransInfo(stub, t.getTransInfoKey(stub, loop))
+			trans, err = t.getOnceTransInfo(stub, t.getTransInfoKey(stub, loop))
 			if err != nil {
 				mylog.Error("getTransInfo getQueryTransInfo(idx=%d) failed.err=%s", loop, err)
 				continue
@@ -1727,7 +1595,7 @@ func (t *KD) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64, 
 				break
 			}
 
-			trans, err = t.getTransInfo(stub, t.getTransInfoKey(stub, loop))
+			trans, err = t.getOnceTransInfo(stub, t.getTransInfoKey(stub, loop))
 			if err != nil {
 				mylog.Error("getTransInfo getQueryTransInfo(idx=%d) failed.err=%s", loop, err)
 				continue
@@ -1877,7 +1745,7 @@ func (t *KD) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName string
 				continue
 			}
 
-			trans, err = t.getTransInfo(stub, string(globTxKeyB))
+			trans, err = t.getOnceTransInfo(stub, string(globTxKeyB))
 			if err != nil {
 				mylog.Error("queryAccTransInfos getQueryTransInfo(idx=%d) failed.err=%s", loop, err)
 				continue
@@ -1906,7 +1774,7 @@ func (t *KD) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName string
 				continue
 			}
 
-			trans, err := t.getTransInfo(stub, string(globTxKeyB))
+			trans, err := t.getOnceTransInfo(stub, string(globTxKeyB))
 			if err != nil {
 				mylog.Error("queryAccTransInfos getQueryTransInfo(idx=%d) failed.err=%s", loop, err)
 				continue
@@ -1990,6 +1858,58 @@ func (t *KD) getAllAccAmt(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	if err != nil {
 		mylog.Error("getAllAccAmt Marshal failed. err=%s", err)
 		return nil, errors.New("getAllAccAmt Marshal failed.")
+	}
+
+	return retValue, nil
+}
+
+func (t *KD) getInfo4Web(stub shim.ChaincodeStubInterface) ([]byte, error) {
+
+	type QueryWebInfo struct {
+		AccountNum  int   `json:"accountcount"`
+		IssueAmount int64 `json:"issueamt"`
+	}
+
+	var qwi QueryWebInfo
+	qwi.AccountNum = 0
+	qwi.IssueAmount = 0
+
+	accsB, err := stub.GetState(ALL_ACC_KEY)
+	if err != nil {
+		return nil, mylog.Errorf("getInfo4Web GetState failed. err=%s", err)
+	}
+
+	if accsB != nil {
+		var allAccs = bytes.NewBuffer(accsB)
+		for {
+			_, err = allAccs.ReadBytes(MULTI_STRING_DELIM)
+			if err != nil {
+				if err == io.EOF {
+					break
+				} else {
+					mylog.Error("getInfo4Web ReadBytes failed. err=%s", err)
+					continue
+				}
+			}
+			qwi.AccountNum++
+		}
+	}
+
+	cbAccB, err := t.getCenterBankAcc(stub)
+	if err != nil {
+		return nil, mylog.Errorf("getInfo4Web getCenterBankAcc failed. err=%s", err)
+	}
+	if cbAccB != nil {
+		cbEnt, err := t.getAccountEntity(stub, string(cbAccB))
+		if err != nil {
+			return nil, mylog.Errorf("getInfo4Web getAccountEntity failed. err=%s", err)
+		}
+		qwi.IssueAmount = cbEnt.TotalAmount - cbEnt.RestAmount
+	}
+
+	retValue, err := json.Marshal(qwi)
+	if err != nil {
+		return nil, mylog.Errorf("getInfo4Web Marshal failed. err=%s", err)
 	}
 
 	return retValue, nil
@@ -2096,20 +2016,20 @@ func (t *KD) getUserAttrs(stub shim.ChaincodeStubInterface) (*UserAttrs, error) 
 }
 
 func (t *KD) getAccountEntity(stub shim.ChaincodeStubInterface, entName string) (*AccountEntity, error) {
-	var centerBankByte []byte
+	var entB []byte
 	var cb AccountEntity
 	var err error
 
-	centerBankByte, err = stub.GetState(entName)
+	entB, err = stub.GetState(entName)
 	if err != nil {
 		return nil, err
 	}
 
-	if centerBankByte == nil {
+	if entB == nil {
 		return nil, ErrNilEntity
 	}
 
-	if err = json.Unmarshal(centerBankByte, &cb); err != nil {
+	if err = json.Unmarshal(entB, &cb); err != nil {
 		return nil, mylog.Errorf("getAccountEntity: Unmarshal failed, err=%s.", err)
 	}
 
@@ -2117,15 +2037,15 @@ func (t *KD) getAccountEntity(stub shim.ChaincodeStubInterface, entName string) 
 }
 
 func (t *KD) isEntityExists(stub shim.ChaincodeStubInterface, entName string) (bool, error) {
-	var centerBankByte []byte
+	var entB []byte
 	var err error
 
-	centerBankByte, err = stub.GetState(entName)
+	entB, err = stub.GetState(entName)
 	if err != nil {
 		return false, err
 	}
 
-	if centerBankByte == nil {
+	if entB == nil {
 		return false, nil
 	}
 
@@ -2207,6 +2127,7 @@ func (t *KD) transferCoin(stub shim.ChaincodeStubInterface, from, to, transType,
 		return nil, mylog.Errorf("transferCoin failed. invalid amount(%d)", amount)
 	}
 
+	//有时前端后台调用这个接口时，可能会传0
 	if amount == 0 {
 		return nil, nil
 	}
@@ -2231,7 +2152,7 @@ func (t *KD) transferCoin(stub shim.ChaincodeStubInterface, from, to, transType,
 		return nil, mylog.Errorf("fromEntity(id=%s) restAmount not enough.", from)
 	}
 
-	//如果账户相同，并且账户相同时需要记录交易，交易并返回
+	//如果账户相同，并且账户相同时需要记录交易，记录并返回
 	if from == to && sameEntSaveTrans {
 		err = t.recordTranse(stub, fromEntity, toEntity, TRANS_PAY, transType, description, amount, transeTime)
 		if err != nil {
@@ -2325,12 +2246,9 @@ func (t *KD) recordTranse(stub shim.ChaincodeStubInterface, fromEnt, toEnt *Acco
 }
 
 func (t *KD) checkAccountName(accName string) error {
-	//会用':'作为分隔符分隔多个账户名，所以账户名不能含有':'
-	var invalidChars string = string(MULTI_STRING_DELIM)
-
-	if strings.ContainsAny(accName, invalidChars) {
+	if strings.ContainsAny(accName, ACC_INVALID_CHAR_SET) {
 		mylog.Error("isAccountNameValid (acc=%s) failed.", accName)
-		return fmt.Errorf("accName '%s' can not contains '%s'.", accName, invalidChars)
+		return fmt.Errorf("accName '%s' can not contains any of '%s'.", accName, ACC_INVALID_CHAR_SET)
 	}
 	return nil
 }
@@ -2594,7 +2512,7 @@ func (t *KD) setOneAccTransInfo(stub shim.ChaincodeStubInterface, accName, Globa
 	return nil
 }
 
-func (t *KD) getTransInfo(stub shim.ChaincodeStubInterface, key string) (*Transaction, error) {
+func (t *KD) getOnceTransInfo(stub shim.ChaincodeStubInterface, key string) (*Transaction, error) {
 	var err error
 	var trans Transaction
 
@@ -3327,6 +3245,11 @@ func (t *KD) allocEncourageScoreForSales(stub shim.ChaincodeStubInterface, paraS
 			continue
 		}
 
+		if rrs.Sales <= 0 {
+			mylog.Info("encourageScoreBySales sales is 0(rack=%s), do nothing.", rrs.Rackid)
+			continue
+		}
+
 		rrs.Sales = rrs.Sales / 100 //输入的单位为分，这里计算以元为单位
 
 		rrs.AllocAccs.SellerAcc = eles[2]
@@ -3583,6 +3506,7 @@ func (t *KD) getRackFinacInfoKey(rackId, finacId string) string {
 	return RACKFINACINFO_PREFIX + rackId + "_" + finacId
 }
 
+//用户购买理财，包括自动续期
 func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, fid, payee, transType, desc string, amount, invokeTime int64, sameEntSaveTx, isRenewal bool) ([]byte, error) {
 	var fiacInfoKey = t.getFinacInfoKey(fid)
 	fiB, err := stub.GetState(fiacInfoKey)
@@ -3643,7 +3567,7 @@ func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, f
 		if isRenewal {
 			rfi.UserRenewalMap[accName] = amount
 		}
-		rfi.Stage = FINANC_STAGE_ISSUE_BEGING
+		rfi.Stage = FINANC_STAGE_ISSUE_BEGING //新购买理财时，初始为理财发行开始
 
 		var rfc RackFinanceCfg
 		_, err = t.getRackFinancCfg(stub, rackid, &rfc)
@@ -3693,6 +3617,11 @@ func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, f
 				rfi.UserRenewalMap[accName] = amount
 			}
 		}
+	}
+
+	//如果是续期，说明该期理财已经发行完毕了。因为发行完毕之后才会调用续期
+	if isRenewal {
+		rfi.Stage = FINANC_STAGE_ISSUE_FINISH
 	}
 
 	var rfc RackFinanceCfg
@@ -3855,21 +3784,20 @@ func (t *KD) financeBonus4OneRack(stub shim.ChaincodeStubInterface, rackid, fid 
 
 	rfiB, err := stub.GetState(rackFinacInfoKey)
 	if err != nil {
-		return mylog.Errorf("financeBonus:  GetState(%s) failed. err=%s.", rackFinacInfoKey, err)
+		return mylog.Errorf("financeBonus4OneRack:  GetState(%s) failed. err=%s.", rackFinacInfoKey, err)
 	}
 	if rfiB == nil {
-		return mylog.Errorf("financeBonus:  rackFinacInfo not exists(%s,%s).", rackid, fid)
+		return mylog.Errorf("financeBonus4OneRack:  rackFinacInfo not exists(%s,%s).", rackid, fid)
 	}
 	var rfi RackFinancInfo
 	err = json.Unmarshal(rfiB, &rfi)
 	if err != nil {
-		return mylog.Errorf("financeBonus:  Unmarshal failed. err=%s.", err)
+		return mylog.Errorf("financeBonus4OneRack:  Unmarshal failed. err=%s.", err)
 	}
 
 	//已分红过不能再分红
 	if rfi.Stage >= FINANC_STAGE_BONUS_FINISH {
-		mylog.Warn("rack(rid=%s fid=%s) has bonus, do nothing.", rackid, fid)
-		return nil
+		return mylog.Errorf("financeBonus4OneRack: rack(rid=%s fid=%s) has bonus, something wrong?", rackid, fid)
 	}
 
 	rfi.CEInfo.WareSales = sales
@@ -3883,7 +3811,7 @@ func (t *KD) financeBonus4OneRack(stub shim.ChaincodeStubInterface, rackid, fid 
 
 	profit = profit / 100 //利润的单位为分，一块钱兑一积分
 
-	mylog.Debug("financeBonus:rfi.RFCfg=%+v, rfi.RolesAllocRate=%+v", rfi.RFCfg, rfi.RolesAllocRate)
+	mylog.Debug("financeBonus4OneRack: rfi.RFCfg=%+v, rfi.RolesAllocRate=%+v", rfi.RFCfg, rfi.RolesAllocRate)
 
 	var amtCheck int64 = 0
 	var profitCheck int64 = 0
@@ -3894,7 +3822,7 @@ func (t *KD) financeBonus4OneRack(stub shim.ChaincodeStubInterface, rackid, fid 
 
 	var cost = rfi.CEInfo.WareSales * int64(100-rfi.RFCfg.ProfitsPercent) / 100 //成本
 
-	mylog.Debug("financeBonus:rackProfit=%d, sellerProfit=%d, profit=%d, cost=%d", rackProfit, sellerProfit, profit, cost)
+	mylog.Debug("financeBonus4OneRack:rackProfit=%d, sellerProfit=%d, profit=%d, cost=%d", rackProfit, sellerProfit, profit, cost)
 
 	for acc, amt := range rfi.UserAmountMap {
 		amtCheck += amt
@@ -3905,22 +3833,22 @@ func (t *KD) financeBonus4OneRack(stub shim.ChaincodeStubInterface, rackid, fid 
 		profitCheck += accProfit
 	}
 	if profitCheck > profit || amtCheck != rfi.AmountFinca {
-		return mylog.Errorf("financeBonus:  bonus check(%d,%d,%d,%d) failed.", profitCheck, profit, amtCheck, rfi.AmountFinca)
+		return mylog.Errorf("financeBonus4OneRack:  bonus check(%d,%d,%d,%d) failed.", profitCheck, profit, amtCheck, rfi.AmountFinca)
 	}
 
 	rfi.Stage = FINANC_STAGE_BONUS_FINISH
 
 	rfiJson, err := json.Marshal(rfi)
 	if err != nil {
-		return mylog.Errorf("financeBonus:  Marshal failed. err=%s.", err)
+		return mylog.Errorf("financeBonus4OneRack:  Marshal failed. err=%s.", err)
 	}
 
 	err = t.PutState_Ex(stub, rackFinacInfoKey, rfiJson)
 	if err != nil {
-		return mylog.Errorf("financeBonus:  PutState failed. err=%s.", err)
+		return mylog.Errorf("financeBonus4OneRack:  PutState failed. err=%s.", err)
 	}
 
-	mylog.Debug("financeBonus: rfi=%+v", rfi)
+	mylog.Debug("financeBonus4OneRack: rfi=%+v", rfi)
 
 	return nil
 }
@@ -4091,10 +4019,82 @@ func (t *KD) getRackFinanceAmount(stub shim.ChaincodeStubInterface, rackid, fid 
 }
 
 func (t *KD) financeIssueFinishAfter(stub shim.ChaincodeStubInterface, currentFid string, invokeTime int64) error {
-	return t.financeFinishAndRenewal(stub, currentFid, invokeTime)
+	//看是否已经处理过
+	finishIdB, err := stub.GetState(RACKFINACISSUEFINISHID_KEY)
+	if err != nil {
+		return mylog.Errorf("financeIssueFinishAfter: GetState(finishId) failed. err=%s.", err)
+	}
+	if finishIdB == nil {
+		err = t.PutState_Ex(stub, RACKFINACISSUEFINISHID_KEY, []byte(currentFid))
+		if err != nil {
+			return mylog.Errorf("financeIssueFinishAfter: PutState_Ex(finishId) failed. err=%s.", err)
+		}
+	} else {
+		var finishId string
+		err = json.Unmarshal(finishIdB, &finishId)
+		if err != nil {
+			return mylog.Errorf("financeIssueFinishAfter: Unmarshal(finishId) failed. err=%s.", err)
+		}
+
+		if finishId == currentFid {
+			return mylog.Errorf("financeIssueFinishAfter: has finished already.")
+		}
+	}
+
+	//给本期理财设置为"发行完毕"
+	fiB, err := stub.GetState(t.getFinacInfoKey(currentFid))
+	if err != nil {
+		return mylog.Errorf("financeIssueFinishAfter: GetState(fi=%s) failed. err=%s.", currentFid, err)
+	}
+
+	if fiB != nil {
+		var fi FinancialInfo
+		err = json.Unmarshal(fiB, &fi)
+		if err != nil {
+			return mylog.Errorf("financeIssueFinishAfter: Unmarshal failed. err=%s.", err)
+		}
+
+		for _, rackid := range fi.RackList {
+			var rfiKey = t.getRackFinacInfoKey(rackid, currentFid)
+			rfiB, err := stub.GetState(rfiKey)
+			if err != nil {
+				return mylog.Errorf("financeIssueFinishAfter: GetState(rfi=%s,%s) failed. err=%s.", rackid, currentFid, err)
+			}
+			if rfiB == nil {
+				continue
+			}
+
+			var rfi RackFinancInfo
+			err = json.Unmarshal(rfiB, &rfi)
+			if err != nil {
+				return mylog.Errorf("financeIssueFinishAfter: Unmarshal(rfi=%s,%s) failed. err=%s.", rackid, currentFid, err)
+			}
+
+			mylog.Debug("financeIssueFinishAfter: rfi=%+v", rfi)
+
+			if rfi.Stage >= FINANC_STAGE_ISSUE_FINISH {
+				return mylog.Errorf("financeIssueFinishAfter: (%s,%s) has finished already, something wrong?", rackid, currentFid)
+			}
+
+			rfi.Stage = FINANC_STAGE_ISSUE_FINISH
+
+			rfiB, err = json.Marshal(rfi)
+			if err != nil {
+				return mylog.Errorf("financeIssueFinishAfter: Marshal(rfi=%s,%s) failed. err=%s.", rackid, currentFid, err)
+			}
+
+			err = t.PutState_Ex(stub, rfiKey, rfiB)
+			if err != nil {
+				return mylog.Errorf("financeIssueFinishAfter: PutState_Ex(rfi=%s,%s) failed. err=%s.", rackid, currentFid, err)
+			}
+		}
+	}
+
+	//为上一期理财续期
+	return t.financeRenewalPreviousFinance(stub, currentFid, invokeTime)
 }
 
-func (t *KD) financeFinishAndRenewal(stub shim.ChaincodeStubInterface, currentFid string, invokeTime int64) error {
+func (t *KD) financeRenewalPreviousFinance(stub shim.ChaincodeStubInterface, currentFid string, invokeTime int64) error {
 	//看上期的理财中，哪些没有提取的自动续期
 	//调用理财续期的接口时，已经将最新的理财期号设置了（调用setCurrentFid），所以这里取前一期的期号
 	preFid, err := t.getPreviousFid(stub)
@@ -4119,6 +4119,12 @@ func (t *KD) financeFinishAndRenewal(stub shim.ChaincodeStubInterface, currentFi
 		return mylog.Errorf("financeRenewal: GetState(fi=%s) failed. err=%s.", preFid, err)
 	}
 
+	//上一期没人买过理财
+	if fiB == nil {
+		mylog.Debug("financeRenewal: no fiB.")
+		return nil
+	}
+
 	var fi FinancialInfo
 	err = json.Unmarshal(fiB, &fi)
 	if err != nil {
@@ -4141,31 +4147,23 @@ func (t *KD) financeFinishAndRenewal(stub shim.ChaincodeStubInterface, currentFi
 			return mylog.Errorf("financeRenewal: Unmarshal(rfi=%s,%s) failed. err=%s.", rackid, preFid, err)
 		}
 
-		//设置状态为发行完毕,并保存
-		rfi.Stage = FINANC_STAGE_ISSUE_FINISH
+		mylog.Debug("financeRenewal: rfi=%+v", rfi)
 
-		rfiB, err = json.Marshal(rfi)
-		if err != nil {
-			return mylog.Errorf("financeRenewal: Marshal(rfi=%s,%s) failed. err=%s.", rackid, preFid, err)
-		}
-
-		err = t.PutState_Ex(stub, rfiKey, rfiB)
-		if err != nil {
-			return mylog.Errorf("financeRenewal: PutState_Ex(rfi=%s,%s) failed. err=%s.", rackid, preFid, err)
-		}
-
-		//退出融资的人数等于融资的人数，说明全退出了
-		if len(rfi.PayFinanceUserList) == len(rfi.UserAmountMap) {
-			continue
+		//如果已经是发行完毕，说明已经续过期了
+		if rfi.Stage >= FINANC_STAGE_ISSUE_FINISH {
+			return mylog.Errorf("financeRenewal: (%s,%s) has finished already, something wrong?", rackid, preFid)
 		}
 
 		for acc, amt := range rfi.UserAmountMap {
+			//已赎回的用户不在续期
 			if t.StrSliceContains(rfi.PayFinanceUserList, acc) {
 				continue
 			}
 
-			mylog.Debug("financeRenewal: renewal for %s,%s", rackid, currentFid)
+			//使用info日志，后台可查
+			mylog.Info("financeRenewal: renewal for %s,%s", rackid, currentFid)
 
+			//续期，即内部给这些用户买新一期的理财
 			_, err = t.userBuyFinance(stub, acc, rackid, currentFid, "", "", "", amt, invokeTime, true, true)
 			if err != nil {
 				return mylog.Errorf("financeRenewal: userBuyFinance(rfi=%s,%s,%s) failed. err=%s.", rackid, preFid, acc, err)
@@ -4200,6 +4198,7 @@ func (t *KD) payUserFinance(stub shim.ChaincodeStubInterface, accName, reacc, ra
 	var profit int64 = 0
 	var delKeyList []string
 	var paidFidMap = make(map[string]int)
+
 	for rfkey, _ := range reaccEnt.RFInfoMap {
 		r, f := t.getRackFinanceFromMapKey(rfkey)
 		if r != rackid {
@@ -4219,6 +4218,12 @@ func (t *KD) payUserFinance(stub shim.ChaincodeStubInterface, accName, reacc, ra
 		err = json.Unmarshal(rfiB, &rfi)
 		if err != nil {
 			return mylog.Errorf("payUserFinance:  Unmarshal(%s,%s) failed. err=%s.", rackid, f, err)
+		}
+
+		//如果已提取过，则不能再提取。这里不报错，不实际执行转账即可
+		if t.StrSliceContains(rfi.PayFinanceUserList, reacc) {
+			mylog.Warn("payUserFinance: %s has paid already, do nothing.", reacc)
+			continue
 		}
 
 		if rfi.UserProfitMap != nil {
@@ -4383,7 +4388,458 @@ func (t *KD) getRestFinanceCapacityForRack(stub shim.ChaincodeStubInterface, rac
 	return restAmt, nil
 }
 
+/*
+//获取某个账户的货架融资信息
+func (t *KD) _getAccRackFinanceTx(stub shim.ChaincodeStubInterface, accName, rackid string) ([]byte, error) {
+	accEnt, err := t.getAccountEntity(stub, accName)
+	if err != nil {
+		return nil, mylog.Errorf("payUserFinance: getAccountEntity(acc=%s) failed. err=%s.", accName, err)
+	}
+	mylog.Debug("payUserFinance: before reaccEnt = %+v", accEnt)
+
+	if accEnt.RFInfoMap == nil || len(accEnt.RFInfoMap) == 0 {
+		mylog.Debug("payUserFinance: RFInfoMap empty.")
+		return nil, nil
+	}
+
+	mylog.Debug("payUserFinance: acc=%s investAmt=%d (%s,%s)", accName, investAmt, rackid, accEnt.LatestFid)
+
+	for rfkey, _ := range accEnt.RFInfoMap {
+		r, f := t.getRackFinanceFromMapKey(rfkey)
+		if r != rackid {
+			continue
+		}
+
+		var rfiKey = t.getRackFinacInfoKey(rackid, f)
+		rfiB, err := stub.GetState(rfiKey)
+		if err != nil {
+			return mylog.Errorf("payUserFinance:  GetState(%s,%s) failed. err=%s.", rackid, f, err)
+		}
+		//ent中记录了该条记录，肯定是有的，没有则报错
+		if rfiB == nil {
+			return mylog.Errorf("payUserFinance:  FinancialInfo(%s,%s) not exists.", rackid, f)
+		}
+		var rfi RackFinancInfo
+		err = json.Unmarshal(rfiB, &rfi)
+		if err != nil {
+			return mylog.Errorf("payUserFinance:  Unmarshal(%s,%s) failed. err=%s.", rackid, f, err)
+		}
+
+		//如果已提取过，则不再显示。
+		if t.StrSliceContains(rfi.PayFinanceUserList, reacc) {
+			mylog.Warn("payUserFinance: %s has paid already, do nothing.", reacc)
+			continue
+		}
+
+		if rfi.UserProfitMap != nil {
+			profit += rfi.UserProfitMap[reacc]
+		}
+
+		mylog.Debug("payUserFinance: acc=%s rfi=%+v", reacc, rfi)
+
+	}
+
+	mylog.Debug("payUserFinance: after reaccEnt = %+v", *accEnt)
+
+	return nil
+}
+
+func (t *KD) queryAccRackFinanceTx(stub shim.ChaincodeStubInterface, accName string, begIdx, count, begTime, endTime, isAsc bool) ([]byte, error) {
+	var err error
+
+	var retTransInfo []byte
+	var queryResult QueryRackFinanceTx
+	queryResult.NextSerial = -1
+	queryResult.FinanceRecords = []RackFinanceRecd{} //初始化为空，即使下面没查到数据也会返回'[]'
+
+	retTransInfo, err = json.Marshal(queryResult)
+	if err != nil {
+		return nil, mylog.Errorf("queryAccRackFinanceTx Marshal failed.err=%s", err)
+	}
+
+	//begIdx从1开始
+	if begIdx < 1 {
+		begIdx = 1
+	}
+	//endTime为负数，查询到最新时间
+	if endTime < 0 {
+		endTime = math.MaxInt64
+	}
+
+	if count == 0 {
+		mylog.Warn("queryAccRackFinanceTx nothing to do(%d).", count)
+		return retTransInfo, nil
+	}
+
+	accEnt, err := t.getAccountEntity(stub, accName)
+	if err != nil {
+		if err == ErrNilEntity {
+			mylog.Warn("queryAccRackFinanceTx acc '%s' not exists.")
+			return retTransInfo, nil
+		}
+
+		return nil, mylog.Errorf("queryAccRackFinanceTx getAccountEntity(%s) failed.err=%s", accName, err)
+	}
+
+	if accEnt.AccEnt_Ext_RackFinance.RFInfoMap == nil {
+		mylog.Warn("queryAccRackFinanceTx acc '%s' have no tx.")
+		return retTransInfo, nil
+	}
+
+	var loopCnt int64 = 0
+	var trans *Transaction
+	if isAsc { //升序
+		for loop := begIdx; loop <= maxSeq; loop++ {
+			//处理了count条时，不再处理
+			if loopCnt >= count {
+				break
+			}
+
+			trans, err = t.getOnceTransInfo(stub, t.getTransInfoKey(stub, loop))
+			if err != nil {
+				mylog.Error("queryAccRackFinanceTx getQueryTransInfo(idx=%d) failed.err=%s", loop, err)
+				continue
+			}
+			//取匹配的transLvl
+			var qTrans QueryTransRecd
+			if trans.TransLvl&transLvl != 0 && trans.Time >= begTime && trans.Time <= endTime {
+				qTrans.Serial = trans.GlobalSerial
+				qTrans.PubTrans = trans.PubTrans
+				queryResult.TransRecords = append(queryResult.TransRecords, qTrans)
+				queryResult.NextSerial = qTrans.Serial + 1
+				queryResult.MaxSerial = maxSeq
+				loopCnt++
+			}
+		}
+	} else { //降序
+		for loop := maxSeq - begIdx + 1; loop >= 1; loop-- { //序列号从1开始的
+			//处理了count条时，不再处理
+			if loopCnt >= count {
+				break
+			}
+
+			trans, err = t.getOnceTransInfo(stub, t.getTransInfoKey(stub, loop))
+			if err != nil {
+				mylog.Error("queryAccRackFinanceTx getQueryTransInfo(idx=%d) failed.err=%s", loop, err)
+				continue
+			}
+			//取匹配的transLvl
+			var qTrans QueryTransRecd
+			if trans.TransLvl&transLvl != 0 && trans.Time >= begTime && trans.Time <= endTime {
+				qTrans.Serial = maxSeq - trans.GlobalSerial + 1
+				qTrans.PubTrans = trans.PubTrans
+				queryResult.TransRecords = append(queryResult.TransRecords, qTrans)
+				queryResult.NextSerial = qTrans.Serial + 1
+				queryResult.MaxSerial = maxSeq
+				loopCnt++
+			}
+		}
+	}
+
+	retTransInfo, err = json.Marshal(queryResult)
+	if err != nil {
+		return nil, mylog.Errorf("queryAccRackFinanceTx Marshal failed.err=%s", err)
+	}
+
+	return retTransInfo, nil
+}
+*/
+
 /* ----------------------- 货架融资相关 end ----------------------- */
+
+var myhash = MyHashNew()
+
+func (t *KD) setAccountPasswd(stub shim.ChaincodeStubInterface, accName, pwd string, salt []byte, accEnt *AccountEntity) error {
+	var ent *AccountEntity
+	var err error
+
+	if accEnt == nil {
+		tmpEnt, err := t.getAccountEntity(stub, accName)
+		if err != nil {
+			return mylog.Errorf("setAccountPasswd: getAccountEntity failed.err=%s, acc=%s", err, accName)
+		}
+		ent = tmpEnt
+	} else {
+		ent = accEnt
+	}
+
+	hash, err := myhash.GenCipher(pwd, salt)
+	if err != nil {
+		return mylog.Errorf("setAccountPasswd: GenCipher failed.err=%s, acc=%s", err, accName)
+	}
+
+	ent.Cipher = hash
+
+	err = t.setAccountEntity(stub, ent)
+	if err != nil {
+		return mylog.Errorf("setAccountPasswd: setAccountEntity failed.err=%s, acc=%s", err, accName)
+	}
+
+	return nil
+}
+func (t *KD) AuthAccountPasswd(stub shim.ChaincodeStubInterface, accName, pwd string, accEnt *AccountEntity) (bool, error) {
+	var ent *AccountEntity
+	var err error
+
+	if accEnt == nil {
+		tmpEnt, err := t.getAccountEntity(stub, accName)
+		if err != nil {
+			return false, mylog.Errorf("AuthAccountPasswd: getAccountEntity failed.err=%s, acc=%s", err, accName)
+		}
+		ent = tmpEnt
+	} else {
+		ent = accEnt
+	}
+
+	ok, err := myhash.AuthPass(ent.Cipher, pwd)
+	if err != nil {
+		return false, mylog.Errorf("AuthAccountPasswd: AuthPass failed.err=%s, acc=%s", err, accName)
+	}
+
+	if ok {
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func (t *KD) IsSetAccountPasswd(stub shim.ChaincodeStubInterface, accName string, accEnt *AccountEntity) (bool, error) {
+	var ent *AccountEntity
+
+	if accEnt == nil {
+		tmpEnt, err := t.getAccountEntity(stub, accName)
+		if err != nil {
+			return false, mylog.Errorf("IsSetAccountPasswd: getAccountEntity failed.err=%s, acc=%s", err, accName)
+		}
+		ent = tmpEnt
+	} else {
+		ent = accEnt
+	}
+
+	if ent.Cipher == nil || len(ent.Cipher) == 0 {
+		return false, nil
+	}
+
+	return true, nil
+}
+
+func (t *KD) dumpWorldState(stub shim.ChaincodeStubInterface, queryTime int64, flushLimit int, needHash bool) ([]byte, error) {
+
+	keysIter, err := stub.RangeQueryState("", "")
+	if err != nil {
+		return nil, mylog.Errorf("getWorldState: keys operation failed. Error accessing state: %s", err)
+	}
+	defer keysIter.Close()
+
+	var outFile = "/home/kd_worldstate_" + strconv.FormatInt(queryTime, 10)
+	fHandle, err := os.OpenFile(outFile, os.O_RDWR|os.O_CREATE, 0755)
+	if err != nil {
+		return nil, mylog.Errorf("getWorldState: OpenFile failed. err=%s", err)
+	}
+	//defer fHandle.Close()  手工close，因为后面要重命名这个文件
+
+	type QueryWorldState struct {
+		KeyCount   int64    `json:"keyCount"`
+		ErrKeyList []string `json:"errKeyList"`
+		GetNextErr bool     `json:"getNextErr"`
+		FileLine   int64    `json:"fileLine"`
+		FileSize   int64    `json:"fileSize"`
+		RunTime    string   `json:"runTime"`
+	}
+
+	var writer = bufio.NewWriter(fHandle)
+	var qws QueryWorldState
+	qws.GetNextErr = false
+
+	var begTime = time.Now()
+	var flushSize = 0
+	for keysIter.HasNext() {
+		qws.KeyCount++
+		key, valB, iterErr := keysIter.Next()
+		if iterErr != nil {
+			mylog.Errorf("getWorldState: getNext failed, %s", err)
+			qws.GetNextErr = true
+			continue
+		}
+		var oneRecd []string
+
+		var valStr = base64.StdEncoding.EncodeToString(valB)
+
+		oneRecd = append(oneRecd, key)
+		oneRecd = append(oneRecd, valStr)
+
+		if needHash {
+			//对key和value做md5校验
+			var hash = md5.New()
+			_, err = io.WriteString(hash, key+valStr)
+			if err != nil {
+				oneRecd = append(oneRecd, INVALID_MD5_VALUE) //计算hash出错，写入INVALID_MD5_VALUE
+			} else {
+				oneRecd = append(oneRecd, hex.EncodeToString(hash.Sum(nil)))
+			}
+		}
+
+		jsonRecd, err := json.Marshal(oneRecd)
+		if err != nil {
+			mylog.Errorf("getWorldState: Marshal failed. key=%s, err=%s", key, err)
+			qws.ErrKeyList = append(qws.ErrKeyList, key)
+			continue
+		}
+		jsonRecd = append(jsonRecd, '\n') //每一个行一个keyValue
+
+		_, err = writer.Write(jsonRecd)
+		if err != nil {
+			mylog.Errorf("getWorldState: Write failed. key=%s, err=%s", key, err)
+			qws.ErrKeyList = append(qws.ErrKeyList, key)
+			continue
+		}
+
+		var writeLen = len(jsonRecd)
+		flushSize += writeLen
+
+		if flushSize >= flushLimit {
+			writer.Flush()
+			flushSize = 0
+		}
+
+		qws.FileLine++
+		qws.FileSize += int64(writeLen)
+	}
+
+	writer.Flush()
+	fHandle.Close() //注意关闭文件句柄
+
+	var newOutFile = fmt.Sprintf("%s_%d_%d", outFile, qws.FileLine, qws.FileSize)
+	os.Rename(outFile, newOutFile)
+
+	var endTime = time.Now()
+	var runTime = endTime.Sub(begTime)
+	qws.RunTime = runTime.String()
+
+	mylog.Info("getWorldState: result=%+v.", qws)
+
+	retJson, err := json.Marshal(qws)
+	if err != nil {
+		return nil, mylog.Errorf("getWorldState: Marshal failed. err=%s", err)
+	}
+
+	return retJson, nil
+}
+
+func (t *KD) loadWorldState(stub shim.ChaincodeStubInterface, fileName string, needHash, sameKeyOverwrite bool) ([]byte, error) {
+	var inFile = fmt.Sprintf("/home/%s", fileName)
+	fHandle, err := os.OpenFile(inFile, os.O_RDONLY, 0755)
+	if err != nil {
+		return nil, mylog.Errorf("setWorldState: OpenFile failed. err=%s", err)
+	}
+	defer fHandle.Close()
+
+	type SetWorldStateResult struct {
+		KeyCount int64  `json:"keyCount"`
+		ReadErr  bool   `json:"readErr"`
+		FileLine int64  `json:"fileLine"`
+		FileSize int64  `json:"fileSize"`
+		RunTime  string `json:"runTime"`
+	}
+
+	var swsr SetWorldStateResult
+	swsr.ReadErr = false
+
+	var reader = bufio.NewReader(fHandle)
+
+	var begTime = time.Now()
+
+	for {
+		lineB, err := reader.ReadBytes('\n')
+		if err != nil {
+			if err == io.EOF {
+				mylog.Debug("setWorldState: reader end.")
+				break
+			}
+
+			swsr.ReadErr = true
+			mylog.Errorf("setWorldState: ReadBytes failed. err=%s", err)
+			continue
+		}
+
+		swsr.FileLine++
+		swsr.FileSize += int64(len(lineB))
+
+		var oneRecd []string
+		err = json.Unmarshal(lineB, &oneRecd)
+		if err != nil {
+			mylog.Errorf("setWorldState: Unmarshal failed. line=%s err=%s", string(lineB), err)
+			continue
+		}
+		if len(oneRecd) < 2 {
+			mylog.Errorf("setWorldState: oneRecd format error. oneRecd=%v", oneRecd)
+			continue
+		}
+		var key = oneRecd[0]
+		var value = oneRecd[1]
+
+		if !sameKeyOverwrite {
+			testB, err := stub.GetState(key)
+			if err != nil {
+				mylog.Errorf("setWorldState: GetState failed. key=%s err=%s", key, err)
+				continue
+			}
+			if testB != nil {
+				mylog.Debug("setWorldState: has key '%s', not Overwrite.", key)
+				continue
+			}
+		}
+
+		if needHash {
+			if len(oneRecd) < 3 {
+				mylog.Debug("setWorldState: no hash value, no check.")
+			} else {
+				var md5val = oneRecd[2]
+				if md5val == INVALID_MD5_VALUE {
+					mylog.Debug("setWorldState: hash value is invalid, no check.")
+				} else {
+					var hash = md5.New()
+					_, err = io.WriteString(hash, key+value)
+					if err != nil {
+						mylog.Errorf("setWorldState: md5 create failed. key=%s.", key)
+						continue
+					} else {
+						var newMd5 = hex.EncodeToString(hash.Sum(nil))
+						if md5val != newMd5 {
+							mylog.Errorf("setWorldState: md5 check failed. key=%s.", key)
+							continue
+						}
+					}
+				}
+			}
+		}
+
+		valueB, err := base64.StdEncoding.DecodeString(value)
+		if err != nil {
+			mylog.Errorf("setWorldState: DecodeString failed. value=%s err=%s", value, err)
+			continue
+		}
+
+		err = t.PutState_Ex(stub, key, valueB)
+		if err != nil {
+			mylog.Errorf("setWorldState: PutState_Ex failed. key=%s err=%s", key, err)
+			continue
+		}
+
+		swsr.KeyCount++
+
+		mylog.Debug("setWorldState: PutState_Ex Ok, key=%s.", key)
+	}
+
+	var endTime = time.Now()
+	var runTime = endTime.Sub(begTime)
+	swsr.RunTime = runTime.String()
+
+	mylog.Info("setWorldState: result=%+v.", swsr)
+
+	return nil, nil
+}
+
 func (t *KD) getUserEntityKey(userName string) string {
 	return UER_ENTITY_PREFIX + userName
 }

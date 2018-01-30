@@ -7,10 +7,6 @@ var bodyParser = require('body-parser');
 var hfc = require('hfc');
 var fs = require('fs');
 var util = require('util');
-
-const request = require('request');
-const asyncc = require('async');
-
 const readline = require('readline');
 const user = require('./lib/user');
 const common = require('./lib/common');
@@ -105,7 +101,6 @@ var routeTable = {
     '/kd/register'    : {'GET' : handle_register,  'POST' : handle_register},
     '/kd/invoke'      : {'GET' : handle_invoke,    'POST' : handle_invoke},
     '/kd/query'       : {'GET' : handle_query,     'POST' : handle_query},
-    '/kd/chain'       : {'GET' : handle_chain,     'POST' : handle_chain},
   //'/kd/test'        : {'GET' : handle_test,      'POST' : handle_test},
 }
 
@@ -122,7 +117,7 @@ function handle_test(params, res, req){
     return
 }
 
-const globalCcid = "9d25a704ddc98ac0b134095dedffb21eac22b025d05cf097844f80063f5e6f34"
+const globalCcid = "ea915e67314a1ad8bc8270156a880518ea33f41f5be571bf83a51879da84f2fa"
 
 // restfull
 function handle_deploy(params, res, req){  
@@ -230,7 +225,7 @@ function handle_invoke(params, res, req) {
             if (ccId ==undefined || ccId.length == 0) {
                 ccId = globalCcid
             }
-
+            
             var acc = params.acc;
             var invokeRequest = {
                 chaincodeID: ccId,
@@ -240,7 +235,7 @@ function handle_invoke(params, res, req) {
                 args: [enrollUser, acc,  Date.now() + ""],  //getTime()要转为字符串
                 userCert: TCert
             }
-
+            
             if (func == "account" || func == "accountCB") {
                 invokeRequest.args.push(TCert.encode().toString('base64'))
             } else if (func == "issue") {
@@ -261,29 +256,6 @@ function handle_invoke(params, res, req) {
                     sameEntSaveTrans = "1" //默认记录
 
                 invokeRequest.args.push(reacc, transType, description, amt, sameEntSaveTrans)
-            } else if (func == "transeferUsePwd") {
-                var reacc = params.reacc;
-                var amt = params.amt;
-                var transType = params.tstp;
-                if (transType == undefined)
-                    transType = ""
-                var description = params.desc;
-                if (description == undefined)
-                    description = ""
-                var sameEntSaveTrans = params.sest; //如果转出和转入账户相同，是否记录交易 0表示不记录 1表示记录
-                if (sameEntSaveTrans == undefined)
-                    sameEntSaveTrans = "1" //默认记录
-                
-                var pwd = params.pwd
-                if (pwd == undefined || pwd.length == 0) {
-                    logger.error("invoke(%s): failed, err=pwd is empty.", func);
-                    body.code=retCode.ERROR;
-                    body.msg="tx error: pwd is empty."
-                    res.send(body) 
-                    return
-                }
-
-                invokeRequest.args.push(reacc, transType, description, amt, sameEntSaveTrans, pwd)
             } else if (func == "updateEnv") {
                 var key = params.key;
                 var value = params.val;
@@ -742,177 +714,6 @@ function handle_register(params, res, req) {
     });   
 }
 
-//ip
-const CHAIN_IP = "127.0.0.1"
-//节点信息
-const URL_CHAIN_PEER    = util.format("http://%s:7050/network/peers", CHAIN_IP)
-//交易信息 http://127.0.0.1:7050/transactions/{UUID}
-const URL_CHAIN_TX       = util.format("http://%s:7050/transactions/", CHAIN_IP)
-//当前链信息
-const URL_CHAIN_INFO     = util.format("http://%s:7050/chain", CHAIN_IP)
-//链上交易信息 http://127.0.0.1:7050/chain/blocks/{NUM}
-const URL_CHAIN_BLOCK    = util.format("http://%s:7050/chain/blocks/", CHAIN_IP)
-
-function handle_chain(params, res, req) {
-    logger.info("Enter Chain")
-
-    var body = {
-        code : retCode.OK,
-        msg: "OK",
-        result: ""
-    };
-    
-    var funcName = params.func
-    if (funcName == "") {
-    }
-    
-}
-
-/*
-    chainInfo = {
-        latestBlock : 120,
-        nodesCnt : 4,
-        txRecords: [
-            {
-                node: "",
-                txid: "xxxx",
-                txInfo: "xxxx",
-                block: 10,
-                timestamp: 1517191532
-            },
-            {
-                node: "",
-                txid: "xxxx",
-                txInfo: "xxxx",
-                block: 10,
-                timestamp: 1517191532
-            }
-        ]
-        
-    }
-*/
-function __getChainInfoForWeb(cb) {
-    
-    var chainInfo = {}
-    
-    request(URL_CHAIN_INFO, function (err, resp, body) {
-        if (err || resp.statusCode != 200) {
-            logger.error("request(%s) error: %j, resp=%j", URL_CHAIN_INFO, err, resp);
-            return cb(err)
-        }
-
-        var chainObj = JSON.parse(body)
-        var latestBlockNum = chainObj.height - 1 //从0开始编号，这里减1
-        chainInfo.latestBlock = latestBlockNum
-        
-        
-        request(URL_CHAIN_PEER, function (err, resp, body) {
-            if (err || resp.statusCode != 200) {
-                logger.error("request(%s) error: %j, resp=%j", URL_CHAIN_PEER, err, resp);
-                return cb(err)
-            }
-
-            var peersObj = JSON.parse(body)
-            chainInfo.nodesCnt = peersObj.peers.length
-            
-            
-            //查询交易信息
-            var txRecords = []
-            //目前只取最新的5条记录
-            __getBlockInfo(latestBlockNum, 5, txRecords, function(err){
-                chainInfo.txRecords = txRecords
-                cb (null, chainInfo)
-            })
-        })
-    })
-}
-
-//txRecords作为入参传入，因为里面有递归调用，如果在本函数里用局部变量定义无法在递归中传递
-function __getBlockInfo(latestBlockNum, queryBlockCnt, txRecords, cb) {
-    //从1开始，0块没有交易信息
-    if (latestBlockNum > 0) {
-        var begIdx = latestBlockNum - queryBlockCnt + 1
-        if (begIdx < 1 )
-            begIdx = 1
-
-        var blockList = []
-        for (var i=begIdx; i<=latestBlockNum; i++) {
-            blockList[i-begIdx] = i
-        } 
-       
-        /*
-            var respCnt = 0
-            blockList.forEach(function(blockIdx){
-                request(URL_CHAIN_BLOCK + blockIdx, function (err, resp, body) {
-                    if (err || resp.statusCode != 200) {
-                        logger.error("request(%s) error: %j, resp=%j", URL_CHAIN_BLOCK, err, resp);
-                        return cb(err)
-                    }
-                    
-                    txRecords[blockIdx-begIdx].txid = body.transactions[0].txid //目前一个块记录一条交易，所以这里只取第一个位置即可
-                    respCnt++
-                })
-            })
-            
-            if (respCnt >= queryBlockCnt) {
-                cb (null)
-            }
-        */
-        var tmpRecds = {}
-        var keyList = []
-        asyncc.map(blockList, function(blockIdx, callback) {
-            request(URL_CHAIN_BLOCK + blockIdx, function (err, resp, body) {
-                if (err || resp.statusCode != 200) {
-                    logger.error("request(%s) error: %j, resp=%j", URL_CHAIN_BLOCK, err, resp);
-                    return cb(err)
-                }
-                
-                var blockObj = JSON.parse(body)
-                //有的块没有交易
-                if (blockObj.transactions != undefined) {
-                    //var txIdx = latestBlockNum - blockIdx      //倒序
-                    tmpRecds[blockIdx] = {}
-                    tmpRecds[blockIdx].block = blockIdx
-                    tmpRecds[blockIdx].txid = blockObj.transactions[0].txid //目前一个块记录一条交易，所以这里只取第一个位置即可
-                    tmpRecds[blockIdx].timestamp = blockObj.transactions[0].timestamp.seconds
-                    var payload = blockObj.transactions[0].payload
-                    tmpRecds[blockIdx].txInfo =  payload
-                    
-                    keyList[keyList.length] = blockIdx
-                } 
-                
-                callback(null, null) //必须调用一下callback，否则不会认为执行完毕
-            })}, function(err, results) {
-                
-                keyList.sort(__sort_down)  //降序
-                //最新的数据放在最上面
-                var txIdx = 0
-                var begTxIdx = txRecords.length
-                for (var i=0; i<keyList.length; i++) {
-                    txIdx = begTxIdx + i
-                    
-                    //最多记录queryBlockCnt条
-                    if (txIdx >= queryBlockCnt)
-                        break
-                    
-                    txRecords[txIdx] = tmpRecds[keyList[i]]
-                }
-                
-                //记录不够，再查一次
-                if (txRecords.length < queryBlockCnt) {
-                    //从上次查到的最小序列号开始
-                    __getBlockInfo(keyList[keyList.length-1] - 1, queryBlockCnt, txRecords, cb)
-                } else {
-                    cb (null)
-                }
-            }
-        )
-    } else {
-        // latestBlockNum 小于等于0，说明已处理完毕
-        cb (null)
-    }
-}
-
 
 function __getUserAttrRole(usrType) {
     if (usrType == userType.CENTERBANK) {
@@ -933,9 +734,6 @@ function __getUserAffiliation(usrType) {
     return "bank_a"
 }
 
-function __sort_down(x, y) {
-    return (x < y) ? 1 : -1      
-}
 
 //公共处理
 function __handle_comm__(req, res) {
@@ -957,7 +755,7 @@ function __handle_comm__(req, res) {
         res.send(body)
         return
     }
-    var path = req.route.path
+    path = req.route.path
     
     var handle = routeTable[path][method]
     if (handle == undefined) {
@@ -991,17 +789,7 @@ user.init(function(err) {
     app.listen(port, "127.0.0.1");
     logger.info("listen on %d...", port);
 })
-
-__getChainInfoForWeb(function (err, chain){
-    if (err) {
-        logger.error("__getChainInfoForWeb err:", err)
-        return
-    }
-    
-    logger.info("chain %j", chain);
-})
 */
-
 var kdport = 8588
 app.listen(kdport, "127.0.0.1");
 logger.info("default ccid : %s", globalCcid);

@@ -21,7 +21,7 @@ import (
 	"github.com/hyperledger/fabric/core/crypto/primitives"
 )
 
-var mylog = InitMylog("frt")
+var mylog = InitMylog("kd")
 
 const (
 	ENT_CENTERBANK = 1
@@ -37,30 +37,30 @@ const (
 	ATTR_USRTYPE = "usrtype"
 
 	//因为目前账户entity的key是账户名，为了防止自己定义的如下key和账户名冲突，所以下面的key里都含有特殊字符
-	TRANSSEQ_PREFIX      = "!frt@txSeqPre~"          //序列号生成器的key的前缀。使用的是worldState存储
-	TRANSINFO_PREFIX     = "!frt@txInfoPre~"         //全局交易信息的key的前缀。使用的是worldState存储
-	ONE_ACC_TRANS_PREFIX = "!frt@oneAccTxPre~"       //存储单个账户的交易的key前缀
-	UER_ENTITY_PREFIX    = "!frt@usrEntPre~"         //存储某个用户的用户信息的key前缀。目前用户名和账户名相同，而账户entity的key是账户名，所以用户entity加个前缀区分
-	CENTERBANK_ACC_KEY   = "!frt@centerBankAccKey@!" //央行账户的key。使用的是worldState存储
-	ALL_ACC_KEY          = "!frt@allAccInfoKey@!"    //存储所有账户名的key。使用的是worldState存储
+	TRANSSEQ_PREFIX      = "!kd@txSeqPre~"          //序列号生成器的key的前缀。使用的是worldState存储
+	TRANSINFO_PREFIX     = "!kd@txInfoPre~"         //全局交易信息的key的前缀。使用的是worldState存储
+	ONE_ACC_TRANS_PREFIX = "!kd@oneAccTxPre~"       //存储单个账户的交易的key前缀
+	UER_ENTITY_PREFIX    = "!kd@usrEntPre~"         //存储某个用户的用户信息的key前缀。目前用户名和账户名相同，而账户entity的key是账户名，所以用户entity加个前缀区分
+	CENTERBANK_ACC_KEY   = "!kd@centerBankAccKey@!" //央行账户的key。使用的是worldState存储
+	ALL_ACC_KEY          = "!kd@allAccInfoKey@!"    //存储所有账户名的key。使用的是worldState存储
 
 	//销售分成相关
-	RACK_GLOBAL_ALLOCRATE_KEY = "!frt@globalAllocRate@!" //全局的收入分成比例
-	RACK_ALLOCRATE_PREFIX     = "!frt@allocRatePre~"     //每个货架的收入分成比例的key前缀
-	RACK_ALLOCTXSEQ_PREFIX    = "!frt@allocTxSeqPre~"    //每个货架的分成记录的序列号的key前缀
-	RACK_ALLOC_TX_PREFIX      = "!frt@alloctxPre__"      //每个货架收入分成交易记录
-	RACK_ACC_ALLOC_TX_PREFIX  = "!frt@acc_alloctxPre__"  //某个账户收入分成交易记录
+	RACK_GLOBAL_ALLOCRATE_KEY = "!kd@globalAllocRate@!" //全局的收入分成比例
+	RACK_ALLOCRATE_PREFIX     = "!kd@allocRatePre~"     //每个货架的收入分成比例的key前缀
+	RACK_ALLOCTXSEQ_PREFIX    = "!kd@allocTxSeqPre~"    //每个货架的分成记录的序列号的key前缀
+	RACK_ALLOC_TX_PREFIX      = "!kd@alloctxPre__"      //每个货架收入分成交易记录
+	RACK_ACC_ALLOC_TX_PREFIX  = "!kd@acc_alloctxPre__"  //某个账户收入分成交易记录
 
 	//积分奖励相关
-	RACK_SALE_ENC_SCORE_CFG_PREFIX = "!frt@rackSESCPre~" //货架销售奖励积分比例分配配置的key前缀 销售奖励积分，简称SES
-	RACK_NEWRACK_ENC_SCORE_DEFAULT = 5000                //新开货架默认奖励的金额
+	RACK_SALE_ENC_SCORE_CFG_PREFIX = "!kd@rackSESCPre~" //货架销售奖励积分比例分配配置的key前缀 销售奖励积分，简称SES
+	RACK_NEWRACK_ENC_SCORE_DEFAULT = 5000               //新开货架默认奖励的金额
 
 	//货架融资相关
-	RACK_FINANCE_CFG_PREFIX = "!frt@rack_FinacCfgPre~"          //货架融资配置的key前缀
-	FINACINFO_PREFIX        = "!frt@rack_FinacInfoPre~"         //理财发行信息的key的前缀。使用的是worldState存储
-	RACKINFO_PREFIX         = "!frt@rack_RackInfoPre~"          //货架信息的key的前缀。使用的是worldState存储
-	RACKFINACINFO_PREFIX    = "!frt@rack_RackFinacInfoPre~"     //货架融资信息的key的前缀。使用的是worldState存储
-	RACKFINACHISTORY_KEY    = "!frt@rack_RackFinacHistoryKey@!" //货架融资发行的历史信息
+	RACK_FINANCE_CFG_PREFIX = "!kd@rack_FinacCfgPre~"          //货架融资配置的key前缀
+	FINACINFO_PREFIX        = "!kd@rack_FinacInfoPre~"         //理财发行信息的key的前缀。使用的是worldState存储
+	RACKINFO_PREFIX         = "!kd@rack_RackInfoPre~"          //货架信息的key的前缀。使用的是worldState存储
+	RACKFINACINFO_PREFIX    = "!kd@rack_RackFinacInfoPre~"     //货架融资信息的key的前缀。使用的是worldState存储
+	RACKFINACHISTORY_KEY    = "!kd@rack_RackFinacHistoryKey@!" //货架融资发行的历史信息
 
 	RACK_GLOBAL_CFG_RACK_ID = "_global__rack___" //货架全局配置的id
 
@@ -310,10 +310,10 @@ type QueryRack struct {
 
 var ErrNilEntity = errors.New("nil entity.")
 
-type FRT struct {
+type KD struct {
 }
 
-func (t *FRT) Init(stub shim.ChaincodeStubInterface, function string, args []string) ([]byte, error) {
+func (t *KD) Init(stub shim.ChaincodeStubInterface, function string, args []string) ([]byte, error) {
 	mylog.Debug("Enter Init")
 	mylog.Debug("func =%s, args = %+v", function, args)
 
@@ -393,7 +393,7 @@ func (t *FRT) Init(stub shim.ChaincodeStubInterface, function string, args []str
 }
 
 // Transaction makes payment of X units from A to B
-func (t *FRT) Invoke(stub shim.ChaincodeStubInterface, function string, args []string) ([]byte, error) {
+func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []string) ([]byte, error) {
 	mylog.Debug("Enter Invoke")
 	mylog.Debug("func =%s, args = %+v", function, args)
 	var err error
@@ -1151,7 +1151,7 @@ func (t *FRT) Invoke(stub shim.ChaincodeStubInterface, function string, args []s
 }
 
 // Query callback representing the query of a chaincode
-func (t *FRT) Query(stub shim.ChaincodeStubInterface, function string, args []string) ([]byte, error) {
+func (t *KD) Query(stub shim.ChaincodeStubInterface, function string, args []string) ([]byte, error) {
 	mylog.Debug("Enter Query")
 	mylog.Debug("func =%s, args = %+v", function, args)
 
@@ -1610,7 +1610,7 @@ func (t *FRT) Query(stub shim.ChaincodeStubInterface, function string, args []st
 	return nil, errors.New("unknown function.")
 }
 
-func (t *FRT) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64, begIdx, count, begTime, endTime, queryMaxSeq int64, isAsc bool) ([]byte, error) {
+func (t *KD) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64, begIdx, count, begTime, endTime, queryMaxSeq int64, isAsc bool) ([]byte, error) {
 	var maxSeq int64
 	var err error
 
@@ -1753,7 +1753,7 @@ func (t *FRT) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64,
 	return retTransInfo, nil
 }
 
-func (t *FRT) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName string, begIdx, count, begTime, endTime, queryMaxSeq int64, isAsc bool) ([]byte, error) {
+func (t *KD) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName string, begIdx, count, begTime, endTime, queryMaxSeq int64, isAsc bool) ([]byte, error) {
 	var maxSeq int64
 	var err error
 
@@ -1931,7 +1931,7 @@ func (t *FRT) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName strin
 	return retTransInfo, nil
 }
 
-func (t *FRT) getAllAccAmt(stub shim.ChaincodeStubInterface) ([]byte, error) {
+func (t *KD) getAllAccAmt(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	var qb QueryBalance
 	qb.IssueAmount = 0
 	qb.AccSumAmount = 0
@@ -1995,7 +1995,7 @@ func (t *FRT) getAllAccAmt(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	return retValue, nil
 }
 
-func (t *FRT) verifySign(stub shim.ChaincodeStubInterface, certificate []byte) (bool, error) {
+func (t *KD) verifySign(stub shim.ChaincodeStubInterface, certificate []byte) (bool, error) {
 	mylog.Debug("verifySign ...")
 
 	sigma, err := stub.GetCallerMetadata()
@@ -2035,7 +2035,7 @@ func (t *FRT) verifySign(stub shim.ChaincodeStubInterface, certificate []byte) (
 	return ok, err
 }
 
-func (t *FRT) verifyIdentity(stub shim.ChaincodeStubInterface, userName string, ent *AccountEntity, attrs *UserAttrs) (bool, error) {
+func (t *KD) verifyIdentity(stub shim.ChaincodeStubInterface, userName string, ent *AccountEntity, attrs *UserAttrs) (bool, error) {
 	/*
 	   因为用到了认证用户，不能使用属性中的用户名来验证了。因为属性中存的是ent.Owner
 	       //有时获取不到attr，这里做个判断，如果获取到再判断是否和账户中的用户相同
@@ -2068,7 +2068,7 @@ func (t *FRT) verifyIdentity(stub shim.ChaincodeStubInterface, userName string, 
 
 }
 
-func (t *FRT) getUserAttrs(stub shim.ChaincodeStubInterface) (*UserAttrs, error) {
+func (t *KD) getUserAttrs(stub shim.ChaincodeStubInterface) (*UserAttrs, error) {
 	//有时会获取不到attr，不知道怎么回事，先不返回错
 	tmpName, err := stub.ReadCertAttribute(ATTR_USRNAME)
 	if err != nil {
@@ -2095,7 +2095,7 @@ func (t *FRT) getUserAttrs(stub shim.ChaincodeStubInterface) (*UserAttrs, error)
 	return &attrs, nil
 }
 
-func (t *FRT) getAccountEntity(stub shim.ChaincodeStubInterface, entName string) (*AccountEntity, error) {
+func (t *KD) getAccountEntity(stub shim.ChaincodeStubInterface, entName string) (*AccountEntity, error) {
 	var centerBankByte []byte
 	var cb AccountEntity
 	var err error
@@ -2116,7 +2116,7 @@ func (t *FRT) getAccountEntity(stub shim.ChaincodeStubInterface, entName string)
 	return &cb, nil
 }
 
-func (t *FRT) isEntityExists(stub shim.ChaincodeStubInterface, entName string) (bool, error) {
+func (t *KD) isEntityExists(stub shim.ChaincodeStubInterface, entName string) (bool, error) {
 	var centerBankByte []byte
 	var err error
 
@@ -2133,7 +2133,7 @@ func (t *FRT) isEntityExists(stub shim.ChaincodeStubInterface, entName string) (
 }
 
 //央行数据写入
-func (t *FRT) setAccountEntity(stub shim.ChaincodeStubInterface, cb *AccountEntity) error {
+func (t *KD) setAccountEntity(stub shim.ChaincodeStubInterface, cb *AccountEntity) error {
 
 	jsons, err := json.Marshal(cb)
 
@@ -2152,7 +2152,7 @@ func (t *FRT) setAccountEntity(stub shim.ChaincodeStubInterface, cb *AccountEnti
 }
 
 //发行
-func (t *FRT) issueCoin(stub shim.ChaincodeStubInterface, cbID string, issueAmount, issueTime int64) ([]byte, error) {
+func (t *KD) issueCoin(stub shim.ChaincodeStubInterface, cbID string, issueAmount, issueTime int64) ([]byte, error) {
 	mylog.Debug("Enter issueCoin")
 
 	var err error
@@ -2198,7 +2198,7 @@ func (t *FRT) issueCoin(stub shim.ChaincodeStubInterface, cbID string, issueAmou
 }
 
 //转账
-func (t *FRT) transferCoin(stub shim.ChaincodeStubInterface, from, to, transType, description string, amount, transeTime int64, sameEntSaveTrans bool) ([]byte, error) {
+func (t *KD) transferCoin(stub shim.ChaincodeStubInterface, from, to, transType, description string, amount, transeTime int64, sameEntSaveTrans bool) ([]byte, error) {
 	mylog.Debug("Enter transferCoin")
 
 	var err error
@@ -2287,7 +2287,7 @@ const (
 )
 
 //记录交易。目前交易分为两种：一种是和央行打交道的，包括央行发行货币、央行给项目或企业转帐，此类交易普通用户不能查询；另一种是项目、企业、个人间互相转账，此类交易普通用户能查询
-func (t *FRT) recordTranse(stub shim.ChaincodeStubInterface, fromEnt, toEnt *AccountEntity, incomePayFlag int, transType, description string, amount, times int64) error {
+func (t *KD) recordTranse(stub shim.ChaincodeStubInterface, fromEnt, toEnt *AccountEntity, incomePayFlag int, transType, description string, amount, times int64) error {
 	var transInfo Transaction
 	//var now = time.Now()
 
@@ -2324,7 +2324,7 @@ func (t *FRT) recordTranse(stub shim.ChaincodeStubInterface, fromEnt, toEnt *Acc
 	return nil
 }
 
-func (t *FRT) checkAccountName(accName string) error {
+func (t *KD) checkAccountName(accName string) error {
 	//会用':'作为分隔符分隔多个账户名，所以账户名不能含有':'
 	var invalidChars string = string(MULTI_STRING_DELIM)
 
@@ -2335,7 +2335,7 @@ func (t *FRT) checkAccountName(accName string) error {
 	return nil
 }
 
-func (t *FRT) saveAccountName(stub shim.ChaincodeStubInterface, accName string) error {
+func (t *KD) saveAccountName(stub shim.ChaincodeStubInterface, accName string) error {
 	accB, err := stub.GetState(ALL_ACC_KEY)
 	if err != nil {
 		mylog.Error("saveAccountName GetState failed.err=%s", err)
@@ -2358,7 +2358,7 @@ func (t *FRT) saveAccountName(stub shim.ChaincodeStubInterface, accName string) 
 	return nil
 }
 
-func (t *FRT) getAllAccountNames(stub shim.ChaincodeStubInterface) ([]byte, error) {
+func (t *KD) getAllAccountNames(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	accB, err := stub.GetState(ALL_ACC_KEY)
 	if err != nil {
 		mylog.Error("getAllAccountNames GetState failed.err=%s", err)
@@ -2367,7 +2367,7 @@ func (t *FRT) getAllAccountNames(stub shim.ChaincodeStubInterface) ([]byte, erro
 	return accB, nil
 }
 
-func (t *FRT) newAccount(stub shim.ChaincodeStubInterface, accName string, accType int, userName string, cert []byte, times int64, isCBAcc bool) ([]byte, error) {
+func (t *KD) newAccount(stub shim.ChaincodeStubInterface, accName string, accType int, userName string, cert []byte, times int64, isCBAcc bool) ([]byte, error) {
 	mylog.Debug("Enter openAccount")
 
 	var err error
@@ -2422,7 +2422,7 @@ func (t *FRT) newAccount(stub shim.ChaincodeStubInterface, accName string, accTy
 
 var centerBankAccCache []byte = nil
 
-func (t *FRT) setCenterBankAcc(stub shim.ChaincodeStubInterface, acc string) error {
+func (t *KD) setCenterBankAcc(stub shim.ChaincodeStubInterface, acc string) error {
 	err := t.PutState_Ex(stub, CENTERBANK_ACC_KEY, []byte(acc))
 	if err != nil {
 		mylog.Error("setCenterBankAcc PutState failed.err=%s", err)
@@ -2433,7 +2433,7 @@ func (t *FRT) setCenterBankAcc(stub shim.ChaincodeStubInterface, acc string) err
 
 	return nil
 }
-func (t *FRT) getCenterBankAcc(stub shim.ChaincodeStubInterface) ([]byte, error) {
+func (t *KD) getCenterBankAcc(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	if centerBankAccCache != nil {
 		return centerBankAccCache, nil
 	}
@@ -2449,7 +2449,7 @@ func (t *FRT) getCenterBankAcc(stub shim.ChaincodeStubInterface) ([]byte, error)
 	return bankB, nil
 }
 
-func (t *FRT) getTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string) (int64, error) {
+func (t *KD) getTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string) (int64, error) {
 	seqB, err := stub.GetState(transSeqKey)
 	if err != nil {
 		mylog.Error("getTransSeq GetState failed.err=%s", err)
@@ -2473,7 +2473,7 @@ func (t *FRT) getTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string) 
 
 	return seq, nil
 }
-func (t *FRT) setTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string, seq int64) error {
+func (t *KD) setTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string, seq int64) error {
 	err := t.PutState_Ex(stub, transSeqKey, []byte(strconv.FormatInt(seq, 10)))
 	if err != nil {
 		mylog.Error("setTransSeq PutState failed.err=%s", err)
@@ -2483,22 +2483,22 @@ func (t *FRT) setTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string, 
 	return nil
 }
 
-func (t *FRT) getTransInfoKey(stub shim.ChaincodeStubInterface, seq int64) string {
+func (t *KD) getTransInfoKey(stub shim.ChaincodeStubInterface, seq int64) string {
 	var buf = bytes.NewBufferString(TRANSINFO_PREFIX)
 	buf.WriteString(strconv.FormatInt(seq, 10))
 	return buf.String()
 }
 
-func (t *FRT) getGlobalTransSeqKey(stub shim.ChaincodeStubInterface) string {
+func (t *KD) getGlobalTransSeqKey(stub shim.ChaincodeStubInterface) string {
 	return TRANSSEQ_PREFIX + "global"
 }
 
 //获取某个账户的trans seq key
-func (t *FRT) getAccTransSeqKey(accName string) string {
+func (t *KD) getAccTransSeqKey(accName string) string {
 	return TRANSSEQ_PREFIX + "acc_" + accName
 }
 
-func (t *FRT) setTransInfo(stub shim.ChaincodeStubInterface, info *Transaction) error {
+func (t *KD) setTransInfo(stub shim.ChaincodeStubInterface, info *Transaction) error {
 	//先获取全局seq
 	seqGlob, err := t.getTransSeq(stub, t.getGlobalTransSeqKey(stub))
 	if err != nil {
@@ -2568,11 +2568,11 @@ func (t *FRT) setTransInfo(stub shim.ChaincodeStubInterface, info *Transaction) 
 	return nil
 }
 
-func (t *FRT) getOneAccTransInfoKey(accName string, seq int64) string {
+func (t *KD) getOneAccTransInfoKey(accName string, seq int64) string {
 	return ONE_ACC_TRANS_PREFIX + accName + "_" + strconv.FormatInt(seq, 10)
 }
 
-func (t *FRT) setOneAccTransInfo(stub shim.ChaincodeStubInterface, accName, GlobalTransKey string) error {
+func (t *KD) setOneAccTransInfo(stub shim.ChaincodeStubInterface, accName, GlobalTransKey string) error {
 
 	seq, err := t.getTransSeq(stub, t.getAccTransSeqKey(accName))
 	if err != nil {
@@ -2594,7 +2594,7 @@ func (t *FRT) setOneAccTransInfo(stub shim.ChaincodeStubInterface, accName, Glob
 	return nil
 }
 
-func (t *FRT) getTransInfo(stub shim.ChaincodeStubInterface, key string) (*Transaction, error) {
+func (t *KD) getTransInfo(stub shim.ChaincodeStubInterface, key string) (*Transaction, error) {
 	var err error
 	var trans Transaction
 
@@ -2618,7 +2618,7 @@ func (t *FRT) getTransInfo(stub shim.ChaincodeStubInterface, key string) (*Trans
 
 	return &trans, nil
 }
-func (t *FRT) getQueryTransInfo(stub shim.ChaincodeStubInterface, key string) (*QueryTransRecd, error) {
+func (t *KD) getQueryTransInfo(stub shim.ChaincodeStubInterface, key string) (*QueryTransRecd, error) {
 	var err error
 	var trans QueryTransRecd
 
@@ -2643,7 +2643,7 @@ func (t *FRT) getQueryTransInfo(stub shim.ChaincodeStubInterface, key string) (*
 	return &trans, nil
 }
 
-func (t *FRT) setAllocEarnTx(stub shim.ChaincodeStubInterface, rackid, allocKey string, totalAmt int64,
+func (t *KD) setAllocEarnTx(stub shim.ChaincodeStubInterface, rackid, allocKey string, totalAmt int64,
 	accs *AllocAccs, eap *EarningAllocRate, times int64) ([]byte, error) {
 
 	var eat EarningAllocTx
@@ -2741,7 +2741,7 @@ func (t *FRT) setAllocEarnTx(stub shim.ChaincodeStubInterface, rackid, allocKey 
 	return nil, nil
 }
 
-func (t *FRT) getRackRolesAllocAmt(eap *EarningAllocRate, totalAmt int64) *RolesAllocAmount {
+func (t *KD) getRackRolesAllocAmt(eap *EarningAllocRate, totalAmt int64) *RolesAllocAmount {
 
 	var raa RolesAllocAmount
 	var base = eap.SellerRate + eap.FielderRate + eap.DeliveryRate + eap.PlatformRate
@@ -2755,7 +2755,7 @@ func (t *FRT) getRackRolesAllocAmt(eap *EarningAllocRate, totalAmt int64) *Roles
 	return &raa
 }
 
-func (t *FRT) setOneAccAllocEarnTx(stub shim.ChaincodeStubInterface, accName, txKey string) error {
+func (t *KD) setOneAccAllocEarnTx(stub shim.ChaincodeStubInterface, accName, txKey string) error {
 	var accTxKey = t.getOneAccAllocTxKey(accName)
 
 	txsB, err := stub.GetState(accTxKey)
@@ -2780,7 +2780,7 @@ func (t *FRT) setOneAccAllocEarnTx(stub shim.ChaincodeStubInterface, accName, tx
 	return nil
 }
 
-func (t *FRT) getRolesAllocEarning(totalAmt int64, accs string, result map[string]int64) error {
+func (t *KD) getRolesAllocEarning(totalAmt int64, accs string, result map[string]int64) error {
 
 	//如果有多个子账户，格式如下 "a:20;b:20;c:60"，防止输入错误，先去除两边的空格，然后再去除两边的';'（防止split出来空字符串）
 	var newAccs = strings.Trim(strings.TrimSpace(accs), ";")
@@ -2832,11 +2832,11 @@ func (t *FRT) getRolesAllocEarning(totalAmt int64, accs string, result map[strin
 	return nil
 }
 
-func (t *FRT) getAllocTxSeqKey(stub shim.ChaincodeStubInterface, rackid string) string {
+func (t *KD) getAllocTxSeqKey(stub shim.ChaincodeStubInterface, rackid string) string {
 	return RACK_ALLOCTXSEQ_PREFIX + rackid + "_"
 }
 
-func (t *FRT) getAllocTxKey(stub shim.ChaincodeStubInterface, rackid string, seq int64) string {
+func (t *KD) getAllocTxKey(stub shim.ChaincodeStubInterface, rackid string, seq int64) string {
 	var buf = bytes.NewBufferString(RACK_ALLOC_TX_PREFIX)
 	buf.WriteString(rackid)
 	buf.WriteString("_")
@@ -2844,18 +2844,18 @@ func (t *FRT) getAllocTxKey(stub shim.ChaincodeStubInterface, rackid string, seq
 	return buf.String()
 }
 
-func (t *FRT) getOneAccAllocTxKey(accName string) string {
+func (t *KD) getOneAccAllocTxKey(accName string) string {
 	return RACK_ACC_ALLOC_TX_PREFIX + accName
 }
 
-func (t *FRT) getRackAllocRateKey(rackid string) string {
+func (t *KD) getRackAllocRateKey(rackid string) string {
 	return RACK_ALLOCRATE_PREFIX + rackid
 }
-func (t *FRT) getGlobalRackAllocRateKey() string {
+func (t *KD) getGlobalRackAllocRateKey() string {
 	return RACK_GLOBAL_ALLOCRATE_KEY
 }
 
-func (t *FRT) getAllocTxRecdByKey(stub shim.ChaincodeStubInterface, rackid, allocKey string) ([]byte, error) {
+func (t *KD) getAllocTxRecdByKey(stub shim.ChaincodeStubInterface, rackid, allocKey string) ([]byte, error) {
 
 	var retTransInfo = []byte("[]") //默认为空数组。 因为和下面的查询所有记录使用同一个restful接口，所以这里也返回数组形式
 
@@ -2913,7 +2913,7 @@ func (t *FRT) getAllocTxRecdByKey(stub shim.ChaincodeStubInterface, rackid, allo
 
 	return retTransInfo, nil
 }
-func (t *FRT) getAllocTxRecds(stub shim.ChaincodeStubInterface, rackid string, begIdx, count, begTime, endTime int64) ([]byte, error) {
+func (t *KD) getAllocTxRecds(stub shim.ChaincodeStubInterface, rackid string, begIdx, count, begTime, endTime int64) ([]byte, error) {
 	var maxSeq int64
 	var err error
 	var retTransInfo = []byte("[]") //默认为空数组
@@ -3001,7 +3001,7 @@ func (t *FRT) getAllocTxRecds(stub shim.ChaincodeStubInterface, rackid string, b
 	return retTransInfo, nil
 }
 
-func (t *FRT) getOneAccAllocTxRecds(stub shim.ChaincodeStubInterface, accName string, begIdx, count, begTime, endTime int64) ([]byte, error) {
+func (t *KD) getOneAccAllocTxRecds(stub shim.ChaincodeStubInterface, accName string, begIdx, count, begTime, endTime int64) ([]byte, error) {
 	var resultJson = []byte("[]") //默认为空数组
 	var accTxKey = t.getOneAccAllocTxKey(accName)
 
@@ -3075,7 +3075,7 @@ func (t *FRT) getOneAccAllocTxRecds(stub shim.ChaincodeStubInterface, accName st
 	return resultJson, nil
 }
 
-func (t *FRT) procOneAccAllocTx(stub shim.ChaincodeStubInterface, txKey, accName string) (*QueryAccEarningAllocTx, error) {
+func (t *KD) procOneAccAllocTx(stub shim.ChaincodeStubInterface, txKey, accName string) (*QueryAccEarningAllocTx, error) {
 	eat, err := t.getAllocTxRecdEntity(stub, txKey)
 	if err != nil {
 		return nil, mylog.Errorf("procOneAccAllocTx getAllocTxRecdEntity failed. txKey=%s, err=%s", txKey, err)
@@ -3100,7 +3100,7 @@ func (t *FRT) procOneAccAllocTx(stub shim.ChaincodeStubInterface, txKey, accName
 	return &qaeat, nil
 }
 
-func (t *FRT) getAllocTxRecdEntity(stub shim.ChaincodeStubInterface, txKey string) (*EarningAllocTx, error) {
+func (t *KD) getAllocTxRecdEntity(stub shim.ChaincodeStubInterface, txKey string) (*EarningAllocTx, error) {
 	txB, err := stub.GetState(txKey)
 	if err != nil {
 		return nil, mylog.Errorf("getAllocTxRecdEntity GetState(txKey=%s) failed. err=%s", txKey, err)
@@ -3118,7 +3118,7 @@ func (t *FRT) getAllocTxRecdEntity(stub shim.ChaincodeStubInterface, txKey strin
 	return &eat, nil
 }
 
-func (t *FRT) getRackAllocCfg(stub shim.ChaincodeStubInterface, rackid string, peap *EarningAllocRate) ([]byte, error) {
+func (t *KD) getRackAllocCfg(stub shim.ChaincodeStubInterface, rackid string, peap *EarningAllocRate) ([]byte, error) {
 	var eapB []byte = nil
 	var err error
 
@@ -3152,14 +3152,14 @@ func (t *FRT) getRackAllocCfg(stub shim.ChaincodeStubInterface, rackid string, p
 }
 
 /* ----------------------- 积分奖励相关 ----------------------- */
-func (t *FRT) getGlobalRackEncourageScoreCfgKey() string {
+func (t *KD) getGlobalRackEncourageScoreCfgKey() string {
 	return RACK_SALE_ENC_SCORE_CFG_PREFIX + "global"
 }
-func (t *FRT) getRackEncourageScoreCfgKey(rackid string) string {
+func (t *KD) getRackEncourageScoreCfgKey(rackid string) string {
 	return RACK_SALE_ENC_SCORE_CFG_PREFIX + "rack_" + rackid
 }
 
-func (t *FRT) setRackEncourageScoreCfg(stub shim.ChaincodeStubInterface, rackid, cfgStr string, invokeTime int64) ([]byte, error) {
+func (t *KD) setRackEncourageScoreCfg(stub shim.ChaincodeStubInterface, rackid, cfgStr string, invokeTime int64) ([]byte, error) {
 	//配置格式如下 "2000:150;3000:170..."，防止输入错误，先去除两边的空格，然后再去除两边的';'（防止split出来空字符串）
 	var newCfg = strings.Trim(strings.TrimSpace(cfgStr), ";")
 
@@ -3249,7 +3249,7 @@ func (t *FRT) setRackEncourageScoreCfg(stub shim.ChaincodeStubInterface, rackid,
 	return nil, nil
 }
 
-func (t *FRT) getRackEncourageScoreCfg(stub shim.ChaincodeStubInterface, rackid string, psepc *ScoreEncouragePercentCfg) ([]byte, error) {
+func (t *KD) getRackEncourageScoreCfg(stub shim.ChaincodeStubInterface, rackid string, psepc *ScoreEncouragePercentCfg) ([]byte, error) {
 
 	var sepcB []byte = nil
 	var err error
@@ -3282,7 +3282,7 @@ func (t *FRT) getRackEncourageScoreCfg(stub shim.ChaincodeStubInterface, rackid 
 	return sepcB, nil
 }
 
-func (t *FRT) allocEncourageScoreForSales(stub shim.ChaincodeStubInterface, paraStr string, transFromAcc, transType, transDesc string, invokeTime int64, sameEntSaveTx bool) ([]byte, error) {
+func (t *KD) allocEncourageScoreForSales(stub shim.ChaincodeStubInterface, paraStr string, transFromAcc, transType, transDesc string, invokeTime int64, sameEntSaveTx bool) ([]byte, error) {
 	//配置格式如下 "货架id1,销售额,货架经营者账户,场地提供者账户,送货人账户,平台账户;货架id2,销售额,货架经营者账户,场地提供者账户,送货人账户,平台账户;...."，
 	//防止输入错误，先去除两边的空格，然后再去除两边的';'（防止split出来空字符串）
 	var newStr = strings.Trim(strings.TrimSpace(paraStr), ";")
@@ -3366,7 +3366,7 @@ func (t *FRT) allocEncourageScoreForSales(stub shim.ChaincodeStubInterface, para
 	return nil, nil
 }
 
-func (t *FRT) getRackEncourgeScoreBySales(stub shim.ChaincodeStubInterface, rackid string, sales int64) (int64, error) {
+func (t *KD) getRackEncourgeScoreBySales(stub shim.ChaincodeStubInterface, rackid string, sales int64) (int64, error) {
 	var err error
 	var sepc ScoreEncouragePercentCfg
 	_, err = t.getRackEncourageScoreCfg(stub, rackid, &sepc)
@@ -3405,7 +3405,7 @@ func (t *FRT) getRackEncourgeScoreBySales(stub shim.ChaincodeStubInterface, rack
 	return sales, nil
 }
 
-func (t *FRT) allocEncourageScore(stub shim.ChaincodeStubInterface, rrs *RackRolesEncourageScores, transFromAcc, transType, transDesc string, invokeTime int64, sameEntSaveTx bool, sellerComps int64) error {
+func (t *KD) allocEncourageScore(stub shim.ChaincodeStubInterface, rrs *RackRolesEncourageScores, transFromAcc, transType, transDesc string, invokeTime int64, sameEntSaveTx bool, sellerComps int64) error {
 	var ear EarningAllocRate
 	_, err := t.getRackAllocCfg(stub, rrs.Rackid, &ear)
 	if err != nil {
@@ -3456,7 +3456,7 @@ func (t *FRT) allocEncourageScore(stub shim.ChaincodeStubInterface, rrs *RackRol
 	return nil
 }
 
-func (t *FRT) allocEncourageScoreForNewRack(stub shim.ChaincodeStubInterface, paraStr string, transFromAcc, transType, transDesc string, invokeTime int64, sameEntSaveTx bool) ([]byte, error) {
+func (t *KD) allocEncourageScoreForNewRack(stub shim.ChaincodeStubInterface, paraStr string, transFromAcc, transType, transDesc string, invokeTime int64, sameEntSaveTx bool) ([]byte, error) {
 	//配置格式如下 "货架1,货架经营者账户,场地提供者账户,送货人账户,平台账户,奖励金额(可省略);货架2,货架经营者账户,场地提供者账户,送货人账户,平台账户,奖励金额(可省略);...."，
 	//防止输入错误，先去除两边的空格，然后再去除两边的';'（防止split出来空字符串）
 	var newStr = strings.Trim(strings.TrimSpace(paraStr), ";")
@@ -3533,14 +3533,14 @@ func (t *FRT) allocEncourageScoreForNewRack(stub shim.ChaincodeStubInterface, pa
 /* ----------------------- 积分奖励相关 ----------------------- */
 
 /* ----------------------- 货架融资相关 ----------------------- */
-func (t *FRT) getGlobalRackFinancCfgKey() string {
+func (t *KD) getGlobalRackFinancCfgKey() string {
 	return RACK_FINANCE_CFG_PREFIX + "global"
 }
-func (t *FRT) getRackFinancCfgKey(rackid string) string {
+func (t *KD) getRackFinancCfgKey(rackid string) string {
 	return RACK_FINANCE_CFG_PREFIX + "rack_" + rackid
 }
 
-func (t *FRT) getRackFinancCfg(stub shim.ChaincodeStubInterface, rackid string, prfc *RackFinanceCfg) ([]byte, error) {
+func (t *KD) getRackFinancCfg(stub shim.ChaincodeStubInterface, rackid string, prfc *RackFinanceCfg) ([]byte, error) {
 
 	var rfcB []byte = nil
 	var err error
@@ -3573,17 +3573,17 @@ func (t *FRT) getRackFinancCfg(stub shim.ChaincodeStubInterface, rackid string, 
 	return rfcB, nil
 }
 
-func (t *FRT) getFinacInfoKey(fiId string) string {
+func (t *KD) getFinacInfoKey(fiId string) string {
 	return FINACINFO_PREFIX + fiId
 }
-func (t *FRT) getRackInfoKey(rId string) string {
+func (t *KD) getRackInfoKey(rId string) string {
 	return RACKINFO_PREFIX + rId
 }
-func (t *FRT) getRackFinacInfoKey(rackId, finacId string) string {
+func (t *KD) getRackFinacInfoKey(rackId, finacId string) string {
 	return RACKFINACINFO_PREFIX + rackId + "_" + finacId
 }
 
-func (t *FRT) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, fid, payee, transType, desc string, amount, invokeTime int64, sameEntSaveTx, isRenewal bool) ([]byte, error) {
+func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, fid, payee, transType, desc string, amount, invokeTime int64, sameEntSaveTx, isRenewal bool) ([]byte, error) {
 	var fiacInfoKey = t.getFinacInfoKey(fid)
 	fiB, err := stub.GetState(fiacInfoKey)
 	if err != nil {
@@ -3793,7 +3793,7 @@ func (t *FRT) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, 
 	return nil, nil
 }
 
-func (t *FRT) financeBonus(stub shim.ChaincodeStubInterface, fid, rackales string, invokeTime int64) ([]byte, error) {
+func (t *KD) financeBonus(stub shim.ChaincodeStubInterface, fid, rackales string, invokeTime int64) ([]byte, error) {
 	//配置格式如下 "货架1:销售额;货架2:销售额"，
 	//防止输入错误，先去除两边的空格，然后再去除两边的';'（防止split出来空字符串）
 	var newStr = strings.Trim(strings.TrimSpace(rackales), ";")
@@ -3850,7 +3850,7 @@ func (t *FRT) financeBonus(stub shim.ChaincodeStubInterface, fid, rackales strin
 	return nil, nil
 }
 
-func (t *FRT) financeBonus4OneRack(stub shim.ChaincodeStubInterface, rackid, fid string, sales, invokeTime int64) error {
+func (t *KD) financeBonus4OneRack(stub shim.ChaincodeStubInterface, rackid, fid string, sales, invokeTime int64) error {
 	var rackFinacInfoKey = t.getRackFinacInfoKey(rackid, fid)
 
 	rfiB, err := stub.GetState(rackFinacInfoKey)
@@ -3927,7 +3927,7 @@ func (t *FRT) financeBonus4OneRack(stub shim.ChaincodeStubInterface, rackid, fid
 
 var currentFidCache string
 
-func (t *FRT) setCurrentFid(stub shim.ChaincodeStubInterface, currentFid string) error {
+func (t *KD) setCurrentFid(stub shim.ChaincodeStubInterface, currentFid string) error {
 	//因为会调用多次，所以用cache加速一下
 	if len(currentFidCache) > 0 && currentFidCache == currentFid {
 		return nil
@@ -3972,7 +3972,7 @@ func (t *FRT) setCurrentFid(stub shim.ChaincodeStubInterface, currentFid string)
 	return nil
 }
 
-func (t *FRT) getPrevAndCurrFids(stub shim.ChaincodeStubInterface) (*RackFinancHistory, error) {
+func (t *KD) getPrevAndCurrFids(stub shim.ChaincodeStubInterface) (*RackFinancHistory, error) {
 	hisB, err := stub.GetState(RACKFINACHISTORY_KEY)
 	if err != nil {
 		return nil, mylog.Errorf("getPrevAndCurrFids: GetState failed. err=%s.", err)
@@ -3991,7 +3991,7 @@ func (t *FRT) getPrevAndCurrFids(stub shim.ChaincodeStubInterface) (*RackFinancH
 	return &his, nil
 }
 
-func (t *FRT) getRecentlyFid(stub shim.ChaincodeStubInterface, getCurrent bool) (string, error) {
+func (t *KD) getRecentlyFid(stub shim.ChaincodeStubInterface, getCurrent bool) (string, error) {
 	his, err := t.getPrevAndCurrFids(stub)
 	if err != nil {
 		return "", mylog.Errorf("getRecentlyFid: getPrevAndCurrFids failed. err=%s.", err)
@@ -4006,14 +4006,14 @@ func (t *FRT) getRecentlyFid(stub shim.ChaincodeStubInterface, getCurrent bool) 
 		return his.PreCurrFID[0], nil
 	}
 }
-func (t *FRT) getPreviousFid(stub shim.ChaincodeStubInterface) (string, error) {
+func (t *KD) getPreviousFid(stub shim.ChaincodeStubInterface) (string, error) {
 	return t.getRecentlyFid(stub, false)
 }
-func (t *FRT) getLatestFid(stub shim.ChaincodeStubInterface) (string, error) {
+func (t *KD) getLatestFid(stub shim.ChaincodeStubInterface) (string, error) {
 	return t.getRecentlyFid(stub, true)
 }
 
-func (t *FRT) getUserInvestAmount(stub shim.ChaincodeStubInterface, accName, rackid, fid string) (int64, error) {
+func (t *KD) getUserInvestAmount(stub shim.ChaincodeStubInterface, accName, rackid, fid string) (int64, error) {
 	/*
 	   fid, err := t.getLatestFid(stub)
 	   if err != nil {
@@ -4059,7 +4059,7 @@ func (t *FRT) getUserInvestAmount(stub shim.ChaincodeStubInterface, accName, rac
 	return rfi.UserAmountMap[accName], nil
 }
 
-func (t *FRT) getRackFinanceAmount(stub shim.ChaincodeStubInterface, rackid, fid string) (int64, error) {
+func (t *KD) getRackFinanceAmount(stub shim.ChaincodeStubInterface, rackid, fid string) (int64, error) {
 	/*
 	   fid, err := t.getLatestFid(stub)
 	   if err != nil {
@@ -4090,11 +4090,11 @@ func (t *FRT) getRackFinanceAmount(stub shim.ChaincodeStubInterface, rackid, fid
 	return totalAmt, nil
 }
 
-func (t *FRT) financeIssueFinishAfter(stub shim.ChaincodeStubInterface, currentFid string, invokeTime int64) error {
+func (t *KD) financeIssueFinishAfter(stub shim.ChaincodeStubInterface, currentFid string, invokeTime int64) error {
 	return t.financeFinishAndRenewal(stub, currentFid, invokeTime)
 }
 
-func (t *FRT) financeFinishAndRenewal(stub shim.ChaincodeStubInterface, currentFid string, invokeTime int64) error {
+func (t *KD) financeFinishAndRenewal(stub shim.ChaincodeStubInterface, currentFid string, invokeTime int64) error {
 	//看上期的理财中，哪些没有提取的自动续期
 	//调用理财续期的接口时，已经将最新的理财期号设置了（调用setCurrentFid），所以这里取前一期的期号
 	preFid, err := t.getPreviousFid(stub)
@@ -4176,7 +4176,7 @@ func (t *FRT) financeFinishAndRenewal(stub shim.ChaincodeStubInterface, currentF
 	return nil
 }
 
-func (t *FRT) payUserFinance(stub shim.ChaincodeStubInterface, accName, reacc, rackid string, invokeTime int64, transType, desc string, sameEntSaveTx bool) error {
+func (t *KD) payUserFinance(stub shim.ChaincodeStubInterface, accName, reacc, rackid string, invokeTime int64, transType, desc string, sameEntSaveTx bool) error {
 	reaccEnt, err := t.getAccountEntity(stub, reacc)
 	if err != nil {
 		return mylog.Errorf("payUserFinance: getAccountEntity(acc=%s) failed. err=%s.", reacc, err)
@@ -4282,15 +4282,15 @@ func (t *FRT) payUserFinance(stub shim.ChaincodeStubInterface, accName, reacc, r
 
 const rackFinanceKeyDelim = "_@!&!@_"
 
-func (t *FRT) getMapKey4RackFinance(rackid, fid string) string {
+func (t *KD) getMapKey4RackFinance(rackid, fid string) string {
 	return rackid + rackFinanceKeyDelim + fid
 }
-func (t *FRT) getRackFinanceFromMapKey(key string) (string, string) {
+func (t *KD) getRackFinanceFromMapKey(key string) (string, string) {
 	pair := strings.Split(key, rackFinanceKeyDelim)
 	return pair[0], pair[1]
 }
 
-func (t *FRT) getUserFinanceProfit(stub shim.ChaincodeStubInterface, accName, rackid string) (int64, error) {
+func (t *KD) getUserFinanceProfit(stub shim.ChaincodeStubInterface, accName, rackid string) (int64, error) {
 	accEnt, err := t.getAccountEntity(stub, accName)
 	if err != nil {
 		return 0, mylog.Errorf("getUserFinanceProfit: getAccountEntity(acc=%s) failed. err=%s.", accName, err)
@@ -4333,7 +4333,7 @@ func (t *FRT) getUserFinanceProfit(stub shim.ChaincodeStubInterface, accName, ra
 	return profit, nil
 }
 
-func (t *FRT) getRestFinanceCapacityForRack(stub shim.ChaincodeStubInterface, rackid, fid string) (int64, error) {
+func (t *KD) getRestFinanceCapacityForRack(stub shim.ChaincodeStubInterface, rackid, fid string) (int64, error) {
 	var rfc RackFinanceCfg
 	_, err := t.getRackFinancCfg(stub, rackid, &rfc)
 	if err != nil {
@@ -4384,10 +4384,10 @@ func (t *FRT) getRestFinanceCapacityForRack(stub shim.ChaincodeStubInterface, ra
 }
 
 /* ----------------------- 货架融资相关 end ----------------------- */
-func (t *FRT) getUserEntityKey(userName string) string {
+func (t *KD) getUserEntityKey(userName string) string {
 	return UER_ENTITY_PREFIX + userName
 }
-func (t *FRT) getUserEntity(stub shim.ChaincodeStubInterface, userName string) (*UserEntity, error) {
+func (t *KD) getUserEntity(stub shim.ChaincodeStubInterface, userName string) (*UserEntity, error) {
 	var entB []byte
 	var ue UserEntity
 	var err error
@@ -4407,7 +4407,7 @@ func (t *FRT) getUserEntity(stub shim.ChaincodeStubInterface, userName string) (
 
 	return &ue, nil
 }
-func (t *FRT) setUserEntity(stub shim.ChaincodeStubInterface, ue *UserEntity) error {
+func (t *KD) setUserEntity(stub shim.ChaincodeStubInterface, ue *UserEntity) error {
 	jsons, err := json.Marshal(ue)
 
 	if err != nil {
@@ -4422,7 +4422,7 @@ func (t *FRT) setUserEntity(stub shim.ChaincodeStubInterface, ue *UserEntity) er
 	return nil
 }
 
-func (t *FRT) isAdmin(stub shim.ChaincodeStubInterface, accName string) bool {
+func (t *KD) isAdmin(stub shim.ChaincodeStubInterface, accName string) bool {
 	//获取管理员帐号(央行账户作为管理员帐户)
 	tmpByte, err := t.getCenterBankAcc(stub)
 	if err != nil {
@@ -4438,14 +4438,14 @@ func (t *FRT) isAdmin(stub shim.ChaincodeStubInterface, accName string) bool {
 	return string(tmpByte) == accName
 }
 
-func (t *FRT) PutState_Ex(stub shim.ChaincodeStubInterface, key string, value []byte) error {
+func (t *KD) PutState_Ex(stub shim.ChaincodeStubInterface, key string, value []byte) error {
 	//当key为空字符串时，0.6的PutState接口不会报错，但是会导致chainCode所在的contianer异常退出。
 	if key == "" {
 		return mylog.Errorf("PutState_Ex key err.")
 	}
 	return stub.PutState(key, value)
 }
-func (t *FRT) StrSliceContains(list []string, value string) bool {
+func (t *KD) StrSliceContains(list []string, value string) bool {
 	for _, v := range list {
 		if v == value {
 			return true
@@ -4455,7 +4455,7 @@ func (t *FRT) StrSliceContains(list []string, value string) bool {
 	return false
 }
 
-func (t *FRT) StrSliceDelete(list []string, value string) []string {
+func (t *KD) StrSliceDelete(list []string, value string) []string {
 	var newList []string
 
 	for _, v := range list {
@@ -4473,7 +4473,7 @@ func main() {
 
 	primitives.SetSecurityLevel("SHA3", 256)
 
-	err := shim.Start(new(FRT))
+	err := shim.Start(new(KD))
 	if err != nil {
 		mylog.Error("Error starting EventSender chaincode: %s", err)
 	}
