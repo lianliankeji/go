@@ -39,6 +39,10 @@ chain.eventHubConnect(EVENTHUB_ADDRESS);
 
 var eh = chain.getEventHub();
 
+
+var socketClientCnt = 0
+var sockEnvtChainUpdt = "chainDataUpdt"
+
 process.on('exit', function (){
   logger.info(" ****  kd exit ****");
   chain.eventHubDisconnect();
@@ -108,6 +112,7 @@ var routeTable = {
     '/kd/invoke'      : {'GET' : handle_invoke,    'POST' : handle_invoke},
     '/kd/query'       : {'GET' : handle_query,     'POST' : handle_query},
     '/kd/chain'       : {'GET' : handle_chain,     'POST' : handle_chain},
+    '/kd/setenv'      : {'GET' : handle_setenv,    'POST' : handle_setenv},
   //'/kd/test'        : {'GET' : handle_test,      'POST' : handle_test},
 }
 
@@ -123,6 +128,27 @@ function handle_test(params, res, req){
     res.send(body)
     return
 }
+function handle_setenv(params, res, req){  
+    var body = {
+        code : retCode.OK,
+        msg: "OK",
+        result: ""
+    };
+    
+    var key=params.k
+    var value=params.v
+    
+    if (key == "logLevel") {
+        logger.setLogLevel(parseInt(value))
+        body.result="set log level to " + value
+        logger.info(body.result)
+    }
+    
+    
+    res.send(body)
+    return
+}
+
 
 const globalCcid = "ef38784bad472d640839c1782232aac63985489ee624b67a2d2b23448b03ebfb"
 
@@ -421,6 +447,14 @@ function handle_invoke(params, res, req) {
                     if (func == "account" || func == "accountCB")
                         invokeRequest.args[invokeRequest.args.length - 1] = "*"
                     logger.info("Invoke success: request=%j, results=%s",invokeRequest, results.result.toString());
+                    
+                    //通知前端数据更新
+                    if (socketClientCnt > 0) {
+                        __getPushDataForWeb(function(data) {
+                            sockio.sockets.emit(sockEnvtChainUpdt,data);//给所有客户端广播消息
+                        })
+                    }
+                    
                 });
                 tx.on('error', function (error) {
                     body.code=retCode.ERROR;
@@ -455,7 +489,7 @@ function __invokePreCheck(invokeFunc, invokeParams, user, TCert, cb) {
         queryParams.amt = invokeParams.amt
         queryParams.pwd = invokeParams.pwd
 
-        __exec_query(queryParams, null, user, TCert, function(err, qBody, queryRequest, resultStr){
+        __execLiteQuery(queryParams, null, user, TCert, function(err, qBody, queryRequest, resultStr){
             if (err) {
                 return cb(err)
             }
@@ -477,88 +511,19 @@ function handle_query(params, res, req) {
 
     logger.info("Enter Query")
     
-    var enrollUser = params.usr;  
-    var func = params.func;
-
-    chain.getUser(enrollUser, function (err, user) {
-        if (err || !user.isEnrolled()) {
-            //获取用户失败，或者用户没有登陆。一般情况是没有注册该用户。
-
-            if (func == "isAccExists") { //如果是查询账户是否存在，这里返回不存在"0"
-                logger.warn("Query(%s): getUser failed, user %s not exsit, return 0.", func, enrollUser)
-                body.result = "0"
-                res.send(body)
-                return
-            } else if (func == "getBalance") { //如果是查询账户余额，这里返回"0"
-                logger.warn("Query(%s): getUser failed, user %s not exsit, return 0.", func, enrollUser)
-                body.result = "0"
-                res.send(body)
-                return
-            }
-
-            logger.error("Query(%s): failed to get user %s, err=%s", func, enrollUser, err);
-            body.code=retCode.GETUSER_ERR;
-            body.msg="tx error"
-            res.send(body) 
-            return
+    __execQuery(params, req, true, function(err, qBody){
+        if (err) {
+            return res.send(qBody)
         }
-
-        common.getCert(keyValStorePath, enrollUser, function (err, TCert) {
-            if (err) {
-                //目前发生错误的情况为证书文件不存在，是因为证书认证这个功能没加以前，就存在了一些用户 ，所以上面的getUser成功，而这里失败。 
-                //失败时，暂时特殊处理isAccExists和getBalance两个函数
-                if (func == "isAccExists") { //如果是查询账户是否存在，这里返回不存在"0"
-                    logger.warn("Query(%s): getCert failed, user %s not exsit, return 0.", func, enrollUser)
-                    body.result = "0"
-                    res.send(body)
-                    return
-                } else if (func == "getBalance") { //如果是查询账户余额，这里返回"0"
-                    logger.warn("Query(%s): getCert failed, user %s not exsit, return 0.", func, enrollUser)
-                    body.result = "0"
-                    res.send(body)
-                    return
-                }
-            
-                logger.error("Query(%s): failed to getUserCert %s, err=%s", func, enrollUser, err);
-                body.code=retCode.GETUSERCERT_ERR;
-                body.msg="tx error"
-                res.send(body) 
-                return
-            }
-            
-            logger.debug("**** query Enrolled ****");
-  
-            
-            __exec_query(params, req, user, TCert, function(err, qBody, queryRequest, resultStr){
-                if (err) {
-                    body.code=retCode.ERROR;
-                    body.msg="query err"
-                    res.send(body)
-                    
-                    //去掉无用的信息,不打印
-                    queryRequest.userCert = "*"
-                    queryRequest.chaincodeID = queryRequest.chaincodeID.substr(0,3) + "*" //打印前四个字符，看id是否正确
-                    logger.error("Query failed : request=%j, error=%j", queryRequest, err.msg);
-                    return
-                }
-                
-                res.send(qBody)
-                
-                //去掉无用的信息,不打印
-                queryRequest.userCert = "*" 
-                queryRequest.chaincodeID = queryRequest.chaincodeID.substr(0,3) + "*" //打印前四个字符，看id是否正确
-                var maxPrtLen = 256
-                if (resultStr.length > maxPrtLen)
-                    resultStr = resultStr.substr(0, maxPrtLen) + "......"
-                logger.info("Query success: request=%j, results=%s",queryRequest, resultStr);
-            })
-        })
-    });    
+        
+        return res.send(qBody)
+    })
 }
 
-function __exec_query(params, req, user, TCert, cb) { 
+//轻量级查询，直接查询，不获取usr和cert等信息
+function __execLiteQuery(params, req, user, TCert, outputQReslt, cb) { 
 
-    logger.debug("**** enter __exec_query ****");
+    logger.debug("**** enter __execLiteQuery ****");
 
     var body = {
         code : retCode.OK,
@@ -701,7 +666,9 @@ function __exec_query(params, req, user, TCert, cb) {
                 __getChainInfoForWeb(function (err, chain){
                     if (err) {
                         logger.error("__getChainInfoForWeb err:", err)
-                        return cb(err, null, queryRequest)
+                        body.code=retCode.GETUSER_ERR;
+                        body.msg="getChainInfo error"
+                        return cb(err, body)
                     }
 
                     logger.debug("chain %j", chain);
@@ -713,8 +680,7 @@ function __exec_query(params, req, user, TCert, cb) {
                     
                     body.result = chain
                     
-                    cb(null, body, queryRequest, resultStr)
-                    return
+                   cb(null, body)
                 })
             } else {
                 if (func == "getTransInfo") { //如下几种函数的result返回json格式
@@ -722,7 +688,17 @@ function __exec_query(params, req, user, TCert, cb) {
                 } else {
                     body.result = resultStr
                 }
-                cb(null, body, queryRequest, resultStr)
+                cb(null, body)
+            }
+            
+            if (outputQReslt == true) {
+                //去掉无用的信息,不打印
+                queryRequest.userCert = "*" 
+                queryRequest.chaincodeID = queryRequest.chaincodeID.substr(0,3) + "*" //打印前四个字符，看id是否正确
+                var maxPrtLen = 256
+                if (resultStr.length > maxPrtLen)
+                    resultStr = resultStr.substr(0, maxPrtLen) + "......"
+                logger.info("Query success: request=%j, results=%s",queryRequest, resultStr);
             }
         }
     });
@@ -730,10 +706,89 @@ function __exec_query(params, req, user, TCert, cb) {
     tx.on('error', function (error) {
         if (!isSend) {
             isSend = true
-            cb(error, null, queryRequest)
+            body.code=retCode.GETUSER_ERR;
+            body.msg="query error"
+            cb(error, body)
+            
+            if (outputQReslt == true) {
+                //去掉无用的信息,不打印
+                queryRequest.userCert = "*"
+                queryRequest.chaincodeID = queryRequest.chaincodeID.substr(0,3) + "*" //打印前四个字符，看id是否正确
+                logger.error("Query failed : request=%j, error=%j", queryRequest, error.msg);
+            }
         }
     });
 }
+
+function __execQuery(params, req, outputQReslt, cb) { 
+    var body = {
+        code : retCode.OK,
+        msg: "OK",
+        result: ""
+    };
+
+    logger.debug("Enter __execQuery")
+    
+    var enrollUser = params.usr;  
+    var func = params.func;
+
+    chain.getUser(enrollUser, function (err, user) {
+        if (err || !user.isEnrolled()) {
+            //获取用户失败，或者用户没有登陆。一般情况是没有注册该用户。
+
+            if (func == "isAccExists") { //如果是查询账户是否存在，这里返回不存在"0"
+                body.result = "0"
+                cb(null, body)
+                logger.warn("Query(%s): getUser failed, user %s not exsit, return 0.", func, enrollUser)
+                return 
+            } else if (func == "getBalance") { //如果是查询账户余额，这里返回"0"
+                body.result = "0"
+                cb(null, body)
+                logger.warn("Query(%s): getUser failed, user %s not exsit, return 0.", func, enrollUser)
+                return
+            }
+
+            body.code=retCode.GETUSER_ERR;
+            body.msg="query error"
+            cb(logger.errorf("Query(%s): failed to get user %s, err=%s", func, enrollUser, err),  body)
+            return
+        }
+
+        common.getCert(keyValStorePath, enrollUser, function (err, TCert) {
+            if (err) {
+                //目前发生错误的情况为证书文件不存在，是因为证书认证这个功能没加以前，就存在了一些用户 ，所以上面的getUser成功，而这里失败。 
+                //失败时，暂时特殊处理isAccExists和getBalance两个函数
+                if (func == "isAccExists") { //如果是查询账户是否存在，这里返回不存在"0"
+                    body.result = "0"
+                    cb(null, body)
+                    logger.warn("Query(%s): getCert failed, user %s not exsit, return 0.", func, enrollUser)
+                    return
+                } else if (func == "getBalance") { //如果是查询账户余额，这里返回"0"
+                    body.result = "0"
+                    cb(null, body)
+                    logger.warn("Query(%s): getCert failed, user %s not exsit, return 0.", func, enrollUser)
+                    return
+                }
+            
+                body.code=retCode.GETUSERCERT_ERR;
+                body.msg="query error"
+                cb(logger.errorf("Query(%s): failed to getUserCert %s, err=%s", func, enrollUser, err), body)
+                return
+            }
+            
+            logger.debug("**** run __execLiteQuery ****");
+  
+            __execLiteQuery(params, req, user, TCert, outputQReslt, function(err, qBody){
+                if (err) {
+                    return cb(err, qBody)
+                }
+
+                cb(null, qBody)
+            })
+        })
+    });
+}
+
 
 function handle_register(params, res, req) { 
     var userName = params.usr;
@@ -882,17 +937,9 @@ function handle_chain(params, res, req) {
                 txid: "xxxx",
                 txInfo: "xxxx",
                 block: 10,
-                timestamp: 1517191532
-            },
-            {
-                node: "",
-                txid: "xxxx",
-                txInfo: "xxxx",
-                block: 10,
-                timestamp: 1517191532
+                seconds: 1517191532
             }
         ]
-        
     }
 */
 function __getChainInfoForWeb(cb) {
@@ -944,24 +991,6 @@ function __getBlockInfo(latestBlockNum, queryBlockCnt, txRecords, cb) {
             blockList[i-begIdx] = i
         } 
        
-        /*
-            var respCnt = 0
-            blockList.forEach(function(blockIdx){
-                request(URL_CHAIN_BLOCK + blockIdx, function (err, resp, body) {
-                    if (err || resp.statusCode != 200) {
-                        logger.error("request(%s) error: %j, resp=%j", URL_CHAIN_BLOCK, err, resp);
-                        return cb(err)
-                    }
-                    
-                    txRecords[blockIdx-begIdx].txid = body.transactions[0].txid //目前一个块记录一条交易，所以这里只取第一个位置即可
-                    respCnt++
-                })
-            })
-            
-            if (respCnt >= queryBlockCnt) {
-                cb (null)
-            }
-        */
         var tmpRecds = {}
         var keyList = []
         asyncc.map(blockList, function(blockIdx, callback) {
@@ -978,9 +1007,8 @@ function __getBlockInfo(latestBlockNum, queryBlockCnt, txRecords, cb) {
                     tmpRecds[blockIdx] = {}
                     tmpRecds[blockIdx].block = blockIdx
                     tmpRecds[blockIdx].txid = blockObj.transactions[0].txid //目前一个块记录一条交易，所以这里只取第一个位置即可
-                    tmpRecds[blockIdx].timestamp = blockObj.transactions[0].timestamp.seconds
-                    var payload = blockObj.transactions[0].payload
-                    tmpRecds[blockIdx].txInfo =  payload
+                    tmpRecds[blockIdx].seconds = blockObj.transactions[0].timestamp.seconds
+                    tmpRecds[blockIdx].txInfo =  blockObj.transactions[0].payload
                     
                     keyList[keyList.length] = blockIdx
                 } 
@@ -1000,6 +1028,16 @@ function __getBlockInfo(latestBlockNum, queryBlockCnt, txRecords, cb) {
                         break
                     
                     txRecords[txIdx] = tmpRecds[keyList[i]]
+                    
+                    var payload = txRecords[txIdx].txInfo
+                    var arr = (new Buffer(payload,'base64')).toString().split('\n')
+                    /*
+                    for (var i=0; i<arr.length; i++){
+                        arr[i] = arr[i].trim()
+                        logger.debug("arr[%d]=[%s]", i, arr[i]);
+                    }
+                    */
+                    txRecords[txIdx].node = arr[4].trim()  //第5个元素为账户信息
                 }
                 
                 //记录不够，再查一次
@@ -1036,6 +1074,49 @@ function __getUserAttrRole(usrType) {
 function __getUserAffiliation(usrType) {
     return "bank_a"
 }
+
+
+/* socket.io 处理 begin  */
+function __getPushDataForWeb(cb) { 
+
+    var params = {}
+    var req = null
+    
+    params.func = "getInfoForWeb"
+    params.usr = "centerBank"
+    params.acc = "centerBank"
+
+    logger.debug('enter getPushData.')
+    
+    __execQuery(params, req, false, function(err, qBody){
+        logger.debug('enter getPushData callback. err=%s', err)
+        
+        if (err) {
+            return cb(qBody)
+        }
+
+        logger.debug('enter getPushData callback, data=%j', qBody)
+        
+        return cb(qBody)
+    })
+}
+
+sockio.on('connection', function(socket){
+    socketClientCnt++
+    logger.info('a user connected, client count=%d', socketClientCnt);
+
+    __getPushDataForWeb(function(data) {
+        socket.emit(sockEnvtChainUpdt, data);
+    })
+    
+    socket.on('disconnect', function(){
+        socketClientCnt--
+        logger.info('user disconnected, client count=%d', socketClientCnt);
+    });
+});
+/* socket.io 处理   end  */
+
+
 
 function __sort_down(x, y) {
     return (x < y) ? 1 : -1      
@@ -1095,25 +1176,7 @@ user.init(function(err) {
     app.listen(port, "127.0.0.1");
     logger.info("listen on %d...", port);
 })
-
-__getChainInfoForWeb(function (err, chain){
-    if (err) {
-        logger.error("__getChainInfoForWeb err:", err)
-        return
-    }
-    
-    logger.info("chain %j", chain);
-})
 */
-
-/* socket.io 处理 begin  */
-/*
-sockio.on('connection', function(socket){
-    console.log('a user connected, scoket=%j', socket);
-    
-});
-*/
-/* socket.io 处理   end  */
 
 
 
