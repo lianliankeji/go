@@ -1,17 +1,19 @@
 // app index
-var express = require('express');  
-var app = express();  
+const express = require('express');  
+const app = express();  
+const http = require('http').Server(app);
+const sockio = require('socket.io')(http);
 
-var bodyParser = require('body-parser');  
+const bodyParser = require('body-parser');  
 
-var hfc = require('hfc');
-var fs = require('fs');
-var util = require('util');
+const hfc = require('hfc');
+//const fs = require('fs');
+const util = require('util');
 
 const request = require('request');
 const asyncc = require('async');
 
-const readline = require('readline');
+//const readline = require('readline');
 const user = require('./lib/user');
 const common = require('./lib/common');
 
@@ -122,7 +124,7 @@ function handle_test(params, res, req){
     return
 }
 
-const globalCcid = "9d25a704ddc98ac0b134095dedffb21eac22b025d05cf097844f80063f5e6f34"
+const globalCcid = "ef38784bad472d640839c1782232aac63985489ee624b67a2d2b23448b03ebfb"
 
 // restfull
 function handle_deploy(params, res, req){  
@@ -262,6 +264,8 @@ function handle_invoke(params, res, req) {
 
                 invokeRequest.args.push(reacc, transType, description, amt, sameEntSaveTrans)
             } else if (func == "transeferUsePwd") {
+                invokeRequest.fcn = "transefer2" //内部用transefer2
+                
                 var reacc = params.reacc;
                 var amt = params.amt;
                 var transType = params.tstp;
@@ -395,45 +399,73 @@ function handle_invoke(params, res, req) {
                 invokeRequest.args.push(fileName, needHash, sameKeyOverwrite)
             }
 
-            // invoke
-            var tx = user.invoke(invokeRequest);
+            __invokePreCheck(func, params, user, TCert, function(err, checkOk){
+                // invoke
+                var tx = user.invoke(invokeRequest);
 
-            var isSend = false;  //判断是否已发过回应。 有时操作比较慢时，可能超时等原因先走了'error'的流程，但是当操作完成之后，又会走‘complete’流程再次发回应，此时会发生内部错误，导致脚本异常退出
-            tx.on('complete', function (results) {
-                var retInfo = results.result.toString()  // like: "Tx 2eecbc7b-eb1b-40c0-818d-4340863862fe complete"
-                logger.debug("invoke completed successfully: results=%j", retInfo);
-                
-                var txId = retInfo.replace("Tx ", '').replace(" complete", '')
-                if (!isSend) {
-                    isSend = true
-                    body.result = {'txid': txId}
-                    res.send(body)
-                }
-                
-                //去掉无用的信息,不打印
-                invokeRequest.chaincodeID = invokeRequest.chaincodeID.substr(0,3) + "*" //打印前四个字符，看id是否正确
-                invokeRequest.userCert = "*"
-                if (func == "account" || func == "accountCB")
-                    invokeRequest.args[invokeRequest.args.length - 1] = "*"
-                logger.info("Invoke success: request=%j, results=%s",invokeRequest, results.result.toString());
-            });
-            tx.on('error', function (error) {
-                body.code=retCode.ERROR;
-                body.msg="tx error"
-                if (!isSend) {
-                    isSend = true
-                    res.send(body)
-                }
+                var isSend = false;  //判断是否已发过回应。 有时操作比较慢时，可能超时等原因先走了'error'的流程，但是当操作完成之后，又会走‘complete’流程再次发回应，此时会发生内部错误，导致脚本异常退出
+                tx.on('complete', function (results) {
+                    var retInfo = results.result.toString()  // like: "Tx 2eecbc7b-eb1b-40c0-818d-4340863862fe complete"
+                    logger.debug("invoke completed successfully: results=%j", retInfo);
+                    
+                    var txId = retInfo.replace("Tx ", '').replace(" complete", '')
+                    if (!isSend) {
+                        isSend = true
+                        body.result = {'txid': txId}
+                        res.send(body)
+                    }
+                    
+                    //去掉无用的信息,不打印
+                    invokeRequest.chaincodeID = invokeRequest.chaincodeID.substr(0,3) + "*" //打印前四个字符，看id是否正确
+                    invokeRequest.userCert = "*"
+                    if (func == "account" || func == "accountCB")
+                        invokeRequest.args[invokeRequest.args.length - 1] = "*"
+                    logger.info("Invoke success: request=%j, results=%s",invokeRequest, results.result.toString());
+                });
+                tx.on('error', function (error) {
+                    body.code=retCode.ERROR;
+                    body.msg="tx error"
+                    if (!isSend) {
+                        isSend = true
+                        res.send(body)
+                    }
 
-                //去掉无用的信息,不打印
-                invokeRequest.chaincodeID = invokeRequest.chaincodeID.substr(0,3) + "*" //打印前四个字符，看id是否正确
-                invokeRequest.userCert = "*"
-                if (func == "account" || func == "accountCB")
-                    invokeRequest.args[invokeRequest.args.length - 1] = "*"
-                logger.error("Invoke failed : request=%j, error=%j",invokeRequest,error);
-            });           
+                    //去掉无用的信息,不打印
+                    invokeRequest.chaincodeID = invokeRequest.chaincodeID.substr(0,3) + "*" //打印前四个字符，看id是否正确
+                    invokeRequest.userCert = "*"
+                    if (func == "account" || func == "accountCB")
+                        invokeRequest.args[invokeRequest.args.length - 1] = "*"
+                    logger.error("Invoke failed : request=%j, error=%j",invokeRequest,error);
+                });
+            })
         });
     });
+}
+
+function __invokePreCheck(invokeFunc, invokeParams, user, TCert, cb) {
+    
+    /*
+    if (invokeFunc == "transefer" || invokeFunc == transeferUsePwd) {
+        var queryParams = {}
+        queryParams.func = "transPreCheck"
+        queryParams.usr = invokeParams.usr
+        queryParams.ccId = invokeParams.ccId
+        queryParams.acc = invokeParams.acc
+        queryParams.reacc = invokeParams.reacc
+        queryParams.amt = invokeParams.amt
+        queryParams.pwd = invokeParams.pwd
+
+        __exec_query(queryParams, null, user, TCert, function(err, qBody, queryRequest, resultStr){
+            if (err) {
+                return cb(err)
+            }
+        })
+        
+    } else {
+        cb(null, true)
+    }
+    */
+    cb(null, true)
 }
 
 function handle_query(params, res, req) { 
@@ -496,132 +528,21 @@ function handle_query(params, res, req) {
             
             logger.debug("**** query Enrolled ****");
   
-            var ccId = params.ccId;
-            if (ccId ==undefined || ccId.length == 0) {
-                ccId = globalCcid
-            }
-
-            var acc = params.acc;
-            /* 现在都需要账户acc
-            if (acc == undefined)  //acc可能不需要
-                acc = ""
-            */
-
-            var queryRequest = {
-                chaincodeID: ccId,
-                fcn: func,
-                attrs: getCertAttrKeys, //代码里会获取用户的attr，这里要开启
-                userCert: TCert,
-                args: [enrollUser, acc, Date.now() + ""],
-                confidential: isConfidential
-            };   
             
-            if (func == "getTransInfo"){
-                var begSeq = params.bsq;
-                if (begSeq == undefined) 
-                    begSeq = "0"
-                
-                var count = params.cnt;
-                if (count == undefined) 
-                    count = "-1"  //-1表示查询所有
-                
-                var translvl = params.trsLvl;
-                if (translvl == undefined) 
-                    translvl = "2"
-                
-                var begTime = params.btm;
-                if (begTime == undefined) 
-                    begTime = "0"
-
-                var endTime = params.etm;
-                if (endTime == undefined) 
-                    endTime = "-1"  //-1表示查询到最新的时间
-
-                var qAcc = params.qacc;
-                if (qAcc == undefined) 
-                    qAcc = ""
-
-                var maxSeq = params.msq;
-                if (maxSeq == undefined) 
-                    maxSeq = "-1" //不输入默认为-1
- 
-                var order = params.ord;
-                if (order == undefined) 
-                    order = "desc" //不输入默认为降序，即从最新的数据查起
- 
-                queryRequest.args.push(begSeq, count, translvl, begTime, endTime, qAcc, maxSeq, order)
-                
-            } else if (func == "queryRackAlloc") {
-                var rackid = params.rid
-                var allocKey = params.ak
-                if (allocKey == undefined) 
-                    allocKey = ""  //有值说明查询某次的分陪情况
-
-                var begSeq = params.bsq;
-                if (begSeq == undefined) 
-                    begSeq = "0"
-                
-                var count = params.cnt;
-                if (count == undefined) 
-                    count = "-1"  //-1表示查询所有
-
-                var begTime = params.btm;
-                if (begTime == undefined)
-                    begTime = "0"
-
-                var endTime = params.etm;
-                if (endTime == undefined) 
-                    endTime = "-1"  //-1表示查询到最新的时间
-
-                var qAcc = params.qacc;
-                if (qAcc == undefined) 
-                    qAcc = ""    //有值说明查询某个账户的分配情况
-                
-                queryRequest.args.push(rackid, allocKey, begSeq, count, begTime, endTime, qAcc)
-                
-            } else if (func == "getRackAllocCfg" || func == "getSESCfg" || func == "getRackFinanceCfg") {
-                var rackid = params.rid
-                queryRequest.args.push(rackid)
-                
-            } else if (func == "queryState"){
-                var key = params.key
-                queryRequest.args.push(key)
-            } else if (func == "getRackFinanceProfit") {
-                var rackid = params.rid
-                queryRequest.args.push(rackid)
-            } else if (func == "getRackRestFinanceCapacity") {
-                var rackid = params.rid
-                var fid = params.fid
-                queryRequest.args.push(rackid, fid)
-            } else if (func == "getWorldState") {
-                var needHash = params.hash
-                if (needHash == undefined) 
-                    needHash = "0"    //默认不用hash
-                var flushLimit = params.flmt
-                if (flushLimit == undefined) 
-                    flushLimit = "-1"    //默认不用hash
-                queryRequest.args.push(needHash, flushLimit)
-            }
-            
-            // query
-            var tx = user.query(queryRequest);
-
-            var isSend = false;  //判断是否已发过回应。 有时操作比较慢时，可能超时等原因先走了'error'的流程，但是当操作完成之后，又会走‘complete’流程再次发回应，此时会发生内部错误，导致脚本异常退出
-            tx.on('complete', function (results) {
-                body.code=retCode.OK;
-                //var obj = JSON.parse(results.result.toString()); 
-                //logger.debug("obj=", obj)
-                var resultStr = results.result.toString()
-                if (!isSend) {
-                    isSend = true
-                    //如下几种函数的result返回json格式
-                    if (func == "getTransInfo") {
-                        body.result = JSON.parse(resultStr)
-                    } else {
-                        body.result = resultStr
-                    }
+            __exec_query(params, req, user, TCert, function(err, qBody, queryRequest, resultStr){
+                if (err) {
+                    body.code=retCode.ERROR;
+                    body.msg="query err"
                     res.send(body)
+                    
+                    //去掉无用的信息,不打印
+                    queryRequest.userCert = "*"
+                    queryRequest.chaincodeID = queryRequest.chaincodeID.substr(0,3) + "*" //打印前四个字符，看id是否正确
+                    logger.error("Query failed : request=%j, error=%j", queryRequest, err.msg);
+                    return
                 }
+                
+                res.send(qBody)
                 
                 //去掉无用的信息,不打印
                 queryRequest.userCert = "*" 
@@ -630,24 +551,188 @@ function handle_query(params, res, req) {
                 if (resultStr.length > maxPrtLen)
                     resultStr = resultStr.substr(0, maxPrtLen) + "......"
                 logger.info("Query success: request=%j, results=%s",queryRequest, resultStr);
-            });
-
-            tx.on('error', function (error) {
-
-                body.code=retCode.ERROR;
-                body.msg="query err"
-                if (!isSend) {
-                    isSend = true
-                    res.send(body)
-                }
-                
-                //去掉无用的信息,不打印
-                queryRequest.userCert = "*"
-                queryRequest.chaincodeID = queryRequest.chaincodeID.substr(0,3) + "*" //打印前四个字符，看id是否正确
-                logger.error("Query failed : request=%j, error=%j",queryRequest,error.msg);
-            });
+            })
         })
     });    
+}
+
+function __exec_query(params, req, user, TCert, cb) { 
+
+    logger.debug("**** enter __exec_query ****");
+
+    var body = {
+        code : retCode.OK,
+        msg: "OK",
+        result: ""
+    };
+
+    var enrollUser = params.usr;  
+    var func = params.func;
+
+    var ccId = params.ccId;
+    if (ccId ==undefined || ccId.length == 0) {
+        ccId = globalCcid
+    }
+
+    var acc = params.acc;
+    /* 现在都需要账户acc
+    if (acc == undefined)  //acc可能不需要
+        acc = ""
+    */
+
+    var queryRequest = {
+        chaincodeID: ccId,
+        fcn: func,
+        attrs: getCertAttrKeys, //代码里会获取用户的attr，这里要开启
+        userCert: TCert,
+        args: [enrollUser, acc, Date.now() + ""],
+        confidential: isConfidential
+    };
+    
+    if (func == "getTransInfo"){
+        var begSeq = params.bsq;
+        if (begSeq == undefined) 
+            begSeq = "0"
+        
+        var count = params.cnt;
+        if (count == undefined) 
+            count = "-1"  //-1表示查询所有
+        
+        var translvl = params.trsLvl;
+        if (translvl == undefined) 
+            translvl = "2"
+        
+        var begTime = params.btm;
+        if (begTime == undefined) 
+            begTime = "0"
+
+        var endTime = params.etm;
+        if (endTime == undefined) 
+            endTime = "-1"  //-1表示查询到最新的时间
+
+        var qAcc = params.qacc;
+        if (qAcc == undefined) 
+            qAcc = ""
+
+        var maxSeq = params.msq;
+        if (maxSeq == undefined) 
+            maxSeq = "-1" //不输入默认为-1
+
+        var order = params.ord;
+        if (order == undefined) 
+            order = "desc" //不输入默认为降序，即从最新的数据查起
+
+        queryRequest.args.push(begSeq, count, translvl, begTime, endTime, qAcc, maxSeq, order)
+        
+    } else if (func == "queryRackAlloc") {
+        var rackid = params.rid
+        var allocKey = params.ak
+        if (allocKey == undefined) 
+            allocKey = ""  //有值说明查询某次的分陪情况
+
+        var begSeq = params.bsq;
+        if (begSeq == undefined) 
+            begSeq = "0"
+        
+        var count = params.cnt;
+        if (count == undefined) 
+            count = "-1"  //-1表示查询所有
+
+        var begTime = params.btm;
+        if (begTime == undefined)
+            begTime = "0"
+
+        var endTime = params.etm;
+        if (endTime == undefined) 
+            endTime = "-1"  //-1表示查询到最新的时间
+
+        var qAcc = params.qacc;
+        if (qAcc == undefined) 
+            qAcc = ""    //有值说明查询某个账户的分配情况
+        
+        queryRequest.args.push(rackid, allocKey, begSeq, count, begTime, endTime, qAcc)
+        
+    } else if (func == "getRackAllocCfg" || func == "getSESCfg" || func == "getRackFinanceCfg") {
+        var rackid = params.rid
+        queryRequest.args.push(rackid)
+        
+    } else if (func == "queryState"){
+        var key = params.key
+        queryRequest.args.push(key)
+    } else if (func == "getRackFinanceProfit") {
+        var rackid = params.rid
+        queryRequest.args.push(rackid)
+    } else if (func == "getRackRestFinanceCapacity") {
+        var rackid = params.rid
+        var fid = params.fid
+        queryRequest.args.push(rackid, fid)
+    } else if (func == "getWorldState") {
+        var needHash = params.hash
+        if (needHash == undefined) 
+            needHash = "0"    //默认不用hash
+        var flushLimit = params.flmt
+        if (flushLimit == undefined) 
+            flushLimit = "-1"    //默认不用hash
+        queryRequest.args.push(needHash, flushLimit)
+    } else if (func == "transPreCheck") {
+        var reacc = params.reacc
+        var amt = params.amt
+        var pwd = params.pwd
+        if (pwd == undefined)
+            pwd = ""
+
+        queryRequest.args.push(reacc, pwd, amt)
+    }
+    
+    // query
+    var tx = user.query(queryRequest);
+
+    var isSend = false;  //判断是否已发过回应。 有时操作比较慢时，可能超时等原因先走了'error'的流程，但是当操作完成之后，又会走‘complete’流程再次发回应，此时会发生内部错误，导致脚本异常退出
+    tx.on('complete', function (results) {
+        body.code=retCode.OK;
+        //var obj = JSON.parse(results.result.toString()); 
+        //logger.debug("obj=", obj)
+        var resultStr = results.result.toString()
+        if (!isSend) {
+            isSend = true
+            
+            if (func == "getInfoForWeb") {
+                //获取区块链信息
+                __getChainInfoForWeb(function (err, chain){
+                    if (err) {
+                        logger.error("__getChainInfoForWeb err:", err)
+                        return cb(err, null, queryRequest)
+                    }
+
+                    logger.debug("chain %j", chain);
+                    var queryObj = JSON.parse(resultStr)
+                   
+                    chain.accountCnt = queryObj.accountcount
+                    chain.issuedAmt = queryObj.issueamt
+                    chain.totalAmt = 10000000000  //100亿
+                    
+                    body.result = chain
+                    
+                    cb(null, body, queryRequest, resultStr)
+                    return
+                })
+            } else {
+                if (func == "getTransInfo") { //如下几种函数的result返回json格式
+                    body.result = JSON.parse(resultStr)
+                } else {
+                    body.result = resultStr
+                }
+                cb(null, body, queryRequest, resultStr)
+            }
+        }
+    });
+
+    tx.on('error', function (error) {
+        if (!isSend) {
+            isSend = true
+            cb(error, null, queryRequest)
+        }
+    });
 }
 
 function handle_register(params, res, req) { 
@@ -763,8 +848,27 @@ function handle_chain(params, res, req) {
     };
     
     var funcName = params.func
+    /*
     if (funcName == "") {
+        //并行查询
+        async.parallel(
+        [
+          function(callback) {
+            
+          },
+          function(callback) {
+            
+          }
+        ],
+         
+         function(err, results) {
+            // the results array will equal ['one','two'] even thoug
+            // the second function had a shorter             
+            timeout
+         }
+        ); 
     }
+    */
     
 }
 
@@ -1002,8 +1106,21 @@ __getChainInfoForWeb(function (err, chain){
 })
 */
 
+/* socket.io 处理 begin  */
+/*
+sockio.on('connection', function(socket){
+    console.log('a user connected, scoket=%j', socket);
+    
+});
+*/
+/* socket.io 处理   end  */
+
+
+
 var kdport = 8588
-app.listen(kdport, "127.0.0.1");
+
+http.listen(kdport, "127.0.0.1");
 logger.info("default ccid : %s", globalCcid);
 logger.info("listen on %d...", kdport);
+
 

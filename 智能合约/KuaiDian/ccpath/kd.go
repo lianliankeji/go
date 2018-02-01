@@ -80,6 +80,15 @@ const (
 )
 
 const (
+	ERRCODE_BEGIN                         = iota + 10000
+	ERRCODE_TRANS_PAY_ACCOUNT_NOT_EXIST   //付款账号不存在
+	ERRCODE_TRANS_PAYEE_ACCOUNT_NOT_EXIST //收款账号不存在
+	ERRCODE_TRANS_BALANCE_NOT_ENOUGH      //账号余额不足d
+	ERRCODE_TRANS_PASSWD_INVALID          //密码错误
+	ERRCODE_TRANS_AMOUNT_INVALID          //转账金额不合法
+)
+
+const (
 	FINANC_STAGE_INIT         = iota
 	FINANC_STAGE_ISSUE_BEGING //理财发行开始
 	FINANC_STAGE_ISSUE_FINISH //理财发行结束，即不能再买该期理财
@@ -365,7 +374,7 @@ func (t *KD) Init(stub shim.ChaincodeStubInterface, function string, args []stri
 		return nil, mylog.Errorf("Init Marshal error, err=%s.", err)
 	}
 
-	err = t.PutState_Ex(stub, t.getGlobalRackAllocRateKey(), eapJson)
+	err = t.putState_Ex(stub, t.getGlobalRackAllocRateKey(), eapJson)
 	if err != nil {
 		return nil, mylog.Errorf("Init PutState_Ex error, err=%s.", err)
 	}
@@ -389,7 +398,7 @@ func (t *KD) Init(stub shim.ChaincodeStubInterface, function string, args []stri
 		return nil, mylog.Errorf("Init Marshal(serc) error, err=%s.", err)
 	}
 
-	err = t.PutState_Ex(stub, t.getGlobalRackEncourageScoreCfgKey(), sercJson)
+	err = t.putState_Ex(stub, t.getGlobalRackEncourageScoreCfgKey(), sercJson)
 	if err != nil {
 		return nil, mylog.Errorf("Init PutState_Ex(serc) error, err=%s.", err)
 	}
@@ -406,7 +415,7 @@ func (t *KD) Init(stub shim.ChaincodeStubInterface, function string, args []stri
 		return nil, mylog.Errorf("Init Marshal(rfc) error, err=%s.", err)
 	}
 
-	err = t.PutState_Ex(stub, t.getGlobalRackFinancCfgKey(), rfcJson)
+	err = t.putState_Ex(stub, t.getGlobalRackFinancCfgKey(), rfcJson)
 	if err != nil {
 		return nil, mylog.Errorf("Init PutState_Ex(rfc) error, err=%s.", err)
 	}
@@ -581,7 +590,7 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 
 		return t.transferCoin(stub, accName, toAcc, transType, description, transAmount, invokeTime, sameEntSaveTransFlag)
 
-	} else if function == "transeferUsePwd" {
+	} else if function == "transefer2" {
 		var argCount = fixedArgCount + 6
 		if len(args) < argCount {
 			mylog.Error("Invoke(transeferUsePwd) miss arg, got %d, at least need %d.", len(args), argCount)
@@ -607,26 +616,19 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 
 		var pwd = args[fixedArgCount+5]
 
-		/*
-			salt, err := base64.StdEncoding.DecodeString(args[fixedArgCount+6])
-			if err != nil {
-				return nil, mylog.Errorf("Invoke(transeferUsePwd): DecodeString failed. err=%s, str=%s", err, args[fixedArgCount+6])
-			}
-		*/
-
 		//验证密码
-		setPwd, err := t.IsSetAccountPasswd(stub, accName, accountEnt)
+		setPwd, err := t.isSetAccountPasswd(stub, accName, accountEnt)
 		if err != nil {
 			return nil, mylog.Errorf("Invoke(transeferUsePwd): IsSetAccountPasswd failed. err=%s, acc=%s", err, accName)
 		}
 		if setPwd {
-			ok, err := t.AuthAccountPasswd(stub, accName, pwd, accountEnt)
+			ok, err := t.authAccountPasswd(stub, accName, pwd, accountEnt)
 			if err != nil || !ok {
 				return nil, mylog.Errorf("Invoke(transeferUsePwd): AuthAccountPasswd failed. err=%s, ok=%v", err, ok)
 			}
 		} else {
 
-			err = t.setAccountPasswd(stub, accName, pwd, nil, accountEnt)
+			err = t.setAccountPasswd(stub, accName, pwd, accountEnt)
 			if err != nil {
 				return nil, mylog.Errorf("Invoke(transeferUsePwd): setAccountPasswd failed. err=%s", err)
 			}
@@ -768,7 +770,7 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 			ue.AuthAccList = append(ue.AuthAccList, authAcc)
 			pue = &ue
 		} else {
-			if !t.StrSliceContains(pue.AuthAccList, authAcc) {
+			if !t.strSliceContains(pue.AuthAccList, authAcc) {
 				pue.AuthAccList = append(pue.AuthAccList, authAcc)
 			}
 		}
@@ -832,7 +834,7 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 			stateKey = t.getRackAllocRateKey(rackid)
 		}
 
-		err = t.PutState_Ex(stub, stateKey, eapJson)
+		err = t.putState_Ex(stub, stateKey, eapJson)
 		if err != nil {
 			return nil, mylog.Errorf("Invoke(setAllocCfg) PutState_Ex error, err=%s.", err)
 		}
@@ -989,7 +991,7 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 			stateKey = t.getRackFinancCfgKey(rackid)
 		}
 
-		err = t.PutState_Ex(stub, stateKey, rfcJson)
+		err = t.putState_Ex(stub, stateKey, rfcJson)
 		if err != nil {
 			return nil, mylog.Errorf("IInvoke(setFinanceCfg) PutState_Ex(rfc) error, err=%s.", err)
 		}
@@ -1137,38 +1139,36 @@ func (t *KD) Query(stub shim.ChaincodeStubInterface, function string, args []str
 	}
 
 	var userAttrs *UserAttrs
-	var userEnt *AccountEntity = nil
+	var accountEnt *AccountEntity = nil
 
 	userAttrs, err = t.getUserAttrs(stub)
 	if err != nil {
 		return nil, mylog.Errorf("Query getUserAttrs failed. err=%s", err)
 	}
 
-	userEnt, err = t.getAccountEntity(stub, accName)
+	accountEnt, err = t.getAccountEntity(stub, accName)
 	if err != nil {
 		if err == ErrNilEntity {
 			if function == "isAccExists" { //如果是查询账户是否存在，如果是空，返回不存在
 				return []byte("0"), nil
 			} else if function == "getBalance" { //如果是查询余额，如果账户不存，返回0
 				return []byte("0"), nil
+			} else if function == "transPreCheck" { //如果是转账预检查，返回付款账户不存在
+				return []byte(strconv.FormatInt(ERRCODE_TRANS_PAY_ACCOUNT_NOT_EXIST, 10)), nil
 			}
 		}
 		return nil, mylog.Errorf("Query getAccountEntity failed. err=%s", err)
 	}
 
 	//校验用户身份
-	if ok, _ := t.verifyIdentity(stub, userName, userEnt, userAttrs); !ok {
+	if ok, _ := t.verifyIdentity(stub, userName, accountEnt, userAttrs); !ok {
 		return nil, mylog.Errorf("Query user and account check failed.")
 	}
 
 	if function == "getBalance" { //查询余额
 
-		var queryEntity *AccountEntity
-		queryEntity, err = t.getAccountEntity(stub, accName)
-		if err != nil {
-			mylog.Error("getAccountEntity queryEntity(id=%s) failed. err=%s", accName, err)
-			return nil, err
-		}
+		var queryEntity *AccountEntity = accountEnt
+
 		mylog.Debug("queryEntity=%+v", queryEntity)
 
 		retValue := []byte(strconv.FormatInt(queryEntity.RestAmount, 10))
@@ -1473,6 +1473,59 @@ func (t *KD) Query(stub shim.ChaincodeStubInterface, function string, args []str
 		}
 
 		return t.getInfo4Web(stub)
+
+	} else if function == "transPreCheck" {
+		var argCount = fixedArgCount + 3
+		if len(args) < argCount {
+			return nil, mylog.Errorf("transPreCheck miss arg, got %d, need %d.", len(args), argCount)
+		}
+
+		toAcc := args[fixedArgCount]
+		pwd := args[fixedArgCount+1]
+		transAmount, err := strconv.ParseInt(args[fixedArgCount+2], 0, 64)
+		if err != nil {
+			return nil, mylog.Errorf("transPreCheck: convert transAmount(%s) failed. err=%s", args[fixedArgCount+2], err)
+		}
+
+		mylog.Debug("transPreCheck: accountEnt=%+v", accountEnt)
+		//先看密码是否正确
+		if len(pwd) > 0 {
+			setPwd, err := t.isSetAccountPasswd(stub, accName, accountEnt)
+			if err != nil {
+				return nil, mylog.Errorf("transPreCheck: isSetAccountPasswd(%s) failed. err=%s", accName, err)
+			}
+
+			if setPwd {
+				ok, err := t.authAccountPasswd(stub, accName, pwd, accountEnt)
+				if err != nil {
+					return nil, mylog.Errorf("transPreCheck: AuthAccountPasswd(%s) failed. err=%s", accName, err)
+				}
+				if !ok {
+					return []byte(strconv.FormatInt(ERRCODE_TRANS_PASSWD_INVALID, 10)), nil
+				}
+			}
+		}
+
+		//余额是否足够
+		if transAmount < 0 { //如果是内部接口调用，可能会转账金额为0， 这里不检查0
+			return []byte(strconv.FormatInt(ERRCODE_TRANS_AMOUNT_INVALID, 10)), nil
+		}
+
+		if transAmount > accountEnt.RestAmount {
+			return []byte(strconv.FormatInt(ERRCODE_TRANS_BALANCE_NOT_ENOUGH, 10)), nil
+		}
+
+		//收款账户是否存在
+		exists, err := t.isEntityExists(stub, toAcc)
+		if err != nil {
+			return nil, mylog.Errorf("transPreCheck: isEntityExists(%s) failed. err=%s", toAcc, err)
+		}
+		if !exists {
+			return []byte(strconv.FormatInt(ERRCODE_TRANS_PAYEE_ACCOUNT_NOT_EXIST, 10)), nil
+		}
+
+		//通过返回0，表示检查通过
+		return []byte(strconv.FormatInt(0, 10)), nil
 	}
 
 	return nil, mylog.Errorf("unknown function.")
@@ -2062,7 +2115,7 @@ func (t *KD) setAccountEntity(stub shim.ChaincodeStubInterface, cb *AccountEntit
 		return errors.New("marshal cb failed.")
 	}
 
-	err = t.PutState_Ex(stub, cb.EntID, jsons)
+	err = t.putState_Ex(stub, cb.EntID, jsons)
 
 	if err != nil {
 		mylog.Error("PutState cb failed. err=%s", err)
@@ -2268,7 +2321,7 @@ func (t *KD) saveAccountName(stub shim.ChaincodeStubInterface, accName string) e
 		accs = append(accs, MULTI_STRING_DELIM)
 	}
 
-	err = t.PutState_Ex(stub, ALL_ACC_KEY, accs)
+	err = t.putState_Ex(stub, ALL_ACC_KEY, accs)
 	if err != nil {
 		mylog.Error("setCenterBankAcc PutState failed.err=%s", err)
 		return err
@@ -2341,7 +2394,7 @@ func (t *KD) newAccount(stub shim.ChaincodeStubInterface, accName string, accTyp
 var centerBankAccCache []byte = nil
 
 func (t *KD) setCenterBankAcc(stub shim.ChaincodeStubInterface, acc string) error {
-	err := t.PutState_Ex(stub, CENTERBANK_ACC_KEY, []byte(acc))
+	err := t.putState_Ex(stub, CENTERBANK_ACC_KEY, []byte(acc))
 	if err != nil {
 		mylog.Error("setCenterBankAcc PutState failed.err=%s", err)
 		return err
@@ -2375,7 +2428,7 @@ func (t *KD) getTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string) (
 	}
 	//如果不存在则创建
 	if seqB == nil {
-		err = t.PutState_Ex(stub, transSeqKey, []byte("0"))
+		err = t.putState_Ex(stub, transSeqKey, []byte("0"))
 		if err != nil {
 			mylog.Error("initTransSeq PutState failed.err=%s", err)
 			return -1, err
@@ -2392,7 +2445,7 @@ func (t *KD) getTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string) (
 	return seq, nil
 }
 func (t *KD) setTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string, seq int64) error {
-	err := t.PutState_Ex(stub, transSeqKey, []byte(strconv.FormatInt(seq, 10)))
+	err := t.putState_Ex(stub, transSeqKey, []byte(strconv.FormatInt(seq, 10)))
 	if err != nil {
 		mylog.Error("setTransSeq PutState failed.err=%s", err)
 		return err
@@ -2444,7 +2497,7 @@ func (t *KD) setTransInfo(stub shim.ChaincodeStubInterface, info *Transaction) e
 	}
 
 	putKey := t.getTransInfoKey(stub, seqGlob)
-	err = t.PutState_Ex(stub, putKey, transJson)
+	err = t.putState_Ex(stub, putKey, transJson)
 	if err != nil {
 		mylog.Error("setTransInfo PutState failed. err=%s", err)
 		return errors.New("setTransInfo PutState failed.")
@@ -2498,7 +2551,7 @@ func (t *KD) setOneAccTransInfo(stub shim.ChaincodeStubInterface, accName, Globa
 	}
 	seq++
 
-	err = t.PutState_Ex(stub, t.getOneAccTransInfoKey(accName, seq), []byte(GlobalTransKey))
+	err = t.putState_Ex(stub, t.getOneAccTransInfoKey(accName, seq), []byte(GlobalTransKey))
 	if err != nil {
 		return mylog.Errorf("setOneAccTransInfo PutState failed. err=%s", err)
 	}
@@ -2613,7 +2666,7 @@ func (t *KD) setAllocEarnTx(stub shim.ChaincodeStubInterface, rackid, allocKey s
 	mylog.Debug("setAllocEarnTx return %s.", string(eatJson))
 
 	var txKey = t.getAllocTxKey(stub, rackid, seq)
-	err = t.PutState_Ex(stub, txKey, eatJson)
+	err = t.putState_Ex(stub, txKey, eatJson)
 	if err != nil {
 		return nil, mylog.Errorf("setAllocEarnTx  PutState_Ex failed.err=%s", err)
 	}
@@ -2689,7 +2742,7 @@ func (t *KD) setOneAccAllocEarnTx(stub shim.ChaincodeStubInterface, accName, txK
 		newTxsB = append(newTxsB, MULTI_STRING_DELIM)
 	}
 
-	err = t.PutState_Ex(stub, accTxKey, newTxsB)
+	err = t.putState_Ex(stub, accTxKey, newTxsB)
 	if err != nil {
 		mylog.Error("setOneAccAllocEarnTx PutState failed.err=%s", err)
 		return err
@@ -3159,7 +3212,7 @@ func (t *KD) setRackEncourageScoreCfg(stub shim.ChaincodeStubInterface, rackid, 
 		stateKey = t.getRackEncourageScoreCfgKey(rackid)
 	}
 
-	err = t.PutState_Ex(stub, stateKey, sepcJson)
+	err = t.putState_Ex(stub, stateKey, sepcJson)
 	if err != nil {
 		return nil, mylog.Errorf("setRackEncourageScoreCfg PutState_Ex failed. err=%s", err)
 	}
@@ -3598,13 +3651,13 @@ func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, f
 		_, ok := rfi.UserAmountMap[accName]
 		if ok {
 			//如果用户已提取了，又来买，那么从新记录投资额，不能累计，否则会把前一次的累计进来。
-			if t.StrSliceContains(rfi.PayFinanceUserList, accName) {
+			if t.strSliceContains(rfi.PayFinanceUserList, accName) {
 				rfi.AmountFinca -= rfi.UserAmountMap[accName] //实际投资额度要减去上一次的
 				rfi.UserAmountMap[accName] = amount
 				if isRenewal {
 					rfi.UserRenewalMap[accName] = amount
 				}
-				rfi.PayFinanceUserList = t.StrSliceDelete(rfi.PayFinanceUserList, accName)
+				rfi.PayFinanceUserList = t.strSliceDelete(rfi.PayFinanceUserList, accName)
 			} else {
 				rfi.UserAmountMap[accName] += amount
 				if isRenewal {
@@ -3681,7 +3734,7 @@ func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, f
 
 	mylog.Debug("userBuyFinance: ent=%+v", *accEnt)
 
-	if !t.StrSliceContains(fi.RackList, ri.RackID) {
+	if !t.strSliceContains(fi.RackList, ri.RackID) {
 		fi.RackList = append(fi.RackList, ri.RackID)
 	}
 	fiJson, err := json.Marshal(fi)
@@ -3689,7 +3742,7 @@ func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, f
 		return nil, mylog.Errorf("userBuyFinance:  Marshal failed. err=%s.", err)
 	}
 
-	if !t.StrSliceContains(ri.FinacList, fi.FID) {
+	if !t.strSliceContains(ri.FinacList, fi.FID) {
 		ri.FinacList = append(ri.FinacList, fi.FID)
 	}
 
@@ -3702,17 +3755,17 @@ func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, f
 		return nil, mylog.Errorf("userBuyFinance:  Marshal failed. err=%s.", err)
 	}
 
-	err = t.PutState_Ex(stub, rackFinacInfoKey, rfiJson)
+	err = t.putState_Ex(stub, rackFinacInfoKey, rfiJson)
 	if err != nil {
 		return nil, mylog.Errorf("userBuyFinance:  PutState failed. err=%s.", err)
 	}
 
-	err = t.PutState_Ex(stub, rackInfoKey, riJson)
+	err = t.putState_Ex(stub, rackInfoKey, riJson)
 	if err != nil {
 		return nil, mylog.Errorf("userBuyFinance:  PutState failed. err=%s.", err)
 	}
 
-	err = t.PutState_Ex(stub, fiacInfoKey, fiJson)
+	err = t.putState_Ex(stub, fiacInfoKey, fiJson)
 	if err != nil {
 		return nil, mylog.Errorf("userBuyFinance:  PutState failed. err=%s.", err)
 	}
@@ -3843,7 +3896,7 @@ func (t *KD) financeBonus4OneRack(stub shim.ChaincodeStubInterface, rackid, fid 
 		return mylog.Errorf("financeBonus4OneRack:  Marshal failed. err=%s.", err)
 	}
 
-	err = t.PutState_Ex(stub, rackFinacInfoKey, rfiJson)
+	err = t.putState_Ex(stub, rackFinacInfoKey, rfiJson)
 	if err != nil {
 		return mylog.Errorf("financeBonus4OneRack:  PutState failed. err=%s.", err)
 	}
@@ -3890,7 +3943,7 @@ func (t *KD) setCurrentFid(stub shim.ChaincodeStubInterface, currentFid string) 
 		return mylog.Errorf("setCurrentFid: Marshal failed. err=%s.", err)
 	}
 
-	err = t.PutState_Ex(stub, RACKFINACHISTORY_KEY, hisB)
+	err = t.putState_Ex(stub, RACKFINACHISTORY_KEY, hisB)
 	if err != nil {
 		return mylog.Errorf("setCurrentFid: PutState_Ex failed. err=%s.", err)
 	}
@@ -4010,7 +4063,7 @@ func (t *KD) getRackFinanceAmount(stub shim.ChaincodeStubInterface, rackid, fid 
 	}
 	var totalAmt int64 = 0
 	for acc, amt := range rfi.UserAmountMap {
-		if !t.StrSliceContains(rfi.PayFinanceUserList, acc) {
+		if !t.strSliceContains(rfi.PayFinanceUserList, acc) {
 			totalAmt += amt
 		}
 	}
@@ -4025,16 +4078,12 @@ func (t *KD) financeIssueFinishAfter(stub shim.ChaincodeStubInterface, currentFi
 		return mylog.Errorf("financeIssueFinishAfter: GetState(finishId) failed. err=%s.", err)
 	}
 	if finishIdB == nil {
-		err = t.PutState_Ex(stub, RACKFINACISSUEFINISHID_KEY, []byte(currentFid))
+		err = t.putState_Ex(stub, RACKFINACISSUEFINISHID_KEY, []byte(currentFid))
 		if err != nil {
 			return mylog.Errorf("financeIssueFinishAfter: PutState_Ex(finishId) failed. err=%s.", err)
 		}
 	} else {
-		var finishId string
-		err = json.Unmarshal(finishIdB, &finishId)
-		if err != nil {
-			return mylog.Errorf("financeIssueFinishAfter: Unmarshal(finishId) failed. err=%s.", err)
-		}
+		var finishId = string(finishIdB)
 
 		if finishId == currentFid {
 			return mylog.Errorf("financeIssueFinishAfter: has finished already.")
@@ -4083,7 +4132,7 @@ func (t *KD) financeIssueFinishAfter(stub shim.ChaincodeStubInterface, currentFi
 				return mylog.Errorf("financeIssueFinishAfter: Marshal(rfi=%s,%s) failed. err=%s.", rackid, currentFid, err)
 			}
 
-			err = t.PutState_Ex(stub, rfiKey, rfiB)
+			err = t.putState_Ex(stub, rfiKey, rfiB)
 			if err != nil {
 				return mylog.Errorf("financeIssueFinishAfter: PutState_Ex(rfi=%s,%s) failed. err=%s.", rackid, currentFid, err)
 			}
@@ -4149,14 +4198,9 @@ func (t *KD) financeRenewalPreviousFinance(stub shim.ChaincodeStubInterface, cur
 
 		mylog.Debug("financeRenewal: rfi=%+v", rfi)
 
-		//如果已经是发行完毕，说明已经续过期了
-		if rfi.Stage >= FINANC_STAGE_ISSUE_FINISH {
-			return mylog.Errorf("financeRenewal: (%s,%s) has finished already, something wrong?", rackid, preFid)
-		}
-
 		for acc, amt := range rfi.UserAmountMap {
 			//已赎回的用户不在续期
-			if t.StrSliceContains(rfi.PayFinanceUserList, acc) {
+			if t.strSliceContains(rfi.PayFinanceUserList, acc) {
 				continue
 			}
 
@@ -4221,7 +4265,7 @@ func (t *KD) payUserFinance(stub shim.ChaincodeStubInterface, accName, reacc, ra
 		}
 
 		//如果已提取过，则不能再提取。这里不报错，不实际执行转账即可
-		if t.StrSliceContains(rfi.PayFinanceUserList, reacc) {
+		if t.strSliceContains(rfi.PayFinanceUserList, reacc) {
 			mylog.Warn("payUserFinance: %s has paid already, do nothing.", reacc)
 			continue
 		}
@@ -4236,7 +4280,7 @@ func (t *KD) payUserFinance(stub shim.ChaincodeStubInterface, accName, reacc, ra
 			return mylog.Errorf("payUserFinance:  Marshal(%s,%s) failed. err=%s.", rackid, f, err)
 		}
 
-		err = t.PutState_Ex(stub, rfiKey, rfiB)
+		err = t.putState_Ex(stub, rfiKey, rfiB)
 		if err != nil {
 			return mylog.Errorf("payUserFinance:  PutState_Ex(%s,%s) failed. err=%s.", rackid, f, err)
 		}
@@ -4265,7 +4309,7 @@ func (t *KD) payUserFinance(stub shim.ChaincodeStubInterface, accName, reacc, ra
 
 	//将赎回的理财期号写入已赎回列表
 	for fid, _ := range paidFidMap {
-		if !t.StrSliceContains(reaccEnt.PaidFidList, fid) {
+		if !t.strSliceContains(reaccEnt.PaidFidList, fid) {
 			reaccEnt.PaidFidList = append(reaccEnt.PaidFidList, fid)
 		}
 	}
@@ -4363,12 +4407,15 @@ func (t *KD) getRestFinanceCapacityForRack(stub shim.ChaincodeStubInterface, rac
 		} else {
 			preFid = hisFids.PreCurrFID[1]
 		}
+		mylog.Debug("getRestFinanceCapacityForRack: preFid=[%s]", preFid)
+
 		//前期理财id为空，说明没有前期，不用处理
 		if len(preFid) > 0 {
 			preAmt, err = t.getRackFinanceAmount(stub, rackid, preFid)
 			if err != nil {
 				return 0, mylog.Errorf("getRestFinanceCapacityForRack: getRackFinanceAmount failed. err=%s.", err)
 			}
+			mylog.Debug("getRestFinanceCapacityForRack: preAmt=%v", preAmt)
 		}
 	}
 
@@ -4378,6 +4425,8 @@ func (t *KD) getRestFinanceCapacityForRack(stub shim.ChaincodeStubInterface, rac
 	if err != nil {
 		return 0, mylog.Errorf("getRestFinanceCapacityForRack: getRackFinanceAmount failed. err=%s.", err)
 	}
+
+	mylog.Debug("getRestFinanceCapacityForRack: InvestCapacity=%v, preAmt=%v, currAmt=%v", rfc.InvestCapacity, preAmt, currAmt)
 
 	var restAmt = rfc.InvestCapacity - preAmt - currAmt
 	if restAmt < 0 {
@@ -4549,7 +4598,7 @@ func (t *KD) queryAccRackFinanceTx(stub shim.ChaincodeStubInterface, accName str
 
 var myhash = MyHashNew()
 
-func (t *KD) setAccountPasswd(stub shim.ChaincodeStubInterface, accName, pwd string, salt []byte, accEnt *AccountEntity) error {
+func (t *KD) setAccountPasswd(stub shim.ChaincodeStubInterface, accName, pwd string, accEnt *AccountEntity) error {
 	var ent *AccountEntity
 	var err error
 
@@ -4563,7 +4612,13 @@ func (t *KD) setAccountPasswd(stub shim.ChaincodeStubInterface, accName, pwd str
 		ent = accEnt
 	}
 
-	hash, err := myhash.GenCipher(pwd, salt)
+	md5Sum := md5.Sum([]byte(accName + strconv.FormatInt(accEnt.Time, 10)))
+	var salt []byte
+	for _, b := range md5Sum {
+		salt = append(salt, b)
+	}
+
+	hash, err := myhash.GenCipher(pwd, []byte(salt))
 	if err != nil {
 		return mylog.Errorf("setAccountPasswd: GenCipher failed.err=%s, acc=%s", err, accName)
 	}
@@ -4577,7 +4632,7 @@ func (t *KD) setAccountPasswd(stub shim.ChaincodeStubInterface, accName, pwd str
 
 	return nil
 }
-func (t *KD) AuthAccountPasswd(stub shim.ChaincodeStubInterface, accName, pwd string, accEnt *AccountEntity) (bool, error) {
+func (t *KD) authAccountPasswd(stub shim.ChaincodeStubInterface, accName, pwd string, accEnt *AccountEntity) (bool, error) {
 	var ent *AccountEntity
 	var err error
 
@@ -4589,6 +4644,10 @@ func (t *KD) AuthAccountPasswd(stub shim.ChaincodeStubInterface, accName, pwd st
 		ent = tmpEnt
 	} else {
 		ent = accEnt
+	}
+
+	if ent.Cipher == nil || len(ent.Cipher) == 0 {
+		return false, mylog.Errorf("AuthAccountPasswd: Cipher is nil, acc=%s", accName)
 	}
 
 	ok, err := myhash.AuthPass(ent.Cipher, pwd)
@@ -4603,7 +4662,7 @@ func (t *KD) AuthAccountPasswd(stub shim.ChaincodeStubInterface, accName, pwd st
 	return false, nil
 }
 
-func (t *KD) IsSetAccountPasswd(stub shim.ChaincodeStubInterface, accName string, accEnt *AccountEntity) (bool, error) {
+func (t *KD) isSetAccountPasswd(stub shim.ChaincodeStubInterface, accName string, accEnt *AccountEntity) (bool, error) {
 	var ent *AccountEntity
 
 	if accEnt == nil {
@@ -4820,7 +4879,7 @@ func (t *KD) loadWorldState(stub shim.ChaincodeStubInterface, fileName string, n
 			continue
 		}
 
-		err = t.PutState_Ex(stub, key, valueB)
+		err = t.putState_Ex(stub, key, valueB)
 		if err != nil {
 			mylog.Errorf("setWorldState: PutState_Ex failed. key=%s err=%s", key, err)
 			continue
@@ -4870,7 +4929,7 @@ func (t *KD) setUserEntity(stub shim.ChaincodeStubInterface, ue *UserEntity) err
 		return mylog.Errorf("setUserEntity: Marshal failed. err=%s", err)
 	}
 
-	err = t.PutState_Ex(stub, t.getUserEntityKey(ue.EntID), jsons)
+	err = t.putState_Ex(stub, t.getUserEntityKey(ue.EntID), jsons)
 
 	if err != nil {
 		return mylog.Errorf("setUserEntity: PutState cb failed. err=%s", err)
@@ -4894,14 +4953,14 @@ func (t *KD) isAdmin(stub shim.ChaincodeStubInterface, accName string) bool {
 	return string(tmpByte) == accName
 }
 
-func (t *KD) PutState_Ex(stub shim.ChaincodeStubInterface, key string, value []byte) error {
+func (t *KD) putState_Ex(stub shim.ChaincodeStubInterface, key string, value []byte) error {
 	//当key为空字符串时，0.6的PutState接口不会报错，但是会导致chainCode所在的contianer异常退出。
 	if key == "" {
 		return mylog.Errorf("PutState_Ex key err.")
 	}
 	return stub.PutState(key, value)
 }
-func (t *KD) StrSliceContains(list []string, value string) bool {
+func (t *KD) strSliceContains(list []string, value string) bool {
 	for _, v := range list {
 		if v == value {
 			return true
@@ -4911,7 +4970,7 @@ func (t *KD) StrSliceContains(list []string, value string) bool {
 	return false
 }
 
-func (t *KD) StrSliceDelete(list []string, value string) []string {
+func (t *KD) strSliceDelete(list []string, value string) []string {
 	var newList []string
 
 	for _, v := range list {
