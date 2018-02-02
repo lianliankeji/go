@@ -1,8 +1,11 @@
 // app index
 const express = require('express');  
 const app = express();  
+
+//socketio功能需要使用如下的http和sockio
 const http = require('http').Server(app);
-const sockio = require('socket.io')(http);
+//这里的path参数，client端connnect时也必须用这个参数，会拼在url请求中，io.connect("https://xxx/yyy", { path:'/kdsocketio' })。nginx中可以用它来匹配url。
+const sockio = require('socket.io')(http, {path: '/kdsocketio'});  
 
 const bodyParser = require('body-parser');  
 
@@ -676,7 +679,9 @@ function __execLiteQuery(params, req, user, TCert, outputQReslt, cb) {
                    
                     chain.accountCnt = queryObj.accountcount
                     chain.issuedAmt = queryObj.issueamt
-                    chain.totalAmt = 10000000000  //100亿
+                    chain.totalAmt = 10000000000    //100亿
+                    chain.issueBeg = "201801"       //当前发行周期的起始日期
+                    chain.issueEnd = "201812"       //当前发行周期的结束日期
                     
                     body.result = chain
                     
@@ -1101,7 +1106,9 @@ function __getPushDataForWeb(cb) {
     })
 }
 
-sockio.on('connection', function(socket){
+//of的内容getchaininfo，是跟在客户端请求的url中，ip后面。 sockio中叫namespace。 客户端请求时，url使用，例如io.connect("https://XXX/getchaininfo") 用这个参数可以区分多种请求
+sockio.of('/getchaininfo') 
+  .on('connection', function(socket){
     socketClientCnt++
     logger.info('a user connected, client count=%d', socketClientCnt);
 
