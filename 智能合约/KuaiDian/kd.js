@@ -984,9 +984,12 @@ function __getChainInfoForWeb(cb) {
 }
 
 //txRecords作为入参传入，因为里面有递归调用，如果在本函数里用局部变量定义无法在递归中传递
-function __getBlockInfo(latestBlockNum, queryBlockCnt, txRecords, cb) {
+function __getBlockInfo(latestBlockNum, queryTxCnt, txRecords, cb) {
     //从1开始，0块没有交易信息
     if (latestBlockNum > 0) {
+        var txRecdPerBlock = 1 //目前一个区块记录一条交易
+        var queryBlockCnt = Math.ceil(queryTxCnt / txRecdPerBlock)  //用需要的记录数除以每个区块的交易数，并向上取整，得到要查询的区块数
+        
         var begIdx = latestBlockNum - queryBlockCnt + 1
         if (begIdx < 1 )
             begIdx = 1
@@ -1023,32 +1026,39 @@ function __getBlockInfo(latestBlockNum, queryBlockCnt, txRecords, cb) {
                 
                 keyList.sort(__sort_down)  //降序
                 //最新的数据放在最上面
-                var txIdx = 0
-                var begTxIdx = txRecords.length
                 for (var i=0; i<keyList.length; i++) {
-                    txIdx = begTxIdx + i
-                    
-                    //最多记录queryBlockCnt条
-                    if (txIdx >= queryBlockCnt)
-                        break
-                    
-                    txRecords[txIdx] = tmpRecds[keyList[i]]
-                    
-                    var payload = txRecords[txIdx].txInfo
-                    var arr = (new Buffer(payload,'base64')).toString().split('\n')
+                    var recd = tmpRecds[keyList[i]]
+                    var arr = (new Buffer(recd.txInfo,'base64')).toString().split('\n')
                     /*
                     for (var i=0; i<arr.length; i++){
                         arr[i] = arr[i].trim()
                         logger.debug("arr[%d]=[%s]", i, arr[i]);
                     }
                     */
-                    txRecords[txIdx].node = arr[4].trim()  //第5个元素为账户信息
+                    // arr的第1个元素为空，第二个元素包含ccid， 第三个为invode函数名，后面为参数列表
+                    //var invokeFunc = arr[2]
+                    if (arr.length < 5) //小于5没有参数列表(目前参数至少是2个参数)，可能是init调用，不显示
+                        continue
+                    
+                    var accountName = arr[4].trim()  //第5个元素为账户信息
+                    //先过滤centerBank和kdcoinpool的交易
+                    if (accountName.indexOf("centerBank") >= 0 || accountName.indexOf("kdcoinpool") >= 0) {
+                        continue
+                    }
+ 
+                    var txIdx = txRecords.length
+                    txRecords[txIdx] = recd
+                    txRecords[txIdx].node = accountName
+
+                    //最多记录 queryTxCnt 条
+                    if (txIdx >= queryTxCnt - 1)
+                        break
                 }
                 
                 //记录不够，再查一次
-                if (txRecords.length < queryBlockCnt) {
+                if (txRecords.length < queryTxCnt) {
                     //从上次查到的最小序列号开始
-                    __getBlockInfo(keyList[keyList.length-1] - 1, queryBlockCnt, txRecords, cb)
+                    __getBlockInfo(keyList[keyList.length-1] - 1, queryTxCnt, txRecords, cb)
                 } else {
                     cb (null)
                 }
