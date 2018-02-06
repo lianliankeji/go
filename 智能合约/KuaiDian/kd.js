@@ -153,7 +153,7 @@ function handle_setenv(params, res, req){
 }
 
 
-const globalCcid = "ef38784bad472d640839c1782232aac63985489ee624b67a2d2b23448b03ebfb"
+const globalCcid = "400298896ad7f0695d5e5d2379b67caa7a05930d158ccd0704ddc2696e3d156b"
 
 // restfull
 function handle_deploy(params, res, req){  
@@ -317,6 +317,33 @@ function handle_invoke(params, res, req) {
                 }
 
                 invokeRequest.args.push(reacc, transType, description, amt, sameEntSaveTrans, pwd)
+            } else if (func == "transeferAndLock") {
+                invokeRequest.fcn = "transefer3" //内部用transefer3
+                
+                var reacc = params.reacc;
+                var amt = params.amt;
+                var transType = params.tstp;
+                if (transType == undefined)
+                    transType = ""
+                var description = params.desc;
+                if (description == undefined)
+                    description = ""
+                var sameEntSaveTrans = params.sest; //如果转出和转入账户相同，是否记录交易 0表示不记录 1表示记录
+                if (sameEntSaveTrans == undefined)
+                    sameEntSaveTrans = "1" //默认记录
+                
+                var lockEndTime = params.letm
+                var lockAmt = params.lamt
+                
+                if (lockAmt > amt) {
+                    logger.error("invoke(%s): failed, err=lock amount big than transefer-amount.", func);
+                    body.code=retCode.ERROR;
+                    body.msg="tx error: lock amount big than transefer-amount."
+                    res.send(body) 
+                    return
+                }
+
+                invokeRequest.args.push(reacc, transType, description, amt, sameEntSaveTrans, lockEndTime, lockAmt)
             } else if (func == "updateEnv") {
                 var key = params.key;
                 var value = params.val;
@@ -425,7 +452,9 @@ function handle_invoke(params, res, req) {
                 if (sameKeyOverwrite == undefined)
                     sameKeyOverwrite = "1"  //默认相同的key覆盖
                 
-                invokeRequest.args.push(fileName, needHash, sameKeyOverwrite)
+                var srcCcid = params.sccid;
+                
+                invokeRequest.args.push(fileName, needHash, sameKeyOverwrite, srcCcid)
             }
 
             __invokePreCheck(func, params, user, TCert, function(err, checkOk){
@@ -641,7 +670,7 @@ function __execLiteQuery(params, req, user, TCert, outputQReslt, cb) {
         var flushLimit = params.flmt
         if (flushLimit == undefined) 
             flushLimit = "-1"    //默认不用hash
-        queryRequest.args.push(needHash, flushLimit)
+        queryRequest.args.push(needHash, flushLimit, queryRequest.chaincodeID)
     } else if (func == "transPreCheck") {
         var reacc = params.reacc
         var amt = params.amt
@@ -650,6 +679,9 @@ function __execLiteQuery(params, req, user, TCert, outputQReslt, cb) {
             pwd = ""
 
         queryRequest.args.push(reacc, pwd, amt)
+
+    } else if (func == "getInfoForWeb") {
+        queryRequest.args.push("kdcoinpool") //目前计算流通货币的账户
     }
     
     // query
@@ -679,16 +711,17 @@ function __execLiteQuery(params, req, user, TCert, outputQReslt, cb) {
                    
                     chain.accountCnt = queryObj.accountcount
                     chain.issuedAmt = queryObj.issueamt
-                    chain.totalAmt = 10000000000    //100亿
+                    chain.totalAmt = queryObj.issuetotalamt    
+                    chain.circulateAmt = queryObj.circulateamt
                     chain.issueBeg = "201801"       //当前发行周期的起始日期
                     chain.issueEnd = "201812"       //当前发行周期的结束日期
                     
                     body.result = chain
                     
-                   cb(null, body)
+                    cb(null, body)
                 })
             } else {
-                if (func == "getTransInfo") { //如下几种函数的result返回json格式
+                if (func == "getTransInfo" || func == "getBalanceAndLocked") { //如下几种函数的result返回json格式
                     body.result = JSON.parse(resultStr)
                 } else {
                     body.result = resultStr
@@ -1039,7 +1072,7 @@ function __getBlockInfo(latestBlockNum, queryTxCnt, txRecords, cb) {
                     //var invokeFunc = arr[2]
                     if (arr.length < 5) //小于5没有参数列表(目前参数至少是2个参数)，可能是init调用，不显示
                         continue
-                    
+
                     var accountName = arr[4].trim()  //第5个元素为账户信息
                     //先过滤centerBank和kdcoinpool的交易
                     if (accountName.indexOf("centerBank") >= 0 || accountName.indexOf("kdcoinpool") >= 0) {

@@ -41,8 +41,11 @@ const (
 	TRANSINFO_PREFIX     = "!kd@txInfoPre~"         //全局交易信息的key的前缀。使用的是worldState存储
 	ONE_ACC_TRANS_PREFIX = "!kd@oneAccTxPre~"       //存储单个账户的交易的key前缀
 	UER_ENTITY_PREFIX    = "!kd@usrEntPre~"         //存储某个用户的用户信息的key前缀。目前用户名和账户名相同，而账户entity的key是账户名，所以用户entity加个前缀区分
+	ACC_ENTITY_PREFIX    = "!kd@accEntPre~"         //存储某个账户的账户信息的key前缀。目前用户名和账户名相同，而账户entity的key是账户名，所以用户entity加个前缀区分
 	CENTERBANK_ACC_KEY   = "!kd@centerBankAccKey@!" //央行账户的key。使用的是worldState存储
-	ALL_ACC_KEY          = "!kd@allAccInfoKey@!"    //存储所有账户名的key。使用的是worldState存储
+	ALL_ACC_INFO_KEY     = "!kd@allAccInfoKey@!"    //存储所有账户名的key。使用的是worldState存储
+	ACC_STATIC_INFO_KEY  = "!kd@accStatcInfoKey@!"  //存储所有账户统计信息的key。
+	ACC_AMTLOCK_PREFIX   = "!kd@accAmtLockPre~"     //账户金额锁定key前缀
 
 	//销售分成相关
 	RACK_GLOBAL_ALLOCRATE_KEY = "!kd@globalAllocRate@!" //全局的收入分成比例
@@ -71,7 +74,8 @@ const (
 	MULTI_STRING_DELIM = ':' //多个string的分隔符
 	INVALID_MD5_VALUE  = "-"
 
-	ACC_INVALID_CHAR_SET = ",;:/\\" //账户中不能包含的字符
+	ACC_INVALID_CHAR_SET = ",;:/\\"                  //账户中不能包含的字符
+	COIN_ISSUE_ACC_ENTID = "issueCoinVirtualAccount" //发行货币的账户id
 
 	RACK_ROLE_SELLER   = "slr"
 	RACK_ROLE_FIELDER  = "fld"
@@ -79,13 +83,16 @@ const (
 	RACK_ROLE_PLATFORM = "pfm"
 )
 
+//这里定义的错误码会返回给前端，所以不要修改已有的错误码，如果要修改，请和前端一起修改
 const (
-	ERRCODE_BEGIN                         = iota + 10000
-	ERRCODE_TRANS_PAY_ACCOUNT_NOT_EXIST   //付款账号不存在
-	ERRCODE_TRANS_PAYEE_ACCOUNT_NOT_EXIST //收款账号不存在
-	ERRCODE_TRANS_BALANCE_NOT_ENOUGH      //账号余额不足d
-	ERRCODE_TRANS_PASSWD_INVALID          //密码错误
-	ERRCODE_TRANS_AMOUNT_INVALID          //转账金额不合法
+	ERRCODE_BEGIN                           = iota + 10000
+	ERRCODE_TRANS_PAY_ACCOUNT_NOT_EXIST     //付款账号不存在
+	ERRCODE_TRANS_PAYEE_ACCOUNT_NOT_EXIST   //收款账号不存在
+	ERRCODE_TRANS_BALANCE_NOT_ENOUGH        //账号余额不足d
+	ERRCODE_TRANS_PASSWD_INVALID            //密码错误
+	ERRCODE_TRANS_AMOUNT_INVALID            //转账金额不合法
+	ERRCODE_TRANS_BALANCE_NOT_ENOUGH_BYLOCK //锁定部分余额导致余额不足
+
 )
 
 const (
@@ -339,6 +346,25 @@ type RackFinanceRecd struct {
 	Type    string `json:"type"` //投资、收益
 }
 
+type AccountStatisticInfo struct {
+	AccountCount int64 `json:"ac"`
+}
+
+//账户金额锁定期   因为只有少数的账户有锁定期，所以这些配置不放在账户结构体中
+type CoinLockCfg struct {
+	LockEndTime int64 `json:"let"`
+	LockAmount  int64 `json:"la"`
+}
+type AccountCoinLockInfo struct {
+	AccName  string        `json:"acc"`
+	LockList []CoinLockCfg `json:"ll"`
+}
+
+type QueryBalanceAndLocked struct {
+	Balance int64 `json:"balance"`
+	Locked  int64 `json:"locked"`
+}
+
 var ErrNilEntity = errors.New("nil entity.")
 
 type KD struct {
@@ -418,6 +444,20 @@ func (t *KD) Init(stub shim.ChaincodeStubInterface, function string, args []stri
 	err = t.putState_Ex(stub, t.getGlobalRackFinancCfgKey(), rfcJson)
 	if err != nil {
 		return nil, mylog.Errorf("Init PutState_Ex(rfc) error, err=%s.", err)
+	}
+
+	//虚拟一个超级账户，设置货币发行总额，给央行发行货币。
+	var issueEntity AccountEntity
+	issueEntity.EntID = COIN_ISSUE_ACC_ENTID
+	issueEntity.EntType = -1
+	issueEntity.TotalAmount = 10000000000
+	issueEntity.RestAmount = 10000000000
+	issueEntity.Time = 0
+	issueEntity.Owner = "system"
+
+	err = t.setAccountEntity(stub, &issueEntity)
+	if err != nil {
+		return nil, mylog.Errorf("Init PutState_Ex(issueEntity) error, err=%s.", err)
 	}
 
 	return nil, nil
@@ -567,8 +607,7 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 	} else if function == "transefer" {
 		var argCount = fixedArgCount + 5
 		if len(args) < argCount {
-			mylog.Error("Invoke(transefer) miss arg, got %d, at least need %d.", len(args), argCount)
-			return nil, errors.New("Invoke(transefer) miss arg.")
+			return nil, mylog.Errorf("Invoke(transefer) miss arg, got %d, at least need %d.", len(args), argCount)
 		}
 
 		var toAcc = args[fixedArgCount]
@@ -590,11 +629,10 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 
 		return t.transferCoin(stub, accName, toAcc, transType, description, transAmount, invokeTime, sameEntSaveTransFlag)
 
-	} else if function == "transefer2" {
+	} else if function == "transefer2" { //带交易密码功能
 		var argCount = fixedArgCount + 6
 		if len(args) < argCount {
-			mylog.Error("Invoke(transeferUsePwd) miss arg, got %d, at least need %d.", len(args), argCount)
-			return nil, errors.New("Invoke(transeferUsePwd) miss arg.")
+			return nil, mylog.Errorf("Invoke(transeferUsePwd) miss arg, got %d, at least need %d.", len(args), argCount)
 		}
 
 		var toAcc = args[fixedArgCount]
@@ -632,6 +670,70 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 			if err != nil {
 				return nil, mylog.Errorf("Invoke(transeferUsePwd): setAccountPasswd failed. err=%s", err)
 			}
+		}
+
+		return t.transferCoin(stub, accName, toAcc, transType, description, transAmount, invokeTime, sameEntSaveTransFlag)
+
+	} else if function == "transefer3" { //带锁定期功能
+		var argCount = fixedArgCount + 7
+		if len(args) < argCount {
+			return nil, mylog.Errorf("Invoke(transeferLockAmt) miss arg, got %d, at least need %d.", len(args), argCount)
+		}
+
+		var toAcc = args[fixedArgCount]
+		var transType = args[fixedArgCount+1]
+		var description = args[fixedArgCount+2]
+
+		var transAmount int64
+		transAmount, err = strconv.ParseInt(args[fixedArgCount+3], 0, 64)
+		if err != nil {
+			return nil, mylog.Errorf("Invoke(transeferLockAmt): convert issueAmount(%s) failed. err=%s", args[fixedArgCount+3], err)
+		}
+
+		var sameEntSaveTrans = args[fixedArgCount+4] //如果转出和转入账户相同，是否记录交易 0表示不记录 1表示记录
+		var sameEntSaveTransFlag bool = false
+		if sameEntSaveTrans == "1" {
+			sameEntSaveTransFlag = true
+		}
+
+		var lockEndDate int64
+		var lockAmt int64
+		lockEndDate, err = strconv.ParseInt(args[fixedArgCount+5], 0, 64)
+		if err != nil {
+			return nil, mylog.Errorf("Invoke(transeferLockAmt): convert lockEndDate(%s) failed. err=%s", args[fixedArgCount+5], err)
+		}
+		lockAmt, err = strconv.ParseInt(args[fixedArgCount+6], 0, 64)
+		if err != nil {
+			return nil, mylog.Errorf("Invoke(transeferLockAmt): convert lockAmt(%s) failed. err=%s", args[fixedArgCount+6], err)
+		}
+
+		if lockAmt > transAmount {
+			return nil, mylog.Errorf("Invoke(transeferLockAmt): lockAmt(%d) > transAmount(%d).", lockAmt, transAmount)
+		}
+
+		var acli AccountCoinLockInfo
+		var lockinfoKey = t.getAccountLockInfoKey(toAcc)
+		acliB, err := stub.GetState(lockinfoKey)
+		if err != nil {
+			return nil, mylog.Errorf("Invoke(transeferLockAmt): GetState  failed. err=%s", err)
+		}
+		if acliB == nil {
+			acli.AccName = toAcc
+			acli.LockList = append(acli.LockList, CoinLockCfg{LockEndTime: lockEndDate, LockAmount: lockAmt})
+		} else {
+			err = json.Unmarshal(acliB, &acli)
+			if err != nil {
+				return nil, mylog.Errorf("Invoke(transeferLockAmt): Unmarshal  failed. err=%s", err)
+			}
+			acli.LockList = append(acli.LockList, CoinLockCfg{LockEndTime: lockEndDate, LockAmount: lockAmt})
+		}
+		acliB, err = json.Marshal(acli)
+		if err != nil {
+			return nil, mylog.Errorf("Invoke(transeferLockAmt): Marshal  failed. err=%s", err)
+		}
+		err = t.putState_Ex(stub, lockinfoKey, acliB)
+		if err != nil {
+			return nil, mylog.Errorf("Invoke(transeferLockAmt): putState_Ex  failed. err=%s", err)
 		}
 
 		return t.transferCoin(stub, accName, toAcc, transType, description, transAmount, invokeTime, sameEntSaveTransFlag)
@@ -1094,7 +1196,7 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 			return nil, mylog.Errorf("Invoke(setWorldState) can't exec by %s.", accName)
 		}
 
-		var argCount = fixedArgCount + 3
+		var argCount = fixedArgCount + 4
 		if len(args) < argCount {
 			return nil, mylog.Errorf("setWorldState miss arg, got %d, need %d.", len(args), argCount)
 		}
@@ -1109,7 +1211,9 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 			sameKeyOverwrite = true
 		}
 
-		return t.loadWorldState(stub, fileName, needHash, sameKeyOverwrite)
+		var srcCcid = args[fixedArgCount+3]
+
+		return t.loadWorldState(stub, fileName, needHash, sameKeyOverwrite, srcCcid)
 	}
 
 	//event
@@ -1172,9 +1276,28 @@ func (t *KD) Query(stub shim.ChaincodeStubInterface, function string, args []str
 		mylog.Debug("queryEntity=%+v", queryEntity)
 
 		retValue := []byte(strconv.FormatInt(queryEntity.RestAmount, 10))
-		mylog.Debug("retValue=%+v, %s", retValue, string(retValue))
 
 		return retValue, nil
+	} else if function == "getBalanceAndLocked" { //查询余额及锁定金额
+		var qbal QueryBalanceAndLocked
+
+		var queryEntity *AccountEntity = accountEnt
+		mylog.Debug("queryEntity=%+v", queryEntity)
+
+		qbal.Balance = queryEntity.RestAmount
+
+		lockAmt, err := t.getAccountLockedAmount(stub, accName, queryTime)
+		if err != nil {
+			return nil, mylog.Errorf("getBalanceAndLocked: getAccountLockedAmount(id=%s) failed. err=%s", accName, err)
+		}
+		qbal.Locked = lockAmt
+
+		qbalB, err := json.Marshal(qbal)
+		if err != nil {
+			return nil, mylog.Errorf("getBalanceAndLocked: Marshal(id=%s) failed. err=%s", accName, err)
+		}
+
+		return qbalB, nil
 	} else if function == "getTransInfo" { //查询交易记录
 		var argCount = fixedArgCount + 8
 		if len(args) < argCount {
@@ -1446,7 +1569,7 @@ func (t *KD) Query(stub shim.ChaincodeStubInterface, function string, args []str
 			return nil, mylog.Errorf("getWorldState: %s can't query.", accName)
 		}
 
-		var argCount = fixedArgCount + 2
+		var argCount = fixedArgCount + 3
 		if len(args) < argCount {
 			return nil, mylog.Errorf("getWorldState miss arg, got %d, need %d.", len(args), argCount)
 		}
@@ -1465,14 +1588,21 @@ func (t *KD) Query(stub shim.ChaincodeStubInterface, function string, args []str
 			flushLimit = 4096
 		}
 
-		return t.dumpWorldState(stub, queryTime, flushLimit, needHash)
+		var currCcid = args[fixedArgCount+2]
+
+		return t.dumpWorldState(stub, queryTime, flushLimit, needHash, currCcid)
 	} else if function == "getInfoForWeb" {
 		//是否是管理员帐户，管理员用户才可以查
 		if !t.isAdmin(stub, accName) {
 			return nil, mylog.Errorf("%s can't query InfoForWeb.", accName)
 		}
 
-		return t.getInfo4Web(stub)
+		var argCount = fixedArgCount + 1
+		if len(args) < argCount {
+			return nil, mylog.Errorf("getInfoForWeb miss arg, got %d, need %d.", len(args), argCount)
+		}
+
+		return t.getInfo4Web(stub, args[fixedArgCount])
 
 	} else if function == "transPreCheck" {
 		var argCount = fixedArgCount + 3
@@ -1510,9 +1640,18 @@ func (t *KD) Query(stub shim.ChaincodeStubInterface, function string, args []str
 		if transAmount < 0 { //如果是内部接口调用，可能会转账金额为0， 这里不检查0
 			return []byte(strconv.FormatInt(ERRCODE_TRANS_AMOUNT_INVALID, 10)), nil
 		}
+		//看是否有锁定金额
+		lockAmt, err := t.getAccountLockedAmount(stub, accName, queryTime)
+		if err != nil {
+			return nil, mylog.Errorf("transPreCheck: getAccountLockedAmount(id=%s) failed. err=%s", accName, err)
+		}
 
 		if transAmount > accountEnt.RestAmount {
 			return []byte(strconv.FormatInt(ERRCODE_TRANS_BALANCE_NOT_ENOUGH, 10)), nil
+		}
+		//错误码丰富一点，这里再判断是否是因为锁定导致余额不足
+		if lockAmt > 0 && transAmount > accountEnt.RestAmount-lockAmt {
+			return []byte(strconv.FormatInt(ERRCODE_TRANS_BALANCE_NOT_ENOUGH_BYLOCK, 10)), nil
 		}
 
 		//收款账户是否存在
@@ -1858,13 +1997,12 @@ func (t *KD) getAllAccAmt(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	qb.AccSumAmount = 0
 	qb.AccCount = 0
 
-	accsB, err := stub.GetState(ALL_ACC_KEY)
+	accsB, err := stub.GetState(ALL_ACC_INFO_KEY)
 	if err != nil {
 		mylog.Error("getAllAccAmt GetState failed. err=%s", err)
 		return nil, errors.New("getAllAccAmt GetState failed.")
 	}
 	if accsB != nil {
-
 		cbAccB, err := t.getCenterBankAcc(stub)
 		if err != nil {
 			mylog.Error("getAllAccAmt getCenterBankAcc failed. err=%s", err)
@@ -1916,48 +2054,60 @@ func (t *KD) getAllAccAmt(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	return retValue, nil
 }
 
-func (t *KD) getInfo4Web(stub shim.ChaincodeStubInterface) ([]byte, error) {
+func (t *KD) getInfo4Web(stub shim.ChaincodeStubInterface, circulateAmtAccName string) ([]byte, error) {
 
 	type QueryWebInfo struct {
-		AccountNum  int   `json:"accountcount"`
-		IssueAmount int64 `json:"issueamt"`
+		AccountNum       int64 `json:"accountcount"`  //账户数量
+		IssueTotalAmount int64 `json:"issuetotalamt"` //预计发行总量
+		IssueAmount      int64 `json:"issueamt"`      //已发行数量
+		CirculateAmount  int64 `json:"circulateamt"`  //流通数量
 	}
 
 	var qwi QueryWebInfo
 	qwi.AccountNum = 0
+	qwi.IssueTotalAmount = 0
 	qwi.IssueAmount = 0
+	qwi.CirculateAmount = 0
 
-	accsB, err := stub.GetState(ALL_ACC_KEY)
+	issueEntity, err := t.getAccountEntity(stub, COIN_ISSUE_ACC_ENTID)
 	if err != nil {
-		return nil, mylog.Errorf("getInfo4Web GetState failed. err=%s", err)
+		return nil, mylog.Errorf("getInfo4Web: getIssueEntity failed. err=%s", err)
 	}
+	qwi.IssueTotalAmount = issueEntity.TotalAmount
+	qwi.IssueAmount = issueEntity.TotalAmount - issueEntity.RestAmount
 
-	if accsB != nil {
-		var allAccs = bytes.NewBuffer(accsB)
-		for {
-			_, err = allAccs.ReadBytes(MULTI_STRING_DELIM)
-			if err != nil {
-				if err == io.EOF {
-					break
-				} else {
-					mylog.Error("getInfo4Web ReadBytes failed. err=%s", err)
-					continue
-				}
-			}
-			qwi.AccountNum++
-		}
-	}
-
-	cbAccB, err := t.getCenterBankAcc(stub)
+	var asi AccountStatisticInfo
+	asiB, err := stub.GetState(ACC_STATIC_INFO_KEY)
 	if err != nil {
-		return nil, mylog.Errorf("getInfo4Web getCenterBankAcc failed. err=%s", err)
+		return nil, mylog.Errorf("getInfo4Web: GetState failed. err=%s", err)
 	}
-	if cbAccB != nil {
-		cbEnt, err := t.getAccountEntity(stub, string(cbAccB))
+	if asiB != nil {
+		err = json.Unmarshal(asiB, &asi)
 		if err != nil {
-			return nil, mylog.Errorf("getInfo4Web getAccountEntity failed. err=%s", err)
+			return nil, mylog.Errorf("getInfo4Web: Unmarshal failed. err=%s", err)
 		}
-		qwi.IssueAmount = cbEnt.TotalAmount - cbEnt.RestAmount
+		qwi.AccountNum = asi.AccountCount
+	}
+
+	//如果传入了计算流通货币量的账户，用此账户；否则用央行账户
+	if len(circulateAmtAccName) > 0 {
+		ent, err := t.getAccountEntity(stub, circulateAmtAccName)
+		if err != nil {
+			return nil, mylog.Errorf("getInfo4Web: getAccountEntity failed. err=%s", err)
+		}
+		qwi.CirculateAmount = ent.TotalAmount - ent.RestAmount
+	} else {
+		cbAccB, err := t.getCenterBankAcc(stub)
+		if err != nil {
+			return nil, mylog.Errorf("getInfo4Web: getCenterBankAcc failed. err=%s", err)
+		}
+		if cbAccB != nil {
+			cbEnt, err := t.getAccountEntity(stub, string(cbAccB))
+			if err != nil {
+				return nil, mylog.Errorf("getInfo4Web getAccountEntity failed. err=%s", err)
+			}
+			qwi.CirculateAmount = cbEnt.TotalAmount - cbEnt.RestAmount
+		}
 	}
 
 	retValue, err := json.Marshal(qwi)
@@ -2068,12 +2218,22 @@ func (t *KD) getUserAttrs(stub shim.ChaincodeStubInterface) (*UserAttrs, error) 
 	return &attrs, nil
 }
 
+func (t *KD) getAccountEntityKey(accName string) string {
+	return ACC_ENTITY_PREFIX + accName
+}
+func (t *KD) getAccountNameFromKey(entKey string) string {
+	return entKey[len(ACC_ENTITY_PREFIX):]
+}
+func (t *KD) getAccountLockInfoKey(accName string) string {
+	return ACC_AMTLOCK_PREFIX + accName
+}
+
 func (t *KD) getAccountEntity(stub shim.ChaincodeStubInterface, entName string) (*AccountEntity, error) {
 	var entB []byte
 	var cb AccountEntity
 	var err error
 
-	entB, err = stub.GetState(entName)
+	entB, err = stub.GetState(t.getAccountEntityKey(entName))
 	if err != nil {
 		return nil, err
 	}
@@ -2089,11 +2249,42 @@ func (t *KD) getAccountEntity(stub shim.ChaincodeStubInterface, entName string) 
 	return &cb, nil
 }
 
+func (t *KD) getAccountLockedAmount(stub shim.ChaincodeStubInterface, accName string, currTime int64) (int64, error) {
+	var acli AccountCoinLockInfo
+	var lockinfoKey = t.getAccountLockInfoKey(accName)
+	acliB, err := stub.GetState(lockinfoKey)
+	if err != nil {
+		return math.MaxInt64, mylog.Errorf("getAccountLockedAmount: GetState  failed. err=%s", err)
+	}
+
+	var lockAmt int64 = 0
+	if acliB == nil {
+		lockAmt = 0
+	} else {
+
+		err = json.Unmarshal(acliB, &acli)
+		if err != nil {
+			return math.MaxInt64, mylog.Errorf("getAccountLockedAmount: Unmarshal  failed. err=%s", err)
+		}
+
+		for _, lockCfg := range acli.LockList {
+			if lockCfg.LockEndTime > currTime {
+				lockAmt += lockCfg.LockAmount
+			}
+		}
+	}
+
+	mylog.Debug("getAccountLockedAmount: amount is %d for %s", lockAmt, accName)
+
+	return lockAmt, nil
+
+}
+
 func (t *KD) isEntityExists(stub shim.ChaincodeStubInterface, entName string) (bool, error) {
 	var entB []byte
 	var err error
 
-	entB, err = stub.GetState(entName)
+	entB, err = stub.GetState(t.getAccountEntityKey(entName))
 	if err != nil {
 		return false, err
 	}
@@ -2115,7 +2306,7 @@ func (t *KD) setAccountEntity(stub shim.ChaincodeStubInterface, cb *AccountEntit
 		return errors.New("marshal cb failed.")
 	}
 
-	err = t.putState_Ex(stub, cb.EntID, jsons)
+	err = t.putState_Ex(stub, t.getAccountEntityKey(cb.EntID), jsons)
 
 	if err != nil {
 		mylog.Error("PutState cb failed. err=%s", err)
@@ -2130,39 +2321,48 @@ func (t *KD) issueCoin(stub shim.ChaincodeStubInterface, cbID string, issueAmoun
 
 	var err error
 
+	if issueAmount < 0 {
+		return nil, mylog.Errorf("issueCoin issueAmount < 0.")
+	}
+	if issueAmount == 0 {
+		return nil, nil
+	}
+
 	var cb *AccountEntity
 	cb, err = t.getAccountEntity(stub, cbID)
 	if err != nil {
-		mylog.Error("getCenterBank failed. err=%s", err)
-		return nil, errors.New("getCenterBank failed.")
-	}
-	mylog.Debug("issue before:%+v", cb)
-
-	if issueAmount >= math.MaxInt64-cb.TotalAmount {
-		mylog.Error("issue amount will be overflow(%+v,%+v), reject.", math.MaxInt64, cb.TotalAmount)
-		return nil, errors.New("issue amount will be overflow.")
+		return nil, mylog.Errorf("getCenterBank failed. err=%s", err)
 	}
 
+	issueEntity, err := t.getAccountEntity(stub, COIN_ISSUE_ACC_ENTID)
+	if err != nil {
+		return nil, mylog.Errorf("issue: getIssueEntity failed. err=%s", err)
+	}
+
+	mylog.Debug("issue before:cb=%+v, issue=%+v", cb, issueEntity)
+
+	if issueAmount > issueEntity.RestAmount {
+		return nil, mylog.Errorf("issue amount not enougth(%v,%v), reject.", issueEntity.RestAmount, issueAmount)
+	}
+
+	issueEntity.RestAmount -= issueAmount
 	cb.TotalAmount += issueAmount
 	cb.RestAmount += issueAmount
-
-	mylog.Debug("issue after:%+v", cb)
 
 	err = t.setAccountEntity(stub, cb)
 	if err != nil {
 		return nil, mylog.Errorf("issue: setCenterBank failed. err=%s", err)
 	}
 
-	//虚拟一个超级账户，给央行发行货币。因为给央行发行货币，是不需要转账的源头的
-	var fromEntity AccountEntity
-	fromEntity.EntID = "198405051114"
-	fromEntity.EntType = -1
-	fromEntity.RestAmount = math.MaxInt64
-	fromEntity.TotalAmount = math.MaxInt64
-	fromEntity.Owner = "fanxiaotian"
+	err = t.setAccountEntity(stub, issueEntity)
+	if err != nil {
+		return nil, mylog.Errorf("issue: setIssueEntity failed. err=%s", err)
+	}
+
+	mylog.Debug("issue after:cb=%+v, issue=%+v", cb, issueEntity)
 
 	//这里只记录一下央行的收入，不记录支出
-	err = t.recordTranse(stub, cb, &fromEntity, TRANS_INCOME, "issue", "center bank issue coin.", issueAmount, issueTime)
+	err = t.recordTranse(stub, cb, issueEntity, TRANS_INCOME, "issue", "center bank issue coin.", issueAmount, issueTime)
 	if err != nil {
 		return nil, mylog.Errorf("issue: recordTranse failed. err=%s", err)
 	}
@@ -2194,62 +2394,69 @@ func (t *KD) transferCoin(stub shim.ChaincodeStubInterface, from, to, transType,
 	var fromEntity, toEntity *AccountEntity
 	fromEntity, err = t.getAccountEntity(stub, from)
 	if err != nil {
-		return nil, mylog.Errorf("getAccountEntity(id=%s) failed. err=%s", from, err)
+		return nil, mylog.Errorf("transferCoin: getAccountEntity(id=%s) failed. err=%s", from, err)
 	}
 	toEntity, err = t.getAccountEntity(stub, to)
 	if err != nil {
-		return nil, mylog.Errorf("getAccountEntity(id=%s) failed. err=%s", to, err)
+		return nil, mylog.Errorf("transferCoin: getAccountEntity(id=%s) failed. err=%s", to, err)
 	}
 
-	if fromEntity.RestAmount < amount {
-		return nil, mylog.Errorf("fromEntity(id=%s) restAmount not enough.", from)
+	//判断是否有锁定金额
+	lockAmt, err := t.getAccountLockedAmount(stub, from, transeTime)
+	if err != nil {
+		return nil, mylog.Errorf("transferCoin: getAccountLockedAmount(id=%s) failed. err=%s", from, err)
+	}
+
+	if fromEntity.RestAmount-lockAmt < amount {
+		return nil, mylog.Errorf("transferCoin: fromEntity(id=%s) restAmount not enough(%d,%d,%d).", from, fromEntity.RestAmount, lockAmt, amount)
 	}
 
 	//如果账户相同，并且账户相同时需要记录交易，记录并返回
 	if from == to && sameEntSaveTrans {
 		err = t.recordTranse(stub, fromEntity, toEntity, TRANS_PAY, transType, description, amount, transeTime)
 		if err != nil {
-			return nil, mylog.Errorf("setAccountEntity recordTranse fromEntity(id=%s) failed. err=%s", from, err)
+			return nil, mylog.Errorf("transferCoin: setAccountEntity recordTranse fromEntity(id=%s) failed. err=%s", from, err)
 		}
 
 		err = t.recordTranse(stub, toEntity, fromEntity, TRANS_INCOME, transType, description, amount, transeTime)
 		if err != nil {
-			return nil, mylog.Errorf("setAccountEntity recordTranse fromEntity(id=%s) failed. err=%s", from, err)
+			return nil, mylog.Errorf("transferCoin: setAccountEntity recordTranse fromEntity(id=%s) failed. err=%s", from, err)
 		}
 		return nil, nil
 	}
 
 	//账户相同时为什么单独处理？  因为如果走了下面的流程，setAccountEntity两次同一个账户，会导致账户余额变化。 除非在计算并设置完fromEntity之后，再获取一下toEntity，再计算toEntity，这样感觉太呆了
 
-	mylog.Debug("fromEntity before= %+v", fromEntity)
-	mylog.Debug("toEntity before= %+v", toEntity)
+	mylog.Debug("transferCoin: fromEntity before= %+v", fromEntity)
+	mylog.Debug("transferCoin: toEntity before= %+v", toEntity)
 
 	fromEntity.RestAmount -= amount
+
 	toEntity.RestAmount += amount
 	toEntity.TotalAmount += amount
 
-	mylog.Debug("fromEntity after= %+v", fromEntity)
-	mylog.Debug("toEntity after= %+v", toEntity)
+	mylog.Debug("transferCoin: fromEntity after= %+v", fromEntity)
+	mylog.Debug("transferCoin: toEntity after= %+v", toEntity)
 
 	err = t.setAccountEntity(stub, fromEntity)
 	if err != nil {
-		return nil, mylog.Errorf("setAccountEntity of fromEntity(id=%s) failed. err=%s", from, err)
+		return nil, mylog.Errorf("transferCoin: setAccountEntity of fromEntity(id=%s) failed. err=%s", from, err)
 	}
 
 	err = t.recordTranse(stub, fromEntity, toEntity, TRANS_PAY, transType, description, amount, transeTime)
 	if err != nil {
-		return nil, mylog.Errorf("setAccountEntity recordTranse fromEntity(id=%s) failed. err=%s", from, err)
+		return nil, mylog.Errorf("transferCoin: setAccountEntity recordTranse fromEntity(id=%s) failed. err=%s", from, err)
 	}
 
 	err = t.setAccountEntity(stub, toEntity)
 	if err != nil {
-		return nil, mylog.Errorf("setAccountEntity of toEntity(id=%s) failed. err=%s", to, err)
+		return nil, mylog.Errorf("transferCoin: setAccountEntity of toEntity(id=%s) failed. err=%s", to, err)
 	}
 
 	//两个账户的收入支出都记录交易
 	err = t.recordTranse(stub, toEntity, fromEntity, TRANS_INCOME, transType, description, amount, transeTime)
 	if err != nil {
-		return nil, mylog.Errorf("setAccountEntity recordTranse fromEntity(id=%s) failed. err=%s", from, err)
+		return nil, mylog.Errorf("transferCoin: setAccountEntity recordTranse fromEntity(id=%s) failed. err=%s", from, err)
 	}
 
 	return nil, err
@@ -2307,10 +2514,9 @@ func (t *KD) checkAccountName(accName string) error {
 }
 
 func (t *KD) saveAccountName(stub shim.ChaincodeStubInterface, accName string) error {
-	accB, err := stub.GetState(ALL_ACC_KEY)
+	accB, err := stub.GetState(ALL_ACC_INFO_KEY)
 	if err != nil {
-		mylog.Error("saveAccountName GetState failed.err=%s", err)
-		return err
+		return mylog.Errorf("saveAccountName GetState failed.err=%s", err)
 	}
 
 	var accs []byte
@@ -2321,22 +2527,46 @@ func (t *KD) saveAccountName(stub shim.ChaincodeStubInterface, accName string) e
 		accs = append(accs, MULTI_STRING_DELIM)
 	}
 
-	err = t.putState_Ex(stub, ALL_ACC_KEY, accs)
+	err = t.putState_Ex(stub, ALL_ACC_INFO_KEY, accs)
 	if err != nil {
-		mylog.Error("setCenterBankAcc PutState failed.err=%s", err)
-		return err
+		return mylog.Errorf("saveAccountName PutState(accs) failed.err=%s", err)
 	}
+
+	var asi AccountStatisticInfo
+	asiB, err := stub.GetState(ACC_STATIC_INFO_KEY)
+	if asiB == nil {
+		asi.AccountCount = 1
+	} else {
+		err = json.Unmarshal(asiB, &asi)
+		if err != nil {
+			return mylog.Errorf("saveAccountName Unmarshal failed.err=%s", err)
+		}
+		asi.AccountCount++
+	}
+
+	asiB, err = json.Marshal(asi)
+	if err != nil {
+		return mylog.Errorf("saveAccountName Marshal failed.err=%s", err)
+	}
+
+	err = t.putState_Ex(stub, ACC_STATIC_INFO_KEY, asiB)
+	if err != nil {
+		return mylog.Errorf("saveAccountName PutState(asiB) failed.err=%s", err)
+	}
+
 	return nil
 }
 
+/*
 func (t *KD) getAllAccountNames(stub shim.ChaincodeStubInterface) ([]byte, error) {
-	accB, err := stub.GetState(ALL_ACC_KEY)
+	accB, err := stub.GetState(ALL_ACC_INFO_KEY)
 	if err != nil {
 		mylog.Error("getAllAccountNames GetState failed.err=%s", err)
 		return nil, err
 	}
 	return accB, nil
 }
+*/
 
 func (t *KD) newAccount(stub shim.ChaincodeStubInterface, accName string, accType int, userName string, cert []byte, times int64, isCBAcc bool) ([]byte, error) {
 	mylog.Debug("Enter openAccount")
@@ -3901,7 +4131,7 @@ func (t *KD) financeBonus4OneRack(stub shim.ChaincodeStubInterface, rackid, fid 
 		return mylog.Errorf("financeBonus4OneRack:  PutState failed. err=%s.", err)
 	}
 
-	mylog.Debug("financeBonus4OneRack: rfi=%+v", rfi)
+	mylog.Info("financeBonus4OneRack: statistic(%v,%v,%v,%v), rfi=%+v", rfi.CEInfo.WareSales, rackProfit, sellerProfit, profit, rfi)
 
 	return nil
 }
@@ -4036,6 +4266,8 @@ func (t *KD) getUserInvestAmount(stub shim.ChaincodeStubInterface, accName, rack
 	if _, ok := rfi.UserAmountMap[accName]; !ok {
 		return 0, mylog.Errorf("getUserHistoryFinance: acc not exists in UserAmountMap.")
 	}
+
+	mylog.Debug("getUserHistoryFinance: rfi=%+v", rfi)
 
 	return rfi.UserAmountMap[accName], nil
 }
@@ -4325,6 +4557,7 @@ func (t *KD) payUserFinance(stub shim.ChaincodeStubInterface, accName, reacc, ra
 	}
 
 	mylog.Debug("payUserFinance: after reaccEnt = %+v", *reaccEnt)
+	mylog.Info("payUserFinance: %s pay %v,%v for %s,  rf=%+v", accName, investAmt, profit, reacc, reaccEnt.AccEnt_Ext_RackFinance)
 
 	return nil
 }
@@ -4682,15 +4915,10 @@ func (t *KD) isSetAccountPasswd(stub shim.ChaincodeStubInterface, accName string
 	return true, nil
 }
 
-func (t *KD) dumpWorldState(stub shim.ChaincodeStubInterface, queryTime int64, flushLimit int, needHash bool) ([]byte, error) {
-
-	keysIter, err := stub.RangeQueryState("", "")
-	if err != nil {
-		return nil, mylog.Errorf("getWorldState: keys operation failed. Error accessing state: %s", err)
-	}
-	defer keysIter.Close()
-
-	var outFile = "/home/kd_worldstate_" + strconv.FormatInt(queryTime, 10)
+func (t *KD) dumpWorldState(stub shim.ChaincodeStubInterface, queryTime int64, flushLimit int, needHash bool, currCcid string) ([]byte, error) {
+	//queryTime单位是毫秒
+	var timestamp = time.Unix(queryTime/1000, (queryTime-(queryTime/1000*1000))*1000000)
+	var outFile = "/home/kd_worldstate_" + timestamp.Format("20060102_150405.000") + "_" + currCcid[:8]
 	fHandle, err := os.OpenFile(outFile, os.O_RDWR|os.O_CREATE, 0755)
 	if err != nil {
 		return nil, mylog.Errorf("getWorldState: OpenFile failed. err=%s", err)
@@ -4712,11 +4940,17 @@ func (t *KD) dumpWorldState(stub shim.ChaincodeStubInterface, queryTime int64, f
 
 	var begTime = time.Now()
 	var flushSize = 0
+	keysIter, err := stub.RangeQueryState("", "")
+	if err != nil {
+		return nil, mylog.Errorf("getWorldState: keys operation failed. Error accessing state: %s", err)
+	}
+	defer keysIter.Close()
+
 	for keysIter.HasNext() {
 		qws.KeyCount++
 		key, valB, iterErr := keysIter.Next()
 		if iterErr != nil {
-			mylog.Errorf("getWorldState: getNext failed, %s", err)
+			mylog.Errorf("getWorldState: getNext failed, %s", iterErr)
 			qws.GetNextErr = true
 			continue
 		}
@@ -4785,7 +5019,7 @@ func (t *KD) dumpWorldState(stub shim.ChaincodeStubInterface, queryTime int64, f
 	return retJson, nil
 }
 
-func (t *KD) loadWorldState(stub shim.ChaincodeStubInterface, fileName string, needHash, sameKeyOverwrite bool) ([]byte, error) {
+func (t *KD) loadWorldState(stub shim.ChaincodeStubInterface, fileName string, needHash, sameKeyOverwrite bool, srcCcid string) ([]byte, error) {
 	var inFile = fmt.Sprintf("/home/%s", fileName)
 	fHandle, err := os.OpenFile(inFile, os.O_RDONLY, 0755)
 	if err != nil {
@@ -4817,8 +5051,7 @@ func (t *KD) loadWorldState(stub shim.ChaincodeStubInterface, fileName string, n
 			}
 
 			swsr.ReadErr = true
-			mylog.Errorf("setWorldState: ReadBytes failed. err=%s", err)
-			continue
+			return nil, mylog.Errorf("setWorldState: ReadBytes failed. err=%s", err)
 		}
 
 		swsr.FileLine++
@@ -4827,12 +5060,10 @@ func (t *KD) loadWorldState(stub shim.ChaincodeStubInterface, fileName string, n
 		var oneRecd []string
 		err = json.Unmarshal(lineB, &oneRecd)
 		if err != nil {
-			mylog.Errorf("setWorldState: Unmarshal failed. line=%s err=%s", string(lineB), err)
-			continue
+			return nil, mylog.Errorf("setWorldState: Unmarshal failed. line=%s err=%s", string(lineB), err)
 		}
 		if len(oneRecd) < 2 {
-			mylog.Errorf("setWorldState: oneRecd format error. oneRecd=%v", oneRecd)
-			continue
+			return nil, mylog.Errorf("setWorldState: oneRecd format error. oneRecd=%v", oneRecd)
 		}
 		var key = oneRecd[0]
 		var value = oneRecd[1]
@@ -4840,8 +5071,7 @@ func (t *KD) loadWorldState(stub shim.ChaincodeStubInterface, fileName string, n
 		if !sameKeyOverwrite {
 			testB, err := stub.GetState(key)
 			if err != nil {
-				mylog.Errorf("setWorldState: GetState failed. key=%s err=%s", key, err)
-				continue
+				return nil, mylog.Errorf("setWorldState: GetState failed. key=%s err=%s", key, err)
 			}
 			if testB != nil {
 				mylog.Debug("setWorldState: has key '%s', not Overwrite.", key)
@@ -4860,13 +5090,11 @@ func (t *KD) loadWorldState(stub shim.ChaincodeStubInterface, fileName string, n
 					var hash = md5.New()
 					_, err = io.WriteString(hash, key+value)
 					if err != nil {
-						mylog.Errorf("setWorldState: md5 create failed. key=%s.", key)
-						continue
+						return nil, mylog.Errorf("setWorldState: md5 create failed. key=%s.", key)
 					} else {
 						var newMd5 = hex.EncodeToString(hash.Sum(nil))
 						if md5val != newMd5 {
-							mylog.Errorf("setWorldState: md5 check failed. key=%s.", key)
-							continue
+							return nil, mylog.Errorf("setWorldState: md5 check failed. key=%s.", key)
 						}
 					}
 				}
@@ -4875,19 +5103,27 @@ func (t *KD) loadWorldState(stub shim.ChaincodeStubInterface, fileName string, n
 
 		valueB, err := base64.StdEncoding.DecodeString(value)
 		if err != nil {
-			mylog.Errorf("setWorldState: DecodeString failed. value=%s err=%s", value, err)
-			continue
+			return nil, mylog.Errorf("setWorldState: DecodeString failed. value=%s err=%s", value, err)
 		}
 
-		err = t.putState_Ex(stub, key, valueB)
+		newKey, newValB, err := t.dateConvertWhenUpdate(stub, srcCcid, key, valueB)
 		if err != nil {
-			mylog.Errorf("setWorldState: PutState_Ex failed. key=%s err=%s", key, err)
-			continue
+			return nil, mylog.Errorf("setWorldState: dateConvertWhenUpdate failed.  err=%s", err)
+		}
+
+		err = t.putState_Ex(stub, newKey, newValB)
+		if err != nil {
+			return nil, mylog.Errorf("setWorldState: PutState_Ex failed. key=%s err=%s", key, err)
 		}
 
 		swsr.KeyCount++
 
 		mylog.Debug("setWorldState: PutState_Ex Ok, key=%s.", key)
+	}
+
+	err = t.updateAfter(stub, srcCcid)
+	if err != nil {
+		return nil, mylog.Errorf("setWorldState: updateAfter failed.  err=%s", err)
 	}
 
 	var endTime = time.Now()
@@ -4897,6 +5133,95 @@ func (t *KD) loadWorldState(stub shim.ChaincodeStubInterface, fileName string, n
 	mylog.Info("setWorldState: result=%+v.", swsr)
 
 	return nil, nil
+}
+func (t *KD) dateConvertWhenUpdate(stub shim.ChaincodeStubInterface, srcCcid, key string, valueB []byte) (string, []byte, error) {
+	var err error
+	var newKey = key
+	var newValB = valueB
+
+	if srcCcid == "ef38784bad472d640839c1782232aac63985489ee624b67a2d2b23448b03ebfb" {
+		//1. 账户的key变化  因为老的账户的key没有前缀，所以根据json里的字段名来区分
+		if bytes.Contains(valueB, []byte("\"ocert\"")) && bytes.Contains(valueB, []byte("\"aucm\"")) && bytes.Contains(valueB, []byte("\"id\"")) {
+			mylog.Debug("updateDateConvert: got acc key:%s", key)
+			newKey = t.getAccountEntityKey(key)
+		}
+
+		//4. 修改第一条交易记录
+		if key == t.getTransInfoKey(stub, 1) {
+			mylog.Debug("updateDateConvert: got trans 1 key:%s", key)
+
+			var trans Transaction
+			err = json.Unmarshal(valueB, &trans)
+			if err != nil {
+				return "", nil, mylog.Errorf("updateDateConvert: Unmarshal(trans) failed. err=%s", err)
+			}
+			issueEntity, err := t.getAccountEntity(stub, COIN_ISSUE_ACC_ENTID)
+			if err != nil {
+				return "", nil, mylog.Errorf("updateDateConvert: getIssueEntity failed. err=%s", err)
+			}
+
+			trans.ToID = issueEntity.EntID
+			newValB, err = json.Marshal(trans)
+			if err != nil {
+				return "", nil, mylog.Errorf("updateDateConvert: Marshal(trans) failed. err=%s", err)
+			}
+		}
+	}
+
+	return newKey, newValB, nil
+}
+func (t *KD) updateAfter(stub shim.ChaincodeStubInterface, srcCcid string) error {
+
+	if srcCcid == "ef38784bad472d640839c1782232aac63985489ee624b67a2d2b23448b03ebfb" {
+		//2.  账户统计信息
+		accsB, err := stub.GetState(ALL_ACC_INFO_KEY)
+		if err != nil {
+			return mylog.Errorf("updateDateConvert: GetState(ALL_ACC_INFO_KEY) failed. err=%s", err)
+		}
+		var accCnt int64 = 0
+		if accsB != nil {
+			var allAccs = bytes.NewBuffer(accsB)
+			for {
+				_, err = allAccs.ReadBytes(MULTI_STRING_DELIM)
+				if err != nil {
+					if err == io.EOF {
+						break
+					} else {
+						return mylog.Errorf("updateDateConvert: ReadBytes failed. err=%s", err)
+					}
+				}
+				accCnt++
+			}
+		}
+
+		var asi AccountStatisticInfo
+
+		asi.AccountCount = accCnt
+
+		asiB, err := json.Marshal(asi)
+		if err != nil {
+			return mylog.Errorf("updateDateConvert: Marshal(asi) failed.err=%s", err)
+		}
+		err = t.putState_Ex(stub, ACC_STATIC_INFO_KEY, asiB)
+		if err != nil {
+			return mylog.Errorf("updateDateConvert: PutState(asiB) failed.err=%s", err)
+		}
+
+		//3.  发行货币的账户修改
+		issueEntity, err := t.getAccountEntity(stub, COIN_ISSUE_ACC_ENTID)
+		if err != nil {
+			return mylog.Errorf("updateDateConvert: getIssueEntity failed. err=%s", err)
+		}
+
+		issueEntity.RestAmount = issueEntity.RestAmount - 1000000000 //已给央行发了1000000000
+		err = t.setAccountEntity(stub, issueEntity)
+		if err != nil {
+			return mylog.Errorf("updateDateConvert: setAccountEntity failed. err=%s", err)
+		}
+
+	}
+
+	return nil
 }
 
 func (t *KD) getUserEntityKey(userName string) string {
