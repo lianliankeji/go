@@ -534,12 +534,21 @@ function __invokePreCheck(invokeFunc, invokeParams, user, TCert, cb) {
     cb(null, true)
 }
 
-function handle_query(params, res, req) { 
-    var body = {
-        code : retCode.OK,
-        msg: "OK",
-        result: ""
-    };
+var queryCache = {}
+
+function handle_query(params, res, req) {
+    var func = params.func;
+
+    //getInfoForWeb 做个缓存
+    if (func == "getInfoForWeb") {
+        var funcCache = queryCache[func]
+        if (funcCache != undefined) {
+            var nowTime = Date.now() / 1000
+            if (Math.abs(nowTime - funcCache.lastQTm) < funcCache.qIntv) {
+                return res.send(funcCache.body)
+            }
+        }
+    }
 
     logger.info("Enter Query")
     
@@ -547,7 +556,21 @@ function handle_query(params, res, req) {
         if (err) {
             return res.send(qBody)
         }
-        
+
+        if (func == "getInfoForWeb") {
+            var funcCache = queryCache[func]
+            if (funcCache == undefined) {
+                var tmpCache = {}
+                tmpCache.body = qBody
+                tmpCache.lastQTm = Date.now() / 1000
+                tmpCache.qIntv = 10  //刷新间隔
+                queryCache[func] = tmpCache
+            } else {
+                funcCache.body = qBody
+                funcCache.lastQTm = Date.now() / 1000
+            }
+        }
+
         return res.send(qBody)
     })
 }
@@ -1076,7 +1099,7 @@ function __getBlockInfo(latestBlockNum, queryTxCnt, txRecords, cb) {
                     var accountName = arr[4].trim()  //第5个元素为账户信息
                     //先过滤centerBank和kdcoinpool的交易
                     if (accountName.indexOf("centerBank") >= 0 || accountName.indexOf("kdcoinpool") >= 0) {
-                        continue
+                        accountName = (new Buffer(common.md5sum(accountName), 'hex')).toString('base64')
                     }
  
                     var txIdx = txRecords.length
