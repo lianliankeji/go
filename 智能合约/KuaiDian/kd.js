@@ -45,6 +45,7 @@ var eh = chain.getEventHub();
 
 var socketClientCnt = 0
 var sockEnvtChainUpdt = "chainDataUpdt"
+var sockChianUpdated = false
 
 process.on('exit', function (){
   logger.info(" ****  kd exit ****");
@@ -145,8 +146,11 @@ function handle_setenv(params, res, req){
         logger.setLogLevel(parseInt(value))
         body.result="set log level to " + value
         logger.info(body.result)
+    } else {
+        body.code=retCode.ENROLL_ERR;
+        body.msg="unknown env key."
+        logger.error("unknown env key=%s",key);
     }
-    
     
     res.send(body)
     return
@@ -481,12 +485,7 @@ function handle_invoke(params, res, req) {
                     logger.info("Invoke success: request=%j, results=%s",invokeRequest, results.result.toString());
                     
                     //通知前端数据更新
-                    if (socketClientCnt > 0) {
-                        __getPushDataForWeb(function(data) {
-                            sockio.sockets.emit(sockEnvtChainUpdt,data);//给所有客户端广播消息
-                        })
-                    }
-                    
+                    sockChianUpdated = true
                 });
                 tx.on('error', function (error) {
                     body.code=retCode.ERROR;
@@ -534,9 +533,23 @@ function __invokePreCheck(invokeFunc, invokeParams, user, TCert, cb) {
     cb(null, true)
 }
 
-var queryCache = {}
 
 function handle_query(params, res, req) {
+
+    logger.info("Enter Query")
+    
+    __cachedQuery(params, req, true, function(err, qBody){
+        if (err) {
+            return res.send(qBody)
+        }
+
+        return res.send(qBody)
+    })
+}
+
+
+var queryCache = {}
+function __cachedQuery(params, req, outputQReslt, cb) {
     var func = params.func;
 
     //getInfoForWeb 做个缓存
@@ -545,16 +558,14 @@ function handle_query(params, res, req) {
         if (funcCache != undefined) {
             var nowTime = Date.now() / 1000
             if (Math.abs(nowTime - funcCache.lastQTm) < funcCache.qIntv) {
-                return res.send(funcCache.body)
+                return cb(null, funcCache.body)
             }
         }
     }
 
-    logger.info("Enter Query")
-    
-    __execQuery(params, req, true, function(err, qBody){
+    __execQuery(params, req, outputQReslt, function(err, qBody){
         if (err) {
-            return res.send(qBody)
+            return cb(err, qBody)
         }
 
         if (func == "getInfoForWeb") {
@@ -571,8 +582,77 @@ function handle_query(params, res, req) {
             }
         }
 
-        return res.send(qBody)
+        return cb(null, qBody)
     })
+}
+
+function __execQuery(params, req, outputQReslt, cb) { 
+    var body = {
+        code : retCode.OK,
+        msg: "OK",
+        result: ""
+    };
+
+    logger.debug("Enter __execQuery")
+    
+    var enrollUser = params.usr;  
+    var func = params.func;
+
+    chain.getUser(enrollUser, function (err, user) {
+        if (err || !user.isEnrolled()) {
+            //获取用户失败，或者用户没有登陆。一般情况是没有注册该用户。
+
+            if (func == "isAccExists") { //如果是查询账户是否存在，这里返回不存在"0"
+                body.result = "0"
+                cb(null, body)
+                logger.warn("Query(%s): getUser failed, user %s not exsit, return 0.", func, enrollUser)
+                return 
+            } else if (func == "getBalance") { //如果是查询账户余额，这里返回"0"
+                body.result = "0"
+                cb(null, body)
+                logger.warn("Query(%s): getUser failed, user %s not exsit, return 0.", func, enrollUser)
+                return
+            }
+
+            body.code=retCode.GETUSER_ERR;
+            body.msg="query error"
+            cb(logger.errorf("Query(%s): failed to get user %s, err=%s", func, enrollUser, err),  body)
+            return
+        }
+
+        common.getCert(keyValStorePath, enrollUser, function (err, TCert) {
+            if (err) {
+                //目前发生错误的情况为证书文件不存在，是因为证书认证这个功能没加以前，就存在了一些用户 ，所以上面的getUser成功，而这里失败。 
+                //失败时，暂时特殊处理isAccExists和getBalance两个函数
+                if (func == "isAccExists") { //如果是查询账户是否存在，这里返回不存在"0"
+                    body.result = "0"
+                    cb(null, body)
+                    logger.warn("Query(%s): getCert failed, user %s not exsit, return 0.", func, enrollUser)
+                    return
+                } else if (func == "getBalance") { //如果是查询账户余额，这里返回"0"
+                    body.result = "0"
+                    cb(null, body)
+                    logger.warn("Query(%s): getCert failed, user %s not exsit, return 0.", func, enrollUser)
+                    return
+                }
+            
+                body.code=retCode.GETUSERCERT_ERR;
+                body.msg="query error"
+                cb(logger.errorf("Query(%s): failed to getUserCert %s, err=%s", func, enrollUser, err), body)
+                return
+            }
+            
+            logger.debug("**** run __execLiteQuery ****");
+  
+            __execLiteQuery(params, req, user, TCert, outputQReslt, function(err, qBody){
+                if (err) {
+                    return cb(err, qBody)
+                }
+
+                cb(null, qBody)
+            })
+        })
+    });
 }
 
 //轻量级查询，直接查询，不获取usr和cert等信息
@@ -778,75 +858,6 @@ function __execLiteQuery(params, req, user, TCert, outputQReslt, cb) {
                 logger.error("Query failed : request=%j, error=%j", queryRequest, error.msg);
             }
         }
-    });
-}
-
-function __execQuery(params, req, outputQReslt, cb) { 
-    var body = {
-        code : retCode.OK,
-        msg: "OK",
-        result: ""
-    };
-
-    logger.debug("Enter __execQuery")
-    
-    var enrollUser = params.usr;  
-    var func = params.func;
-
-    chain.getUser(enrollUser, function (err, user) {
-        if (err || !user.isEnrolled()) {
-            //获取用户失败，或者用户没有登陆。一般情况是没有注册该用户。
-
-            if (func == "isAccExists") { //如果是查询账户是否存在，这里返回不存在"0"
-                body.result = "0"
-                cb(null, body)
-                logger.warn("Query(%s): getUser failed, user %s not exsit, return 0.", func, enrollUser)
-                return 
-            } else if (func == "getBalance") { //如果是查询账户余额，这里返回"0"
-                body.result = "0"
-                cb(null, body)
-                logger.warn("Query(%s): getUser failed, user %s not exsit, return 0.", func, enrollUser)
-                return
-            }
-
-            body.code=retCode.GETUSER_ERR;
-            body.msg="query error"
-            cb(logger.errorf("Query(%s): failed to get user %s, err=%s", func, enrollUser, err),  body)
-            return
-        }
-
-        common.getCert(keyValStorePath, enrollUser, function (err, TCert) {
-            if (err) {
-                //目前发生错误的情况为证书文件不存在，是因为证书认证这个功能没加以前，就存在了一些用户 ，所以上面的getUser成功，而这里失败。 
-                //失败时，暂时特殊处理isAccExists和getBalance两个函数
-                if (func == "isAccExists") { //如果是查询账户是否存在，这里返回不存在"0"
-                    body.result = "0"
-                    cb(null, body)
-                    logger.warn("Query(%s): getCert failed, user %s not exsit, return 0.", func, enrollUser)
-                    return
-                } else if (func == "getBalance") { //如果是查询账户余额，这里返回"0"
-                    body.result = "0"
-                    cb(null, body)
-                    logger.warn("Query(%s): getCert failed, user %s not exsit, return 0.", func, enrollUser)
-                    return
-                }
-            
-                body.code=retCode.GETUSERCERT_ERR;
-                body.msg="query error"
-                cb(logger.errorf("Query(%s): failed to getUserCert %s, err=%s", func, enrollUser, err), body)
-                return
-            }
-            
-            logger.debug("**** run __execLiteQuery ****");
-  
-            __execLiteQuery(params, req, user, TCert, outputQReslt, function(err, qBody){
-                if (err) {
-                    return cb(err, qBody)
-                }
-
-                cb(null, qBody)
-            })
-        })
     });
 }
 
@@ -1148,7 +1159,7 @@ function __getUserAffiliation(usrType) {
 
 
 /* socket.io 处理 begin  */
-function __getPushDataForWeb(cb) { 
+function __getPushDataForWeb(useCache, cb) { 
 
     var params = {}
     var req = null
@@ -1159,26 +1170,27 @@ function __getPushDataForWeb(cb) {
 
     logger.debug('enter getPushData.')
     
-    __execQuery(params, req, false, function(err, qBody){
-        logger.debug('enter getPushData callback. err=%s', err)
-        
+    var queryFun = __execQuery
+    if (useCache == true) 
+        queryFun = __cachedQuery
+    
+    queryFun(params, req, false, function(err, qBody){
         if (err) {
             return cb(qBody)
         }
 
-        logger.debug('enter getPushData callback, data=%j', qBody)
-        
         return cb(qBody)
     })
 }
 
 //of的内容getchaininfo，是跟在客户端请求的url中，ip后面。 sockio中叫namespace。 客户端请求时，url使用，例如io.connect("https://XXX/getchaininfo") 用这个参数可以区分多种请求
-sockio.of('/getchaininfo') 
-  .on('connection', function(socket){
+var nmspce_getchaininfo = '/getchaininfo'
+sockio.of(nmspce_getchaininfo).on('connection', function(socket){
     socketClientCnt++
     logger.info('a user connected, client count=%d', socketClientCnt);
 
-    __getPushDataForWeb(function(data) {
+    //这里用cache数据，防止前端同时连接数太多
+    __getPushDataForWeb(true, function(data) {
         socket.emit(sockEnvtChainUpdt, data);
     })
     
@@ -1187,6 +1199,23 @@ sockio.of('/getchaininfo')
         logger.info('user disconnected, client count=%d', socketClientCnt);
     });
 });
+
+
+//定时看是否有需要推送到数据
+setInterval(function() {
+    if (sockChianUpdated != true) {
+        return
+    }
+
+    //通知前端数据更新
+    if (socketClientCnt > 0) {
+        //这里不用cache，因为已经是每10秒通知一次了，而且通知时，肯定是有数据更新了
+        __getPushDataForWeb(false, function(data) {
+            sockio.of(nmspce_getchaininfo).emit(sockEnvtChainUpdt, data);//给所有客户端广播消息
+            sockChianUpdated = false
+        })
+    }
+}, 10*1000) //10秒
 /* socket.io 处理   end  */
 
 
