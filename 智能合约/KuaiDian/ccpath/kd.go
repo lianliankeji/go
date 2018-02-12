@@ -361,8 +361,9 @@ type AccountCoinLockInfo struct {
 }
 
 type QueryBalanceAndLocked struct {
-	Balance int64 `json:"balance"`
-	Locked  int64 `json:"locked"`
+	Balance      int64         `json:"balance"`
+	LockedAmount int64         `json:"lockedamt"`
+	LockCfg      []CoinLockCfg `json:"lockcfg"`
 }
 
 var ErrNilEntity = errors.New("nil entity.")
@@ -675,7 +676,7 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 		return t.transferCoin(stub, accName, toAcc, transType, description, transAmount, invokeTime, sameEntSaveTransFlag)
 
 	} else if function == "transefer3" { //带锁定期功能
-		var argCount = fixedArgCount + 7
+		var argCount = fixedArgCount + 6
 		if len(args) < argCount {
 			return nil, mylog.Errorf("Invoke(transeferLockAmt) miss arg, got %d, at least need %d.", len(args), argCount)
 		}
@@ -696,44 +697,16 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 			sameEntSaveTransFlag = true
 		}
 
-		var lockEndDate int64
-		var lockAmt int64
-		lockEndDate, err = strconv.ParseInt(args[fixedArgCount+5], 0, 64)
+		var lockCfgs = args[fixedArgCount+5]
+
+		var lockedTotal int64 = 0
+		lockedTotal, err = t.setAccountLockAmountCfg(stub, toAcc, lockCfgs, false)
 		if err != nil {
-			return nil, mylog.Errorf("Invoke(transeferLockAmt): convert lockEndDate(%s) failed. err=%s", args[fixedArgCount+5], err)
-		}
-		lockAmt, err = strconv.ParseInt(args[fixedArgCount+6], 0, 64)
-		if err != nil {
-			return nil, mylog.Errorf("Invoke(transeferLockAmt): convert lockAmt(%s) failed. err=%s", args[fixedArgCount+6], err)
+			return nil, mylog.Errorf("Invoke(transeferLockAmt): setAccountLockAmountCfg failed. err=%s", err)
 		}
 
-		if lockAmt > transAmount {
-			return nil, mylog.Errorf("Invoke(transeferLockAmt): lockAmt(%d) > transAmount(%d).", lockAmt, transAmount)
-		}
-
-		var acli AccountCoinLockInfo
-		var lockinfoKey = t.getAccountLockInfoKey(toAcc)
-		acliB, err := stub.GetState(lockinfoKey)
-		if err != nil {
-			return nil, mylog.Errorf("Invoke(transeferLockAmt): GetState  failed. err=%s", err)
-		}
-		if acliB == nil {
-			acli.AccName = toAcc
-			acli.LockList = append(acli.LockList, CoinLockCfg{LockEndTime: lockEndDate, LockAmount: lockAmt})
-		} else {
-			err = json.Unmarshal(acliB, &acli)
-			if err != nil {
-				return nil, mylog.Errorf("Invoke(transeferLockAmt): Unmarshal  failed. err=%s", err)
-			}
-			acli.LockList = append(acli.LockList, CoinLockCfg{LockEndTime: lockEndDate, LockAmount: lockAmt})
-		}
-		acliB, err = json.Marshal(acli)
-		if err != nil {
-			return nil, mylog.Errorf("Invoke(transeferLockAmt): Marshal  failed. err=%s", err)
-		}
-		err = t.putState_Ex(stub, lockinfoKey, acliB)
-		if err != nil {
-			return nil, mylog.Errorf("Invoke(transeferLockAmt): putState_Ex  failed. err=%s", err)
+		if lockedTotal > transAmount {
+			return nil, mylog.Errorf("Invoke(transeferLockAmt): lockAmt(%d) > transAmount(%d).", lockedTotal, transAmount)
 		}
 
 		return t.transferCoin(stub, accName, toAcc, transType, description, transAmount, invokeTime, sameEntSaveTransFlag)
@@ -1191,7 +1164,7 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 		var rackSalesCfg = args[fixedArgCount+1]
 		return t.financeBonus(stub, fid, rackSalesCfg, invokeTime)
 
-	} else if function == "setWorldState" {
+	} else if function == "updateState" {
 		if !t.isAdmin(stub, accName) {
 			return nil, mylog.Errorf("Invoke(setWorldState) can't exec by %s.", accName)
 		}
@@ -1214,6 +1187,44 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 		var srcCcid = args[fixedArgCount+3]
 
 		return t.loadWorldState(stub, fileName, needHash, sameKeyOverwrite, srcCcid)
+	} else if function == "lockAccAmt" {
+		if !t.isAdmin(stub, accName) {
+			return nil, mylog.Errorf("Invoke(lockAccAmt) can't exec by %s.", accName)
+		}
+
+		var argCount = fixedArgCount + 4
+		if len(args) < argCount {
+			return nil, mylog.Errorf("Invoke(lockAccAmt) miss arg, got %d, need %d.", len(args), argCount)
+		}
+
+		var lockedAccName = args[fixedArgCount]
+		var lockCfgs = args[fixedArgCount+1]
+
+		var overwriteOld = false //是否覆盖已有记录
+		if args[fixedArgCount+2] == "1" {
+			overwriteOld = true
+		}
+
+		var canLockMoreThanRest = false //是否可以锁定比剩余额度多的额度
+		if args[fixedArgCount+3] == "1" {
+			canLockMoreThanRest = true
+		}
+
+		lockEnt, err := t.getAccountEntity(stub, lockedAccName)
+		if err != nil {
+			return nil, mylog.Errorf("Invoke(lockAccAmt): getAccountEntity failed. err=%s", err)
+		}
+
+		lockedTotal, err := t.setAccountLockAmountCfg(stub, lockedAccName, lockCfgs, overwriteOld)
+		if err != nil {
+			return nil, mylog.Errorf("Invoke(lockAccAmt): setAccountLockAmountCfg failed. err=%s", err)
+		}
+
+		if !canLockMoreThanRest && lockedTotal > lockEnt.RestAmount {
+			return nil, mylog.Errorf("Invoke(lockAccAmt): lock amount > account rest(%d,%d).", lockedTotal, lockEnt.RestAmount)
+		}
+
+		return nil, nil
 	}
 
 	//event
@@ -1286,11 +1297,14 @@ func (t *KD) Query(stub shim.ChaincodeStubInterface, function string, args []str
 
 		qbal.Balance = queryEntity.RestAmount
 
-		lockAmt, err := t.getAccountLockedAmount(stub, accName, queryTime)
+		qbal.LockedAmount, qbal.LockCfg, err = t.getAccountLockedAmount(stub, accName, queryTime)
 		if err != nil {
 			return nil, mylog.Errorf("getBalanceAndLocked: getAccountLockedAmount(id=%s) failed. err=%s", accName, err)
 		}
-		qbal.Locked = lockAmt
+
+		if qbal.LockCfg == nil {
+			qbal.LockCfg = []CoinLockCfg{} //初始化为空，即使没查到数据也会返回'[]'
+		}
 
 		qbalB, err := json.Marshal(qbal)
 		if err != nil {
@@ -1564,7 +1578,7 @@ func (t *KD) Query(stub shim.ChaincodeStubInterface, function string, args []str
 
 		return []byte(strconv.FormatInt(restCap, 10)), nil
 
-	} else if function == "getWorldState" {
+	} else if function == "getDataState" {
 		if !t.isAdmin(stub, accName) {
 			return nil, mylog.Errorf("getWorldState: %s can't query.", accName)
 		}
@@ -1641,7 +1655,7 @@ func (t *KD) Query(stub shim.ChaincodeStubInterface, function string, args []str
 			return []byte(strconv.FormatInt(ERRCODE_TRANS_AMOUNT_INVALID, 10)), nil
 		}
 		//看是否有锁定金额
-		lockAmt, err := t.getAccountLockedAmount(stub, accName, queryTime)
+		lockAmt, _, err := t.getAccountLockedAmount(stub, accName, queryTime)
 		if err != nil {
 			return nil, mylog.Errorf("transPreCheck: getAccountLockedAmount(id=%s) failed. err=%s", accName, err)
 		}
@@ -2249,12 +2263,13 @@ func (t *KD) getAccountEntity(stub shim.ChaincodeStubInterface, entName string) 
 	return &cb, nil
 }
 
-func (t *KD) getAccountLockedAmount(stub shim.ChaincodeStubInterface, accName string, currTime int64) (int64, error) {
+func (t *KD) getAccountLockedAmount(stub shim.ChaincodeStubInterface, accName string, currTime int64) (int64, []CoinLockCfg, error) {
 	var acli AccountCoinLockInfo
+
 	var lockinfoKey = t.getAccountLockInfoKey(accName)
 	acliB, err := stub.GetState(lockinfoKey)
 	if err != nil {
-		return math.MaxInt64, mylog.Errorf("getAccountLockedAmount: GetState  failed. err=%s", err)
+		return math.MaxInt64, nil, mylog.Errorf("getAccountLockedAmount: GetState  failed. err=%s", err)
 	}
 
 	var lockAmt int64 = 0
@@ -2264,7 +2279,7 @@ func (t *KD) getAccountLockedAmount(stub shim.ChaincodeStubInterface, accName st
 
 		err = json.Unmarshal(acliB, &acli)
 		if err != nil {
-			return math.MaxInt64, mylog.Errorf("getAccountLockedAmount: Unmarshal  failed. err=%s", err)
+			return math.MaxInt64, nil, mylog.Errorf("getAccountLockedAmount: Unmarshal  failed. err=%s", err)
 		}
 
 		for _, lockCfg := range acli.LockList {
@@ -2276,7 +2291,7 @@ func (t *KD) getAccountLockedAmount(stub shim.ChaincodeStubInterface, accName st
 
 	mylog.Debug("getAccountLockedAmount: amount is %d for %s", lockAmt, accName)
 
-	return lockAmt, nil
+	return lockAmt, acli.LockList, nil
 
 }
 
@@ -2402,7 +2417,7 @@ func (t *KD) transferCoin(stub shim.ChaincodeStubInterface, from, to, transType,
 	}
 
 	//判断是否有锁定金额
-	lockAmt, err := t.getAccountLockedAmount(stub, from, transeTime)
+	lockAmt, _, err := t.getAccountLockedAmount(stub, from, transeTime)
 	if err != nil {
 		return nil, mylog.Errorf("transferCoin: getAccountLockedAmount(id=%s) failed. err=%s", from, err)
 	}
@@ -3257,7 +3272,7 @@ func (t *KD) getOneAccAllocTxRecds(stub shim.ChaincodeStubInterface, accName str
 
 		oneString = string(oneStringB[:len(oneStringB)-1]) //去掉末尾的分隔符
 		var pqaeat *QueryAccEarningAllocTx
-		pqaeat, err = t.procOneAccAllocTx(stub, oneString, accName)
+		pqaeat, err = t.getOneAccAllocTx(stub, oneString, accName)
 		if err != nil {
 			return nil, mylog.Errorf("getOneAccAllocTxRecds walker failed. acc=%s, err=%s", accName, err)
 		}
@@ -3276,7 +3291,7 @@ func (t *KD) getOneAccAllocTxRecds(stub shim.ChaincodeStubInterface, accName str
 	return resultJson, nil
 }
 
-func (t *KD) procOneAccAllocTx(stub shim.ChaincodeStubInterface, txKey, accName string) (*QueryAccEarningAllocTx, error) {
+func (t *KD) getOneAccAllocTx(stub shim.ChaincodeStubInterface, txKey, accName string) (*QueryAccEarningAllocTx, error) {
 	eat, err := t.getAllocTxRecdEntity(stub, txKey)
 	if err != nil {
 		return nil, mylog.Errorf("procOneAccAllocTx getAllocTxRecdEntity failed. txKey=%s, err=%s", txKey, err)
@@ -3412,6 +3427,7 @@ func (t *KD) setRackEncourageScoreCfg(stub shim.ChaincodeStubInterface, rackid, 
 		rangePercentMap[rang] = percent
 	}
 
+	//注意，这里如果下面没有排序sepc.RangeList， 则不能使用 rangePercentMap 来临时存储数据，会导致各个节点上sepc.RangeList数据顺序不一致
 	for rang, _ := range rangePercentMap {
 		sepc.RangeList = append(sepc.RangeList, rang)
 	}
@@ -5143,7 +5159,9 @@ func (t *KD) dateConvertWhenUpdate(stub shim.ChaincodeStubInterface, srcCcid, ke
 		//1. 账户的key变化  因为老的账户的key没有前缀，所以根据json里的字段名来区分
 		if bytes.Contains(valueB, []byte("\"ocert\"")) && bytes.Contains(valueB, []byte("\"aucm\"")) && bytes.Contains(valueB, []byte("\"id\"")) {
 			mylog.Debug("updateDateConvert: got acc key:%s", key)
-			newKey = t.getAccountEntityKey(key)
+			if !strings.Contains(key, ACC_ENTITY_PREFIX) {
+				newKey = t.getAccountEntityKey(key)
+			}
 		}
 
 		//4. 修改第一条交易记录
@@ -5166,6 +5184,7 @@ func (t *KD) dateConvertWhenUpdate(stub shim.ChaincodeStubInterface, srcCcid, ke
 				return "", nil, mylog.Errorf("updateDateConvert: Marshal(trans) failed. err=%s", err)
 			}
 		}
+	} else if srcCcid == "400298896ad7f0695d5e5d2379b67caa7a05930d158ccd0704ddc2696e3d156b" {
 	}
 
 	return newKey, newValB, nil
@@ -5222,6 +5241,78 @@ func (t *KD) updateAfter(stub shim.ChaincodeStubInterface, srcCcid string) error
 	}
 
 	return nil
+}
+
+func (t *KD) setAccountLockAmountCfg(stub shim.ChaincodeStubInterface, accName, cfgStr string, overwriteOld bool) (int64, error) {
+	//配置格式如下 "2000:1518407999000;3000:1518407999000..."，防止输入错误，先去除两边的空格，然后再去除两边的';'（防止split出来空字符串）
+	var newCfg = strings.Trim(strings.TrimSpace(cfgStr), ";")
+
+	var err error
+	var amount int64
+	var endtime int64
+	var lockedTotal int64 = 0
+
+	var endtimeAmtList []CoinLockCfg
+
+	//含有";"，表示有多条配置，没有则说明只有一条配置
+	var amtEndtimeArr = strings.Split(newCfg, ";")
+
+	for _, ele := range amtEndtimeArr {
+		var pair = strings.Split(ele, ":")
+		if len(pair) != 2 {
+			return 0, mylog.Errorf("setAccountLockAmountCfg parse error, '%s' format error 1.", ele)
+		}
+
+		amount, err = strconv.ParseInt(pair[0], 0, 64)
+		if err != nil {
+			return 0, mylog.Errorf("setAccountLockAmountCfg parse error, '%s' format error 2.", ele)
+		}
+
+		endtime, err = strconv.ParseInt(pair[1], 0, 64)
+		if err != nil {
+			return 0, mylog.Errorf("setAccountLockAmountCfg parse error, '%s' format error 3.", ele)
+		}
+
+		lockedTotal += amount
+
+		//这里要用list来存储，不能用map。map遍历时为随机顺序，会导致下面存储时各个节点的数据不一致
+		endtimeAmtList = append(endtimeAmtList, CoinLockCfg{LockEndTime: endtime, LockAmount: amount})
+	}
+
+	var acli AccountCoinLockInfo
+	var lockinfoKey = t.getAccountLockInfoKey(accName)
+
+	if overwriteOld {
+		acli.AccName = accName
+	} else {
+		acliB, err := stub.GetState(lockinfoKey)
+		if err != nil {
+			return 0, mylog.Errorf("setAccountLockAmountCfg: GetState  failed. err=%s", err)
+		}
+		if acliB == nil {
+			acli.AccName = accName
+		} else {
+			err = json.Unmarshal(acliB, &acli)
+			if err != nil {
+				return 0, mylog.Errorf("setAccountLockAmountCfg: Unmarshal failed. err=%s", err)
+			}
+		}
+	}
+
+	acli.LockList = append(acli.LockList, endtimeAmtList...)
+
+	acliB, err := json.Marshal(acli)
+	if err != nil {
+		return 0, mylog.Errorf("setAccountLockAmountCfg: Marshal  failed. err=%s", err)
+	}
+	err = t.putState_Ex(stub, lockinfoKey, acliB)
+	if err != nil {
+		return 0, mylog.Errorf("setAccountLockAmountCfg: putState_Ex  failed. err=%s", err)
+	}
+
+	mylog.Debug("setAccountLockAmountCfg: acliB=%s", string(acliB))
+
+	return lockedTotal, nil
 }
 
 func (t *KD) getUserEntityKey(userName string) string {

@@ -1,3 +1,5 @@
+"use strict";
+
 // app index
 const express = require('express');  
 const app = express();  
@@ -105,6 +107,9 @@ var attrKeys = {
 var admin = "WebAppAdmin"
 var adminPasswd = "DJY27pEnl16d"
 
+
+const globalCcid = "9a0c3e65bc9a0c6d6ec35cdfba88fa3f7c67faed464f78fabbf593bde7cd4787"
+
 var getCertAttrKeys = [attrKeys.USRROLE, attrKeys.USRNAME, attrKeys.USRTYPE]
 
 var isConfidential = false;
@@ -155,9 +160,6 @@ function handle_setenv(params, res, req){
     res.send(body)
     return
 }
-
-
-const globalCcid = "400298896ad7f0695d5e5d2379b67caa7a05930d158ccd0704ddc2696e3d156b"
 
 // restfull
 function handle_deploy(params, res, req){  
@@ -267,12 +269,13 @@ function handle_invoke(params, res, req) {
             }
 
             var acc = params.acc;
+            var invokeTime = Date.now()
             var invokeRequest = {
                 chaincodeID: ccId,
                 fcn: func,
                 confidential: isConfidential,
                 attrs: getCertAttrKeys,  //代码里会获取用户的attr，这里要开启
-                args: [enrollUser, acc,  Date.now() + ""],  //getTime()要转为字符串
+                args: [enrollUser, acc,  invokeTime + ""],  //getTime()要转为字符串
                 userCert: TCert
             }
 
@@ -336,10 +339,32 @@ function handle_invoke(params, res, req) {
                 if (sameEntSaveTrans == undefined)
                     sameEntSaveTrans = "1" //默认记录
                 
-                var lockEndTime = params.letm
-                var lockAmt = params.lamt
+                var lockEndtmAmtMap = {}
+                var parseError = __parseLockAmountCfg(params.lcfg, invokeTime, lockEndtmAmtMap)
+                if (parseError) {
+                    logger.error("invoke(%s): failed, err=%s", func, parseError);
+                    body.code=retCode.ERROR;
+                    body.msg= util.format("tx error: %s", parseError)
+                    res.send(body) 
+                    return
+                }
                 
-                if (lockAmt > amt) {
+                var newLockCfgs = ""
+                var totalLockAmt = 0
+                for (var lockEndTime in lockEndtmAmtMap){
+                    var lamt = lockEndtmAmtMap[lockEndTime]
+                    totalLockAmt += lamt
+                    if (lockEndTime <=  invokeTime) {
+                        logger.error("invoke(%s): failed, err=lock end time must big than now.", func);
+                        body.code=retCode.ERROR;
+                        body.msg="tx error: lock end time must big than now."
+                        res.send(body) 
+                        return
+                    }
+                    newLockCfgs += util.format("%d:%d;", lamt, lockEndTime)
+                }
+                
+                if (totalLockAmt > amt) {
                     logger.error("invoke(%s): failed, err=lock amount big than transefer-amount.", func);
                     body.code=retCode.ERROR;
                     body.msg="tx error: lock amount big than transefer-amount."
@@ -347,7 +372,7 @@ function handle_invoke(params, res, req) {
                     return
                 }
 
-                invokeRequest.args.push(reacc, transType, description, amt, sameEntSaveTrans, lockEndTime, lockAmt)
+                invokeRequest.args.push(reacc, transType, description, amt, sameEntSaveTrans, newLockCfgs)
             } else if (func == "updateEnv") {
                 var key = params.key;
                 var value = params.val;
@@ -448,6 +473,7 @@ function handle_invoke(params, res, req) {
                 invokeRequest.args.push(authAcc, authUser, authCert)
                 
             } else if (func == "setWorldState") {
+                invokeRequest.fcn = "updateState"
                 var fileName = params.fnm;
                 var needHash = params.hash;
                 if (needHash == undefined)
@@ -459,6 +485,42 @@ function handle_invoke(params, res, req) {
                 var srcCcid = params.sccid;
                 
                 invokeRequest.args.push(fileName, needHash, sameKeyOverwrite, srcCcid)
+            } else if (func == "lockAccAmt") {
+                var lockedAccName = params.lacc;
+                var lockedCfgs = params.lcfg;
+                var overwriteOld = params.owo;
+                if (overwriteOld == undefined)
+                    overwriteOld = "0"  //默认不覆盖已有记录
+                var canLockMoreThanRest = params.clmtr
+                if (canLockMoreThanRest == undefined)
+                    canLockMoreThanRest = "0"  //默认不能lock比余额多的金额
+                
+                var lockEndtmAmtMap = {}
+                var parseError = __parseLockAmountCfg(lockedCfgs, invokeTime, lockEndtmAmtMap)
+                if (parseError) {
+                    logger.error("invoke(%s): failed, err=%s", func, parseError);
+                    body.code=retCode.ERROR;
+                    body.msg= util.format("tx error: %s", parseError)
+                    res.send(body) 
+                    return
+                }
+                
+                var newLockCfgs = ""
+                var totalLockAmt = 0
+                for (var lockEndTime in lockEndtmAmtMap){
+                    var lamt = lockEndtmAmtMap[lockEndTime]
+                    totalLockAmt += lamt
+                    if (lockEndTime <=  invokeTime) {
+                        logger.error("invoke(%s): failed, err=lock end time must big than now.", func);
+                        body.code=retCode.ERROR;
+                        body.msg="tx error: lock end time must big than now."
+                        res.send(body) 
+                        return
+                    }
+                    newLockCfgs += util.format("%d:%d;", lamt, lockEndTime)
+                }
+                
+                invokeRequest.args.push(lockedAccName, newLockCfgs, overwriteOld, canLockMoreThanRest)
             }
 
             __invokePreCheck(func, params, user, TCert, function(err, checkOk){
@@ -533,10 +595,52 @@ function __invokePreCheck(invokeFunc, invokeParams, user, TCert, cb) {
     cb(null, true)
 }
 
+function __parseLockAmountCfg(lockCfgs, currTime, tmAmtMap) {
+    var cfgArr = lockCfgs.split(';')
+    var newLockCfgs = ""
+    for (var i=0; i<cfgArr.length; i++){
+        var cfg = cfgArr[i]
+        if (cfg.length == 0)
+            continue
+        
+        var pair=cfg.split(':')
+        if (pair.length != 2) {
+            return Error("lock config format error1.")
+        }
+        var lockAmt = parseInt(pair[0])
+        if (lockAmt == NaN) {
+            return Error("lock config format error2.")
+        }
+        
+        var lockEndTimeStr = pair[1]
+        var lockEndTime = 0
+        var daysIdx = lockEndTimeStr.indexOf('days')
+        if (daysIdx > 0) {
+            var days = parseInt(lockEndTimeStr.substr(0, daysIdx))
+            if (days == NaN) {
+                return Error("lock config format error3.")
+            }
+            lockEndTime = currTime + days*24*3600*1000 //单位毫秒
+        } else {
+            lockEndTime = parseInt(lockEndTimeStr)
+            if (lockEndTime == NaN) {
+                return Error("lock config format error4.")
+            }
+        }
+        
+        if (tmAmtMap[lockEndTime] == undefined)
+            tmAmtMap[lockEndTime] = lockAmt
+        else
+            tmAmtMap[lockEndTime] += lockAmt
+    }
+    
+    return null
+}
+
 
 function handle_query(params, res, req) {
-
-    logger.info("Enter Query")
+    //这个日志不在这里打，因为下面的cache机制可能不会实际执行查询，从而导致没有查询结果的打印
+    //logger.info("Enter Query")
     
     __cachedQuery(params, req, true, function(err, qBody){
         if (err) {
@@ -561,6 +665,11 @@ function __cachedQuery(params, req, outputQReslt, cb) {
                 return cb(null, funcCache.body)
             }
         }
+    }
+    
+    //下面会执行实际查询，在这里打印
+    if (outputQReslt == true) {    
+        logger.info("Enter Query")
     }
 
     __execQuery(params, req, outputQReslt, function(err, qBody){
@@ -767,6 +876,7 @@ function __execLiteQuery(params, req, user, TCert, outputQReslt, cb) {
         var fid = params.fid
         queryRequest.args.push(rackid, fid)
     } else if (func == "getWorldState") {
+        queryRequest.fcn = "getDataState"
         var needHash = params.hash
         if (needHash == undefined) 
             needHash = "0"    //默认不用hash
@@ -1186,36 +1296,56 @@ function __getPushDataForWeb(useCache, cb) {
 //of的内容getchaininfo，是跟在客户端请求的url中，ip后面。 sockio中叫namespace。 客户端请求时，url使用，例如io.connect("https://XXX/getchaininfo") 用这个参数可以区分多种请求
 var nmspce_getchaininfo = '/getchaininfo'
 sockio.of(nmspce_getchaininfo).on('connection', function(socket){
+
+    var timer = null
+
     socketClientCnt++
     logger.info('a user connected, client count=%d', socketClientCnt);
 
     //这里用cache数据，防止前端同时连接数太多
     __getPushDataForWeb(true, function(data) {
         socket.emit(sockEnvtChainUpdt, data);
+        //如果有客户端接入，启动定时推送定时器
+        if (socketClientCnt == 1){
+            timer = __startClientEmitTimer()
+        }
     })
     
     socket.on('disconnect', function(){
         socketClientCnt--
+        //没有监听客户端时，关闭定时推送定时器
+        if (socketClientCnt <= 0 && timer != null) {
+            __stopClientEmitTimer(timer)
+            timer = null
+        }
+
         logger.info('user disconnected, client count=%d', socketClientCnt);
     });
 });
 
 
-//定时看是否有需要推送到数据
-setInterval(function() {
-    if (sockChianUpdated != true) {
-        return
-    }
+//定时推送数据到客户端的定时器。为什么要定时器？  因为如果有数据变化（invoke调用时）就通知前端，当数据变化十分频繁时会造成很大压力
+function __startClientEmitTimer() {
+    var timer = setInterval(function() {
+        if (sockChianUpdated != true) {
+            return
+        }
 
-    //通知前端数据更新
-    if (socketClientCnt > 0) {
-        //这里不用cache，因为已经是每10秒通知一次了，而且通知时，肯定是有数据更新了
-        __getPushDataForWeb(false, function(data) {
-            sockio.of(nmspce_getchaininfo).emit(sockEnvtChainUpdt, data);//给所有客户端广播消息
-            sockChianUpdated = false
-        })
-    }
-}, 10*1000) //10秒
+        //通知前端数据更新
+        if (socketClientCnt > 0) {
+            //这里不用cache，因为已经是每10秒通知一次了，而且通知时，肯定是有数据更新了
+            __getPushDataForWeb(false, function(data) {
+                sockio.of(nmspce_getchaininfo).emit(sockEnvtChainUpdt, data);//给所有客户端广播消息
+                sockChianUpdated = false
+            })
+        }
+    }, 10*1000) //10秒
+                
+    return timer
+}
+function __stopClientEmitTimer(timer) {
+    clearInterval(timer)
+}
 /* socket.io 处理   end  */
 
 
