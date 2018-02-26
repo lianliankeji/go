@@ -21,8 +21,6 @@ import (
 	"github.com/hyperledger/fabric/core/crypto/primitives"
 )
 
-var mylog = InitMylog("kd")
-
 const (
 	ENT_CENTERBANK = 1
 	ENT_COMPANY    = 2
@@ -36,12 +34,12 @@ const (
 	ATTR_USRNAME = "usrname"
 	ATTR_USRTYPE = "usrtype"
 
-	//因为目前账户entity的key是账户名，为了防止自己定义的如下key和账户名冲突，所以下面的key里都含有特殊字符
+	//每个key都加上前缀，便于区分，也便于以后在线升级时处理方便
 	TRANSSEQ_PREFIX      = "!kd@txSeqPre~"          //序列号生成器的key的前缀。使用的是worldState存储
 	TRANSINFO_PREFIX     = "!kd@txInfoPre~"         //全局交易信息的key的前缀。使用的是worldState存储
 	ONE_ACC_TRANS_PREFIX = "!kd@oneAccTxPre~"       //存储单个账户的交易的key前缀
-	UER_ENTITY_PREFIX    = "!kd@usrEntPre~"         //存储某个用户的用户信息的key前缀。目前用户名和账户名相同，而账户entity的key是账户名，所以用户entity加个前缀区分
-	ACC_ENTITY_PREFIX    = "!kd@accEntPre~"         //存储某个账户的账户信息的key前缀。目前用户名和账户名相同，而账户entity的key是账户名，所以用户entity加个前缀区分
+	UER_ENTITY_PREFIX    = "!kd@usrEntPre~"         //存储某个用户的用户信息的key前缀。
+	ACC_ENTITY_PREFIX    = "!kd@accEntPre~"         //存储某个账户的账户信息的key前缀。
 	CENTERBANK_ACC_KEY   = "!kd@centerBankAccKey@!" //央行账户的key。使用的是worldState存储
 	ALL_ACC_INFO_KEY     = "!kd@allAccInfoKey@!"    //存储所有账户名的key。使用的是worldState存储
 	ACC_STATIC_INFO_KEY  = "!kd@accStatcInfoKey@!"  //存储所有账户统计信息的key。
@@ -366,6 +364,9 @@ type QueryBalanceAndLocked struct {
 	LockCfg      []CoinLockCfg `json:"lockcfg"`
 }
 
+var mylog = InitMylog("kd")
+var myCrypto = MyCryptoNew()
+
 var ErrNilEntity = errors.New("nil entity.")
 
 type KD struct {
@@ -553,10 +554,15 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 			return nil, errors.New("Invoke(account) miss arg.")
 		}
 
-		userCert, err := base64.StdEncoding.DecodeString(args[fixedArgCount])
+		userCertEncrypt, err := base64.StdEncoding.DecodeString(args[fixedArgCount])
 		if err != nil {
 			mylog.Error("Invoke(account) DecodeString failed. err=%s", err)
 			return nil, errors.New("Invoke(account) DecodeString failed.")
+		}
+
+		userCert, err := myCrypto.AESDecrypt(256, []byte(CERT_ENCRYPT_KEY), []byte(CERT_ENCRYPT_IV), userCertEncrypt)
+		if err != nil {
+			return nil, mylog.Errorf("Invoke(account): AESDecrypt failed. err=%s", err)
 		}
 
 		usrType = 0
@@ -573,10 +579,14 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 			return nil, errors.New("Invoke(accountCB) miss arg.")
 		}
 
-		userCert, err := base64.StdEncoding.DecodeString(args[fixedArgCount])
+		userCertEncrypt, err := base64.StdEncoding.DecodeString(args[fixedArgCount])
 		if err != nil {
 			mylog.Error("Invoke(accountCB) DecodeString failed. err=%s", err)
 			return nil, errors.New("Invoke(accountCB) DecodeString failed.")
+		}
+		userCert, err := myCrypto.AESDecrypt(256, []byte(CERT_ENCRYPT_KEY), []byte(CERT_ENCRYPT_IV), userCertEncrypt)
+		if err != nil {
+			return nil, mylog.Errorf("Invoke(account): AESDecrypt failed. err=%s", err)
 		}
 
 		tmpByte, err := t.getCenterBankAcc(stub)
@@ -653,7 +663,12 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 			sameEntSaveTransFlag = true
 		}
 
-		var pwd = args[fixedArgCount+5]
+		var pwdBase64 = args[fixedArgCount+5]
+		pwd, err := t.decodeAccountPasswd(pwdBase64)
+		if err != nil {
+			return nil, mylog.Errorf("Invoke(resetAccPwd): decodeAccountPasswd (%s) failed. err=%s", pwdBase64, err)
+		}
+		mylog.Debug("Invoke(transeferUsePwd): pwd=%s", pwd)
 
 		//验证密码
 		setPwd, err := t.isSetAccountPasswd(stub, accName, accountEnt)
@@ -699,14 +714,14 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 
 		var lockCfgs = args[fixedArgCount+5]
 
-		var lockedTotal int64 = 0
-		lockedTotal, err = t.setAccountLockAmountCfg(stub, toAcc, lockCfgs, false)
+		var lockedThistime int64 = 0
+		lockedThistime, _, err = t.setAccountLockAmountCfg(stub, toAcc, lockCfgs, false)
 		if err != nil {
 			return nil, mylog.Errorf("Invoke(transeferLockAmt): setAccountLockAmountCfg failed. err=%s", err)
 		}
 
-		if lockedTotal > transAmount {
-			return nil, mylog.Errorf("Invoke(transeferLockAmt): lockAmt(%d) > transAmount(%d).", lockedTotal, transAmount)
+		if lockedThistime > transAmount {
+			return nil, mylog.Errorf("Invoke(transeferLockAmt): lockAmt(%d) > transAmount(%d).", lockedThistime, transAmount)
 		}
 
 		return t.transferCoin(stub, accName, toAcc, transType, description, transAmount, invokeTime, sameEntSaveTransFlag)
@@ -1215,7 +1230,7 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 			return nil, mylog.Errorf("Invoke(lockAccAmt): getAccountEntity failed. err=%s", err)
 		}
 
-		lockedTotal, err := t.setAccountLockAmountCfg(stub, lockedAccName, lockCfgs, overwriteOld)
+		_, lockedTotal, err := t.setAccountLockAmountCfg(stub, lockedAccName, lockCfgs, overwriteOld)
 		if err != nil {
 			return nil, mylog.Errorf("Invoke(lockAccAmt): setAccountLockAmountCfg failed. err=%s", err)
 		}
@@ -1225,6 +1240,69 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface, function string, args []st
 		}
 
 		return nil, nil
+	} else if function == "setAccCfg1" { //设置交易密码
+		var argCount = fixedArgCount + 1
+		if len(args) < argCount {
+			return nil, mylog.Errorf("Invoke(setAccPwd) miss arg, got %d, need %d.", len(args), argCount)
+		}
+
+		setPwd, err := t.isSetAccountPasswd(stub, accName, accountEnt)
+		if err != nil {
+			return nil, mylog.Errorf("Invoke(setAccPwd): IsSetAccountPasswd failed. err=%s, acc=%s", err, accName)
+		}
+		//如果已设置，则报错
+		if setPwd {
+			return nil, mylog.Errorf("Invoke(setAccPwd): pwd is setted, do nothing, acc=%s", accName)
+		}
+
+		var pwdBase64 = args[fixedArgCount]
+		pwd, err := t.decodeAccountPasswd(pwdBase64)
+		if err != nil {
+			return nil, mylog.Errorf("Invoke(resetAccPwd): decodeAccountPasswd (%s) failed. err=%s", pwdBase64, err)
+		}
+		mylog.Debug("Invoke(setAccPwd): pwd=%s", pwd)
+
+		return nil, t.setAccountPasswd(stub, accName, pwd, accountEnt)
+
+	} else if function == "setAccCfg2" { //重置交易密码
+		var argCount = fixedArgCount + 1
+		if len(args) < argCount {
+			return nil, mylog.Errorf("Invoke(resetAccPwd) miss arg, got %d, need %d.", len(args), argCount)
+		}
+
+		var pwdBase64 = args[fixedArgCount]
+		pwd, err := t.decodeAccountPasswd(pwdBase64)
+		if err != nil {
+			return nil, mylog.Errorf("Invoke(resetAccPwd): decodeAccountPasswd (%s) failed. err=%s", pwdBase64, err)
+		}
+		mylog.Debug("Invoke(resetAccPwd): pwd=%s", pwd)
+
+		return nil, t.setAccountPasswd(stub, accName, pwd, accountEnt)
+
+	} else if function == "setAccCfg3" { //修改交易密码
+		var argCount = fixedArgCount + 2
+		if len(args) < argCount {
+			return nil, mylog.Errorf("Invoke(chgAccPwd) miss arg, got %d, need %d.", len(args), argCount)
+		}
+
+		var oldpwd, newpwd string
+		var oldpwdBase64 = args[fixedArgCount]
+		var newpwdBase64 = args[fixedArgCount+1]
+
+		oldpwd, err = t.decodeAccountPasswd(oldpwdBase64)
+		if err != nil {
+			return nil, mylog.Errorf("Invoke(chgAccPwd): decodeAccountPasswd o(%s) failed. err=%s", oldpwdBase64, err)
+		}
+		newpwd, err = t.decodeAccountPasswd(newpwdBase64)
+		if err != nil {
+			return nil, mylog.Errorf("Invoke(chgAccPwd): decodeAccountPasswd n(%s) failed. err=%s", newpwdBase64, err)
+		}
+
+		mylog.Debug("Invoke(chgAccPwd): opwd=%s", oldpwd)
+		mylog.Debug("Invoke(chgAccPwd): npwd=%s", newpwd)
+
+		return nil, t.changeAccountPasswd(stub, accName, oldpwd, newpwd, accountEnt)
+
 	}
 
 	//event
@@ -1668,7 +1746,7 @@ func (t *KD) Query(stub shim.ChaincodeStubInterface, function string, args []str
 			return []byte(strconv.FormatInt(ERRCODE_TRANS_BALANCE_NOT_ENOUGH_BYLOCK, 10)), nil
 		}
 
-		//收款账户是否存在
+		//收款账户是否存在  这个检查放到最后执行
 		exists, err := t.isEntityExists(stub, toAcc)
 		if err != nil {
 			return nil, mylog.Errorf("transPreCheck: isEntityExists(%s) failed. err=%s", toAcc, err)
@@ -2148,10 +2226,10 @@ func (t *KD) verifySign(stub shim.ChaincodeStubInterface, certificate []byte) (b
 		return false, errors.New("Failed getting binding")
 	}
 
-	mylog.Debug("passed certificate [% x]", certificate)
-	mylog.Debug("passed sigma [% x]", sigma)
-	mylog.Debug("passed payload [% x]", payload)
-	mylog.Debug("passed binding [% x]", binding)
+	//mylog.Debug("passed certificate [% x]", certificate)
+	//mylog.Debug("passed sigma [% x]", sigma)
+	//mylog.Debug("passed payload [% x]", payload)
+	//mylog.Debug("passed binding [% x]", binding)
 
 	ok, err := stub.VerifySignature(
 		certificate,
@@ -2442,16 +2520,16 @@ func (t *KD) transferCoin(stub shim.ChaincodeStubInterface, from, to, transType,
 
 	//账户相同时为什么单独处理？  因为如果走了下面的流程，setAccountEntity两次同一个账户，会导致账户余额变化。 除非在计算并设置完fromEntity之后，再获取一下toEntity，再计算toEntity，这样感觉太呆了
 
-	mylog.Debug("transferCoin: fromEntity before= %+v", fromEntity)
-	mylog.Debug("transferCoin: toEntity before= %+v", toEntity)
+	//mylog.Debug("transferCoin: fromEntity before= %+v", fromEntity)
+	//mylog.Debug("transferCoin: toEntity before= %+v", toEntity)
 
 	fromEntity.RestAmount -= amount
 
 	toEntity.RestAmount += amount
 	toEntity.TotalAmount += amount
 
-	mylog.Debug("transferCoin: fromEntity after= %+v", fromEntity)
-	mylog.Debug("transferCoin: toEntity after= %+v", toEntity)
+	//mylog.Debug("transferCoin: fromEntity after= %+v", fromEntity)
+	//mylog.Debug("transferCoin: toEntity after= %+v", toEntity)
 
 	err = t.setAccountEntity(stub, fromEntity)
 	if err != nil {
@@ -4017,6 +4095,7 @@ func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, f
 	}
 
 	mylog.Debug("userBuyFinance: ri=%+v fi=%+v rfi=%+v", ri, fi, rfi)
+	mylog.Debug("userBuyFinance: rfiJson=%s", string(rfiJson))
 
 	return nil, nil
 }
@@ -4489,7 +4568,7 @@ func (t *KD) payUserFinance(stub shim.ChaincodeStubInterface, accName, reacc, ra
 
 	var profit int64 = 0
 	var delKeyList []string
-	var paidFidMap = make(map[string]int)
+	var paidFidList []string
 
 	for rfkey, _ := range reaccEnt.RFInfoMap {
 		r, f := t.getRackFinanceFromMapKey(rfkey)
@@ -4537,7 +4616,7 @@ func (t *KD) payUserFinance(stub shim.ChaincodeStubInterface, accName, reacc, ra
 
 		//delete(reaccEnt.RFInfoMap, rfkey)
 		delKeyList = append(delKeyList, rfkey)
-		paidFidMap[f] = 0
+		paidFidList = append(paidFidList, f)
 	}
 
 	var totalAmt = investAmt + profit
@@ -4556,7 +4635,7 @@ func (t *KD) payUserFinance(stub shim.ChaincodeStubInterface, accName, reacc, ra
 	}
 
 	//将赎回的理财期号写入已赎回列表
-	for fid, _ := range paidFidMap {
+	for _, fid := range paidFidList {
 		if !t.strSliceContains(reaccEnt.PaidFidList, fid) {
 			reaccEnt.PaidFidList = append(reaccEnt.PaidFidList, fid)
 		}
@@ -4845,8 +4924,6 @@ func (t *KD) queryAccRackFinanceTx(stub shim.ChaincodeStubInterface, accName str
 
 /* ----------------------- 货架融资相关 end ----------------------- */
 
-var myhash = MyHashNew()
-
 func (t *KD) setAccountPasswd(stub shim.ChaincodeStubInterface, accName, pwd string, accEnt *AccountEntity) error {
 	var ent *AccountEntity
 	var err error
@@ -4867,7 +4944,7 @@ func (t *KD) setAccountPasswd(stub shim.ChaincodeStubInterface, accName, pwd str
 		salt = append(salt, b)
 	}
 
-	hash, err := myhash.GenCipher(pwd, []byte(salt))
+	hash, err := myCrypto.GenCipher(pwd, []byte(salt))
 	if err != nil {
 		return mylog.Errorf("setAccountPasswd: GenCipher failed.err=%s, acc=%s", err, accName)
 	}
@@ -4899,7 +4976,7 @@ func (t *KD) authAccountPasswd(stub shim.ChaincodeStubInterface, accName, pwd st
 		return false, mylog.Errorf("AuthAccountPasswd: Cipher is nil, acc=%s", accName)
 	}
 
-	ok, err := myhash.AuthPass(ent.Cipher, pwd)
+	ok, err := myCrypto.AuthPass(ent.Cipher, pwd)
 	if err != nil {
 		return false, mylog.Errorf("AuthAccountPasswd: AuthPass failed.err=%s, acc=%s", err, accName)
 	}
@@ -4929,6 +5006,38 @@ func (t *KD) isSetAccountPasswd(stub shim.ChaincodeStubInterface, accName string
 	}
 
 	return true, nil
+}
+
+func (t *KD) changeAccountPasswd(stub shim.ChaincodeStubInterface, accName, oldpwd, newpwd string, accEnt *AccountEntity) error {
+	ok, err := t.authAccountPasswd(stub, accName, oldpwd, accEnt)
+	if err != nil {
+		return mylog.Errorf("changeAccountPasswd: authAccountPasswd failed.err=%s, acc=%s", err, accName)
+	}
+	if !ok {
+		return mylog.Errorf("changeAccountPasswd: authAccountPasswd not pass.")
+	}
+
+	err = t.setAccountPasswd(stub, accName, newpwd, accEnt)
+	if err != nil {
+		return mylog.Errorf("changeAccountPasswd: setAccountPasswd failed.err=%s, acc=%s", err, accName)
+	}
+
+	return nil
+}
+
+func (t *KD) decodeAccountPasswd(pwdBase64 string) (string, error) {
+
+	pwdEncrypt, err := base64.StdEncoding.DecodeString(pwdBase64)
+	if err != nil {
+		return "", mylog.Errorf("decodeAccountPasswd: DecodeString failed. err=%s", err)
+	}
+
+	pwdB, err := myCrypto.AESDecrypt(256, []byte(PWD_ENCRYPT_KEY), []byte(PWD_ENCRYPT_IV), pwdEncrypt)
+	if err != nil {
+		return "", mylog.Errorf("decodeAccountPasswd: AESDecrypt failed. err=%s", err)
+	}
+
+	return string(pwdB), nil
 }
 
 func (t *KD) dumpWorldState(stub shim.ChaincodeStubInterface, queryTime int64, flushLimit int, needHash bool, currCcid string) ([]byte, error) {
@@ -5243,13 +5352,14 @@ func (t *KD) updateAfter(stub shim.ChaincodeStubInterface, srcCcid string) error
 	return nil
 }
 
-func (t *KD) setAccountLockAmountCfg(stub shim.ChaincodeStubInterface, accName, cfgStr string, overwriteOld bool) (int64, error) {
+func (t *KD) setAccountLockAmountCfg(stub shim.ChaincodeStubInterface, accName, cfgStr string, overwriteOld bool) (int64, int64, error) {
 	//配置格式如下 "2000:1518407999000;3000:1518407999000..."，防止输入错误，先去除两边的空格，然后再去除两边的';'（防止split出来空字符串）
 	var newCfg = strings.Trim(strings.TrimSpace(cfgStr), ";")
 
 	var err error
 	var amount int64
 	var endtime int64
+	var lockedThisTime int64 = 0
 	var lockedTotal int64 = 0
 
 	var endtimeAmtList []CoinLockCfg
@@ -5260,20 +5370,20 @@ func (t *KD) setAccountLockAmountCfg(stub shim.ChaincodeStubInterface, accName, 
 	for _, ele := range amtEndtimeArr {
 		var pair = strings.Split(ele, ":")
 		if len(pair) != 2 {
-			return 0, mylog.Errorf("setAccountLockAmountCfg parse error, '%s' format error 1.", ele)
+			return 0, 0, mylog.Errorf("setAccountLockAmountCfg parse error, '%s' format error 1.", ele)
 		}
 
 		amount, err = strconv.ParseInt(pair[0], 0, 64)
 		if err != nil {
-			return 0, mylog.Errorf("setAccountLockAmountCfg parse error, '%s' format error 2.", ele)
+			return 0, 0, mylog.Errorf("setAccountLockAmountCfg parse error, '%s' format error 2.", ele)
 		}
 
 		endtime, err = strconv.ParseInt(pair[1], 0, 64)
 		if err != nil {
-			return 0, mylog.Errorf("setAccountLockAmountCfg parse error, '%s' format error 3.", ele)
+			return 0, 0, mylog.Errorf("setAccountLockAmountCfg parse error, '%s' format error 3.", ele)
 		}
 
-		lockedTotal += amount
+		lockedThisTime += amount
 
 		//这里要用list来存储，不能用map。map遍历时为随机顺序，会导致下面存储时各个节点的数据不一致
 		endtimeAmtList = append(endtimeAmtList, CoinLockCfg{LockEndTime: endtime, LockAmount: amount})
@@ -5287,32 +5397,36 @@ func (t *KD) setAccountLockAmountCfg(stub shim.ChaincodeStubInterface, accName, 
 	} else {
 		acliB, err := stub.GetState(lockinfoKey)
 		if err != nil {
-			return 0, mylog.Errorf("setAccountLockAmountCfg: GetState  failed. err=%s", err)
+			return 0, 0, mylog.Errorf("setAccountLockAmountCfg: GetState  failed. err=%s", err)
 		}
 		if acliB == nil {
 			acli.AccName = accName
 		} else {
 			err = json.Unmarshal(acliB, &acli)
 			if err != nil {
-				return 0, mylog.Errorf("setAccountLockAmountCfg: Unmarshal failed. err=%s", err)
+				return 0, 0, mylog.Errorf("setAccountLockAmountCfg: Unmarshal failed. err=%s", err)
 			}
 		}
 	}
 
 	acli.LockList = append(acli.LockList, endtimeAmtList...)
 
+	for _, ele := range acli.LockList {
+		lockedTotal += ele.LockAmount
+	}
+
 	acliB, err := json.Marshal(acli)
 	if err != nil {
-		return 0, mylog.Errorf("setAccountLockAmountCfg: Marshal  failed. err=%s", err)
+		return 0, 0, mylog.Errorf("setAccountLockAmountCfg: Marshal  failed. err=%s", err)
 	}
 	err = t.putState_Ex(stub, lockinfoKey, acliB)
 	if err != nil {
-		return 0, mylog.Errorf("setAccountLockAmountCfg: putState_Ex  failed. err=%s", err)
+		return 0, 0, mylog.Errorf("setAccountLockAmountCfg: putState_Ex  failed. err=%s", err)
 	}
 
 	mylog.Debug("setAccountLockAmountCfg: acliB=%s", string(acliB))
 
-	return lockedTotal, nil
+	return lockedThisTime, lockedTotal, nil
 }
 
 func (t *KD) getUserEntityKey(userName string) string {
@@ -5374,6 +5488,7 @@ func (t *KD) putState_Ex(stub shim.ChaincodeStubInterface, key string, value []b
 	if key == "" {
 		return mylog.Errorf("PutState_Ex key err.")
 	}
+	mylog.Debug("putState_Ex: k=%s,v=%s", key, string(value))
 	return stub.PutState(key, value)
 }
 func (t *KD) strSliceContains(list []string, value string) bool {

@@ -2,22 +2,23 @@ package main
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/md5"
-	//"crypto/rand"
 	"crypto/sha512"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 )
 
-type MyHash struct {
+type MyCrypto struct {
 }
 
-func MyHashNew() *MyHash {
-	return &MyHash{}
+func MyCryptoNew() *MyCrypto {
+	return &MyCrypto{}
 }
 
-func (mh *MyHash) genHash(salt []byte, pwd string) ([]byte, error) {
+func (mh *MyCrypto) genHash(salt []byte, pwd string) ([]byte, error) {
 	var err error
 
 	var saltLen = len(salt)
@@ -59,7 +60,7 @@ func (mh *MyHash) genHash(salt []byte, pwd string) ([]byte, error) {
 	return sha512Sum, nil
 }
 
-func (mh *MyHash) GenCipher(pwd string, salt []byte) ([]byte, error) {
+func (mh *MyCrypto) GenCipher(pwd string, salt []byte) ([]byte, error) {
 	var err error
 
 	/* 不能在智能合约中生成随机的salt，因为每个peer上生成的不一样，而salt又要保存在链上，会导致各peer数据不一致
@@ -90,7 +91,7 @@ func (mh *MyHash) GenCipher(pwd string, salt []byte) ([]byte, error) {
 	return []byte(str), nil
 }
 
-func (mh *MyHash) AuthPass(cipher []byte, pwd string) (bool, error) {
+func (mh *MyCrypto) AuthPass(cipher []byte, pwd string) (bool, error) {
 
 	var sliceArr = bytes.Split(cipher, []byte("$"))
 	if len(sliceArr) < 3 {
@@ -117,4 +118,63 @@ func (mh *MyHash) AuthPass(cipher []byte, pwd string) (bool, error) {
 	}
 
 	return false, nil
+}
+
+func (me *MyCrypto) AESEncrypt(bits int, key, iv, data []byte) ([]byte, error) {
+	var err error
+
+	if bits != 128 && bits != 192 && bits != 256 {
+		return nil, mylog.Errorf("AESEncrypt: bits must be 128 or 192 or 256.")
+	}
+	if len(key)*8 < bits {
+		return nil, mylog.Errorf("AESEncrypt: key must longer than %d bytes.", bits/8)
+	}
+	var newKey = key[:bits/8]
+
+	if len(iv) < aes.BlockSize {
+		return nil, mylog.Errorf("AESEncrypt: iv must longer than %d bytes.", aes.BlockSize)
+	}
+	var newIv = iv[:aes.BlockSize]
+
+	block, err := aes.NewCipher(newKey)
+	if err != nil {
+		return nil, mylog.Errorf("AESEncrypt: NewCipher failed, err=%s", err)
+	}
+
+	//CFB模式
+	stream := cipher.NewCFBEncrypter(block, newIv)
+
+	encrypted := make([]byte, len(data))
+	stream.XORKeyStream(encrypted, data)
+
+	return encrypted, nil
+}
+func (me *MyCrypto) AESDecrypt(bits int, key, iv, data []byte) ([]byte, error) {
+	var err error
+
+	if bits != 128 && bits != 192 && bits != 256 {
+		return nil, mylog.Errorf("AESDecrypt: bits must be 128 or 192 or 256.")
+	}
+	if len(key)*8 < bits {
+		return nil, mylog.Errorf("AESDecrypt: key must longer than %d.", bits)
+	}
+	var newKey = key[:bits/8]
+
+	if len(iv) < aes.BlockSize {
+		return nil, mylog.Errorf("AESDecrypt: iv must longer than %d bytes.", aes.BlockSize)
+	}
+	var newIv = iv[:aes.BlockSize]
+
+	block, err := aes.NewCipher(newKey)
+	if err != nil {
+		return nil, mylog.Errorf("AESDecrypt: NewCipher failed, err=%s", err)
+	}
+
+	//CFB模式
+	stream := cipher.NewCFBDecrypter(block, newIv)
+
+	decrypted := make([]byte, len(data))
+	stream.XORKeyStream(decrypted, data)
+
+	return decrypted, nil
 }

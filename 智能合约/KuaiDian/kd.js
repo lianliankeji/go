@@ -12,7 +12,7 @@ const sockio = require('socket.io')(http, {path: '/kdsocketio'});
 const bodyParser = require('body-parser');  
 
 const hfc = require('hfc');
-//const fs = require('fs');
+const fs = require('fs');
 const util = require('util');
 
 const request = require('request');
@@ -21,6 +21,7 @@ const asyncc = require('async');
 //const readline = require('readline');
 const user = require('./lib/user');
 const common = require('./lib/common');
+const hash = require('./lib/hash');
 
 var logger = common.createLog("kd")
 logger.setLogLevel(logger.logLevel.INFO)
@@ -69,7 +70,7 @@ app.use(bodyParser.urlencoded({ extended: false }))
 // parse application/json  
 app.use(bodyParser.json())  
 
-var retCode = {
+const retCode = {
     OK:                     0,
     ACCOUNT_NOT_EXISTS:     1001,
     ENROLL_ERR:             1002,
@@ -83,39 +84,54 @@ var retCode = {
     ERROR:                  0xffffffff
 }
 
+const chainRetCode = {
+	//BEGIN                        10000
+    //交易预检查错误码
+	TRANS_PAYACC_NOTEXIST           : 10001,    //付款账号不存在
+	TRANS_PAYEEACC_NOTEXIST         : 10002,    //收款账号不存在
+	TRANS_BALANCE_NOTENOUGH         : 10003,    //账号余额不足
+	TRANS_PASSWD_INVALID            : 10004,    //密码错误
+	TRANS_AMOUNT_INVALID            : 10005,    //转账金额不合法
+	TRANS_BALANCE_NOTENOUGH_BYLOCK  : 10006,    //锁定部分余额导致余额不足
+}
+
+
+
 //此处的用户类型要和chainCode中的一致
-var userType = {
+const userType = {
     CENTERBANK: 1,
     COMPANY:    2,
     PROJECT:    3,
     PERSON:     4
 }
 
-var attrRoles = {
+const attrRoles = {
     CENTERBANK: "centerbank",
     COMPANY:    "company",
     PROJECT:    "project",
     PERSON:     "person"
 }
 
-var attrKeys = {
+const attrKeys = {
     USRROLE: "usrrole",
     USRNAME: "usrname",
     USRTYPE: "usrtype"
 }
 
-var admin = "WebAppAdmin"
-var adminPasswd = "DJY27pEnl16d"
+const admin = "WebAppAdmin"
+const adminPasswd = "DJY27pEnl16d"
 
 
-const globalCcid = "9a0c3e65bc9a0c6d6ec35cdfba88fa3f7c67faed464f78fabbf593bde7cd4787"
+const globalCcid = "a71bc9939c8774ff6ebbea6984110e4a8307db002a31d40b50cefce2fe3342da"
 
-var getCertAttrKeys = [attrKeys.USRROLE, attrKeys.USRNAME, attrKeys.USRTYPE]
+const getCertAttrKeys = [attrKeys.USRROLE, attrKeys.USRNAME, attrKeys.USRTYPE]
 
 var isConfidential = false;
 
+var kd_cfg
+
 //注册处理函数
-var routeTable = {
+const routeTable = {
     '/kd/deploy'      : {'GET' : handle_deploy,    'POST' : handle_deploy},
     '/kd/register'    : {'GET' : handle_register,  'POST' : handle_register},
     '/kd/invoke'      : {'GET' : handle_invoke,    'POST' : handle_invoke},
@@ -234,7 +250,21 @@ function handle_deploy(params, res, req){
 
 
 function handle_invoke(params, res, req) { 
-    logger.info("Enter Invoke")
+    
+    __execInvoke(params, req, true, function(err, iBody){
+        if (err) {
+            res.send(iBody)
+            return
+        }
+        
+        res.send(iBody)
+    })
+}
+
+function __execInvoke(params, req, outputQReslt, cb)  {
+
+    if (outputQReslt == true)
+        logger.info("Enter Invoke")
 
     var body = {
         code : retCode.OK,
@@ -247,20 +277,16 @@ function handle_invoke(params, res, req) {
     
     chain.getUser(enrollUser, function (err, user) {
         if (err || !user.isEnrolled()) {
-            logger.error("invoke(%s): failed to get user: %s ", func, enrollUser, err);
             body.code=retCode.GETUSER_ERR;
             body.msg="tx error"
-            res.send(body) 
-            return
+            return cb(logger.errorf("invoke(%s): failed to get user: %s ", func, enrollUser, err), body) 
         }
 
         common.getCert(keyValStorePath, enrollUser, function (err, TCert) {
             if (err) {
-                logger.error("invoke(%s): failed to getUserCert: %s. err=%s", func, enrollUser, err);
                 body.code=retCode.GETUSERCERT_ERR;
                 body.msg="tx error"
-                res.send(body) 
-                return
+                return cb(logger.errorf("invoke(%s): failed to getUserCert: %s. err=%s", func, enrollUser, err), body) 
             }
 
             var ccId = params.ccId;
@@ -280,7 +306,16 @@ function handle_invoke(params, res, req) {
             }
 
             if (func == "account" || func == "accountCB") {
-                invokeRequest.args.push(TCert.encode().toString('base64'))
+                //加密后转为base64
+                var cert = TCert.encode()
+                var encryptedCert = hash.aes_encrypt(256, kd_cfg.CERT_ENCRYPT_KEY, kd_cfg.CERT_ENCRYPT_IV, cert)
+                if (encryptedCert == undefined) {
+                    body.code=retCode.ERROR;
+                    body.msg="tx error: cert encrypt failed."
+                    return cb(logger.errorf("invoke(%s): failed, err=cert encrypt failed.", func), body) 
+                }
+
+                invokeRequest.args.push(encryptedCert)
             } else if (func == "issue") {
                 var amt = params.amt;
                 invokeRequest.args.push(amt)
@@ -297,6 +332,9 @@ function handle_invoke(params, res, req) {
                 var sameEntSaveTrans = params.sest; //如果转出和转入账户相同，是否记录交易 0表示不记录 1表示记录
                 if (sameEntSaveTrans == undefined)
                     sameEntSaveTrans = "1" //默认记录
+                //是否preCheck
+                if (params.pck == undefined)
+                    params.pck = "0" //默认不预检查
 
                 invokeRequest.args.push(reacc, transType, description, amt, sameEntSaveTrans)
             } else if (func == "transeferUsePwd") {
@@ -316,14 +354,24 @@ function handle_invoke(params, res, req) {
                 
                 var pwd = params.pwd
                 if (pwd == undefined || pwd.length == 0) {
-                    logger.error("invoke(%s): failed, err=pwd is empty.", func);
                     body.code=retCode.ERROR;
                     body.msg="tx error: pwd is empty."
-                    res.send(body) 
-                    return
+                    return cb(logger.errorf("invoke(%s): failed, err=pwd is empty.", func), body) 
                 }
-
-                invokeRequest.args.push(reacc, transType, description, amt, sameEntSaveTrans, pwd)
+                //加密后转为base64
+                var encryptedPwd = hash.aes_encrypt(256, kd_cfg.PWD_ENCRYPT_KEY, kd_cfg.PWD_ENCRYPT_IV, pwd)
+                if (encryptedPwd == undefined) {
+                    body.code=retCode.ERROR;
+                    body.msg="tx error: pwd encrypt failed."
+                    return cb(logger.errorf("invoke(%s): failed, err=pwd encrypt failed.", func), body) 
+                }
+                
+                //是否preCheck
+                if (params.pck == undefined) {
+                    params.pck = "0" //默认不预检查
+                }
+                
+                invokeRequest.args.push(reacc, transType, description, amt, sameEntSaveTrans, encryptedPwd)
             } else if (func == "transeferAndLock") {
                 invokeRequest.fcn = "transefer3" //内部用transefer3
                 
@@ -338,15 +386,17 @@ function handle_invoke(params, res, req) {
                 var sameEntSaveTrans = params.sest; //如果转出和转入账户相同，是否记录交易 0表示不记录 1表示记录
                 if (sameEntSaveTrans == undefined)
                     sameEntSaveTrans = "1" //默认记录
+
+                //是否preCheck
+                if (params.pck == undefined)
+                    params.pck = "0" //默认不预检查
                 
                 var lockEndtmAmtMap = {}
                 var parseError = __parseLockAmountCfg(params.lcfg, invokeTime, lockEndtmAmtMap)
                 if (parseError) {
-                    logger.error("invoke(%s): failed, err=%s", func, parseError);
                     body.code=retCode.ERROR;
                     body.msg= util.format("tx error: %s", parseError)
-                    res.send(body) 
-                    return
+                    return cb(logger.errorf("invoke(%s): failed, err=%s", func, parseError), body)
                 }
                 
                 var newLockCfgs = ""
@@ -355,21 +405,17 @@ function handle_invoke(params, res, req) {
                     var lamt = lockEndtmAmtMap[lockEndTime]
                     totalLockAmt += lamt
                     if (lockEndTime <=  invokeTime) {
-                        logger.error("invoke(%s): failed, err=lock end time must big than now.", func);
                         body.code=retCode.ERROR;
                         body.msg="tx error: lock end time must big than now."
-                        res.send(body) 
-                        return
+                        return cb(logger.errorf("invoke(%s): failed, err=lock end time must big than now.", func), body) 
                     }
                     newLockCfgs += util.format("%d:%d;", lamt, lockEndTime)
                 }
                 
                 if (totalLockAmt > amt) {
-                    logger.error("invoke(%s): failed, err=lock amount big than transefer-amount.", func);
                     body.code=retCode.ERROR;
                     body.msg="tx error: lock amount big than transefer-amount."
-                    res.send(body) 
-                    return
+                    return cb(logger.errorf("invoke(%s): failed, err=lock amount big than transefer-amount.", func), body) 
                 }
 
                 invokeRequest.args.push(reacc, transType, description, amt, sameEntSaveTrans, newLockCfgs)
@@ -498,11 +544,9 @@ function handle_invoke(params, res, req) {
                 var lockEndtmAmtMap = {}
                 var parseError = __parseLockAmountCfg(lockedCfgs, invokeTime, lockEndtmAmtMap)
                 if (parseError) {
-                    logger.error("invoke(%s): failed, err=%s", func, parseError);
                     body.code=retCode.ERROR;
                     body.msg= util.format("tx error: %s", parseError)
-                    res.send(body) 
-                    return
+                    return cb(logger.errorf("invoke(%s): failed, err=%s", func, parseError), body)
                 }
                 
                 var newLockCfgs = ""
@@ -511,19 +555,72 @@ function handle_invoke(params, res, req) {
                     var lamt = lockEndtmAmtMap[lockEndTime]
                     totalLockAmt += lamt
                     if (lockEndTime <=  invokeTime) {
-                        logger.error("invoke(%s): failed, err=lock end time must big than now.", func);
                         body.code=retCode.ERROR;
                         body.msg="tx error: lock end time must big than now."
-                        res.send(body) 
-                        return
+                        return cb(logger.errorf("invoke(%s): failed, err=lock end time must big than now.", func), body) 
                     }
                     newLockCfgs += util.format("%d:%d;", lamt, lockEndTime)
                 }
                 
                 invokeRequest.args.push(lockedAccName, newLockCfgs, overwriteOld, canLockMoreThanRest)
+                
+            } else if (func == "setAccPwd" || func == "resetAccPwd") {
+                if (func == "setAccPwd")
+                    invokeRequest.fcn = "setAccCfg1"
+                else if (func == "resetAccPwd")
+                    invokeRequest.fcn = "setAccCfg2"
+                
+                var pwd = params.pwd
+                if (pwd == undefined || pwd.length == 0) {
+                    body.code=retCode.ERROR;
+                    body.msg="tx error: pwd is empty."
+                    return cb(logger.errorf("invoke(%s): failed, err=pwd is empty.", func), body) 
+                }
+                //加密后转为base64
+                var encryptedPwd = hash.aes_encrypt(256, kd_cfg.PWD_ENCRYPT_KEY, kd_cfg.PWD_ENCRYPT_IV, pwd)
+                if (encryptedPwd == undefined) {
+                    body.code=retCode.ERROR;
+                    body.msg="tx error: pwd encrypt failed."
+                    return cb(logger.errorf("invoke(%s): failed, err=pwd encrypt failed.", func), body) 
+                }
+                
+                invokeRequest.args.push(encryptedPwd)
+                
+            } else if (func == "changeAccPwd") {
+                invokeRequest.fcn = "setAccCfg3"
+                
+                var oldpwd = params.opwd
+                var newpwd = params.npwd
+                if (oldpwd == undefined || oldpwd.length == 0 || newpwd == undefined || newpwd.length == 0) {
+                    body.code=retCode.ERROR;
+                    body.msg="tx error: pwd is empty."
+                    return cb(logger.errorf("invoke(%s): failed, err=pwd is empty.", func), body) 
+                }
+                //加密后转为base64
+                var encryptedOldPwd = hash.aes_encrypt(256, kd_cfg.PWD_ENCRYPT_KEY, kd_cfg.PWD_ENCRYPT_IV, oldpwd)
+                if (encryptedOldPwd == undefined) {
+                    body.code=retCode.ERROR;
+                    body.msg="tx error: pwd encrypt failed."
+                    return cb(logger.errorf("invoke(%s): failed, err=pwd encrypt failed.", func), body) 
+                }
+                var encryptedNewPwd = hash.aes_encrypt(256, kd_cfg.PWD_ENCRYPT_KEY, kd_cfg.PWD_ENCRYPT_IV, newpwd)
+                if (encryptedNewPwd == undefined) {
+                    body.code=retCode.ERROR;
+                    body.msg="tx error: pwd encrypt failed."
+                    return cb(logger.errorf("invoke(%s): failed, err=pwd encrypt failed.", func), body) 
+                }
+                
+                invokeRequest.args.push(encryptedOldPwd, encryptedNewPwd)
+                
             }
 
-            __invokePreCheck(func, params, user, TCert, function(err, checkOk){
+            __invokePreCheck(params, user, TCert, function(err, checkCode){
+                if (err || checkCode!= 0) {
+                    body.code=checkCode;
+                    body.msg="tx error."
+                    return cb(logger.errorf("invoke(%s): PreCheck failed, err=%s, checkCode=%d", func, err, checkCode), body) 
+                }
+                
                 // invoke
                 var tx = user.invoke(invokeRequest);
 
@@ -536,15 +633,17 @@ function handle_invoke(params, res, req) {
                     if (!isSend) {
                         isSend = true
                         body.result = {'txid': txId}
-                        res.send(body)
+                        cb(null, body)
                     }
                     
-                    //去掉无用的信息,不打印
-                    invokeRequest.chaincodeID = invokeRequest.chaincodeID.substr(0,3) + "*" //打印前四个字符，看id是否正确
-                    invokeRequest.userCert = "*"
-                    if (func == "account" || func == "accountCB")
-                        invokeRequest.args[invokeRequest.args.length - 1] = "*"
-                    logger.info("Invoke success: request=%j, results=%s",invokeRequest, results.result.toString());
+                    if (outputQReslt == true) {
+                        //去掉无用的信息,不打印
+                        invokeRequest.chaincodeID = invokeRequest.chaincodeID.substr(0,3) + "*" //打印前四个字符，看id是否正确
+                        invokeRequest.userCert = "*"
+                        if (func == "account" || func == "accountCB")
+                            invokeRequest.args[invokeRequest.args.length - 1] = "*"
+                        logger.info("Invoke success: request=%j, results=%s",invokeRequest, results.result.toString());
+                    }
                     
                     //通知前端数据更新
                     sockChianUpdated = true
@@ -554,45 +653,79 @@ function handle_invoke(params, res, req) {
                     body.msg="tx error"
                     if (!isSend) {
                         isSend = true
-                        res.send(body)
+                        cb(null, body)
                     }
 
-                    //去掉无用的信息,不打印
-                    invokeRequest.chaincodeID = invokeRequest.chaincodeID.substr(0,3) + "*" //打印前四个字符，看id是否正确
-                    invokeRequest.userCert = "*"
-                    if (func == "account" || func == "accountCB")
-                        invokeRequest.args[invokeRequest.args.length - 1] = "*"
-                    logger.error("Invoke failed : request=%j, error=%j",invokeRequest,error);
+                    if (outputQReslt == true) {
+                        //去掉无用的信息,不打印
+                        invokeRequest.chaincodeID = invokeRequest.chaincodeID.substr(0,3) + "*" //打印前四个字符，看id是否正确
+                        invokeRequest.userCert = "*"
+                        if (func == "account" || func == "accountCB")
+                            invokeRequest.args[invokeRequest.args.length - 1] = "*"
+                        logger.error("Invoke failed : request=%j, error=%j",invokeRequest,error);
+                    }
                 });
             })
         });
     });
 }
 
-function __invokePreCheck(invokeFunc, invokeParams, user, TCert, cb) {
+function __invokePreCheck(invokeParams, user, TCert, cb) {
+    var invokeFunc = invokeParams.func;
     
-    /*
-    if (invokeFunc == "transefer" || invokeFunc == transeferUsePwd) {
+    //params.pck 表示是否做预检查
+    if (invokeParams.pck == "1" && 
+        (invokeFunc == "transefer" || invokeFunc == "transeferUsePwd" || invokeFunc == "transeferAndLock")) {
         var queryParams = {}
-        queryParams.func = "transPreCheck"
+        queryParams.func = "transPreCheck"  //转账前检查
+        
         queryParams.usr = invokeParams.usr
         queryParams.ccId = invokeParams.ccId
         queryParams.acc = invokeParams.acc
         queryParams.reacc = invokeParams.reacc
         queryParams.amt = invokeParams.amt
         queryParams.pwd = invokeParams.pwd
-
-        __execLiteQuery(queryParams, null, user, TCert, function(err, qBody, queryRequest, resultStr){
+        
+        //转账前检查，使用的user cert和转账操作一致，这里用轻量级的查询
+        __execLiteQuery(queryParams, null, user, TCert, false, function(err, qBody) {
             if (err) {
-                return cb(err)
+                logger.error("__invokePreCheck: __execLiteQuery failed, err=%s", err)
+                return cb(err, qBody.code)
+            }
+            
+            if (qBody.code != 0) {
+                logger.error("__invokePreCheck: __execLiteQuery failed, code=%d", qBody.code)
+                return cb(err, qBody.code)
+            }
+            
+            var checkCode = parseInt(qBody.result)
+            if (checkCode != 0) {
+                //手机端转账时，如果收款人没开户，自动开户。（目前手机端转账是扫二维码的，有时会出现生成了二维码但是没开户的情况）
+                if (invokeFunc == "transeferUsePwd" && checkCode == chainRetCode.TRANS_PAYEEACC_NOTEXIST) {
+                    var regParams = {}
+                    regParams.func = "account"
+                    regParams.ccId = invokeParams.ccId
+                    regParams.usr = invokeParams.reacc
+                    regParams.acc = invokeParams.reacc
+                    logger.info("account %s not exist, will create it.", regParams.acc)
+
+                    __execRegister(regParams, null, true, function(err, rBody){
+                        if (err) {
+                            return cb(err, rBody.code)
+                        }
+                        
+                        return cb(null, 0)
+                    })
+                } else {
+                    return cb(null, checkCode)
+                }
+            } else {
+                return cb(null, checkCode)
             }
         })
-        
     } else {
-        cb(null, true)
+        return cb(null, 0)
     }
-    */
-    cb(null, true)
 }
 
 function __parseLockAmountCfg(lockCfgs, currTime, tmAmtMap) {
@@ -644,10 +777,11 @@ function handle_query(params, res, req) {
     
     __cachedQuery(params, req, true, function(err, qBody){
         if (err) {
-            return res.send(qBody)
+            res.send(qBody)
+            return
         }
 
-        return res.send(qBody)
+        res.send(qBody)
     })
 }
 
@@ -933,6 +1067,31 @@ function __execLiteQuery(params, req, user, TCert, outputQReslt, cb) {
                     
                     cb(null, body)
                 })
+            } else if (func == "transPreCheck") {
+                //暂时不返回收款账户不存在， 在这里自动开户。 待前端修改后删除
+                if (resultStr == chainRetCode.TRANS_PAYEEACC_NOTEXIST + '') {
+                    var regParams = {}
+                    regParams.func = "account"
+                    regParams.ccId = params.ccId
+                    regParams.usr = params.reacc
+                    regParams.acc = params.reacc
+                    logger.info("Query, account %s not exist, will create it.", regParams.acc)
+
+                    __execRegister(regParams, null, true, function(err, rBody){
+                        if (err) {
+                            logger.error("Query: __execRegister err=%s", err)
+                            //如果开户失败，还返回收款账户不存在
+                            body.result=chainRetCode.TRANS_PAYEEACC_NOTEXIST + ''
+                            return cb(null, body)
+                        }
+                        
+                        body.result = "0"
+                        cb(null, body)
+                    })
+                } else {
+                    body.result = resultStr
+                    cb(null, body)
+                }
             } else {
                 if (func == "getTransInfo" || func == "getBalanceAndLocked") { //如下几种函数的result返回json格式
                     body.result = JSON.parse(resultStr)
@@ -973,9 +1132,21 @@ function __execLiteQuery(params, req, user, TCert, outputQReslt, cb) {
 
 
 function handle_register(params, res, req) { 
+    __execRegister(params, req, true, function(err, rBody){
+        if (err) {
+            res.send(rBody)
+            return
+        }
+        
+        res.send(rBody)
+    })
+}
+
+function __execRegister(params, req, outputRResult, cb) {
     var userName = params.usr;
 
-    logger.info("Enter Register")
+    if (outputRResult == true) 
+        logger.info("Enter Register")
 
     var body = {
         code : retCode.OK,
@@ -984,13 +1155,10 @@ function handle_register(params, res, req) {
     };
     
     chain.enroll(admin, adminPasswd, function (err, adminUser) {
-        
         if (err) {
-            logger.error("ERROR: register enroll failed. user: %s", userName);
             body.code = retCode.ERROR
             body.msg = "register error"
-            res.send(body) 
-            return;
+            return cb(logger.errorf("ERROR: register enroll failed. user: %s", userName), body) 
         }
 
         logger.debug("admin affiliation: %s", adminUser.getAffiliation());
@@ -1017,11 +1185,10 @@ function handle_register(params, res, req) {
         
         chain.registerAndEnroll(registrationRequest, function(err) {
             if (err) {
-                logger.error("register: couldn't register name ", userName, err)
                 body.code = retCode.ERROR
                 body.msg = "register error"
-                res.send(body) 
-                return
+                return cb(logger.errorf("register: couldn't register name ", userName, err), body) 
+                
             }
 
             //如果需要同时开户，则执行开户
@@ -1029,40 +1196,48 @@ function handle_register(params, res, req) {
             if (funcName == "account" || funcName == "accountCB") {
                 chain.getUser(userName, function (err, user) {
                     if (err || !user.isEnrolled()) {
-                        logger.error("register: failed to get user: %s ",userName, err);
                         body.code=retCode.GETUSER_ERR;
                         body.msg="tx error"
-                        res.send(body) 
-                        return
+                        return cb(logger.errorf("register: failed to get user: %s ", userName, err), body) 
                     }
             
                     user.getUserCert(null, function (err, TCert) {
                         if (err) {
-                            logger.error("register: failed to getUserCert: %s",userName);
                             body.code=retCode.GETUSERCERT_ERR;
                             body.msg="tx error"
-                            res.send(body) 
-                            return
+                            return cb(logger.errorf("register: failed to getUserCert: %s", userName), body) 
                         }
                         logger.debug("%s putCert's pk=[%s] cert=[%s]", userName, TCert.privateKey.getPrivate('hex'), TCert.encode().toString('base64'))
 
                         common.putCert(keyValStorePath, userName, TCert, function(err){
                             if (err) {
-                                logger.error("register: failed to putCert: %s",userName);
                                 body.code=retCode.PUT_CERT_ERR;
                                 body.msg="tx error"
-                                res.send(body) 
-                                return
+                                return cb(logger.errorf("register: failed to putCert: %s",userName), body) 
                             }
 
-                            handle_invoke(params, res, req)
+                            __execInvoke(params, req, outputRResult, function(err, iBody){
+                                if (err)
+                                    return cb(err, iBody)
+                                
+                                return cb(null, iBody)
+                            })
                         })
                     })
                 })
+            } else {
+                cb(null, body)
+
+                if (outputRResult == true) {
+                    registrationRequest.registrar = "*"
+                    registrationRequest.attributes = "*"
+                    logger.info("Register success: request=%j", registrationRequest);
+                }
             }
         });
     });   
 }
+
 
 //ip
 const CHAIN_IP = "127.0.0.1"
@@ -1294,7 +1469,7 @@ function __getPushDataForWeb(useCache, cb) {
 }
 
 //of的内容getchaininfo，是跟在客户端请求的url中，ip后面。 sockio中叫namespace。 客户端请求时，url使用，例如io.connect("https://XXX/getchaininfo") 用这个参数可以区分多种请求
-var nmspce_getchaininfo = '/getchaininfo'
+const nmspce_getchaininfo = '/getchaininfo'
 sockio.of(nmspce_getchaininfo).on('connection', function(socket){
 
     var timer = null
@@ -1356,6 +1531,7 @@ function __sort_down(x, y) {
 
 //公共处理
 function __handle_comm__(req, res) {
+    //logger.info('new http req=%d, res=%d', req.socket._idleStart, res.socket._idleStart)
     res.set({'Content-Type':'text/json','Encodeing':'utf8', 'Access-Control-Allow-Origin':'*'});
 
     var params
@@ -1410,9 +1586,11 @@ user.init(function(err) {
 })
 */
 
+var cfgStr = fs.readFileSync('./kd.cfg', 'utf-8')
+kd_cfg = JSON.parse(cfgStr)
 
 
-var kdport = 8588
+const kdport = 8588
 
 http.listen(kdport, "127.0.0.1");
 logger.info("default ccid : %s", globalCcid);
