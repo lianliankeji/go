@@ -133,7 +133,7 @@ const routeTable = {
   //'/loulan/channel/update'        : {'GET' : handle_channel_update,          'POST' : handle_channel_update},
     '/loulan/chaincode/install'     : {'GET' : handle_chaincode_install,       'POST' : handle_chaincode_install},
     '/loulan/chaincode/instantiate' : {'GET' : handle_chaincode_instantiate,   'POST' : handle_chaincode_instantiate},
-  //'/loulan/chaincode/update'      : {'GET' : handle_chaincode_update,        'POST' : handle_chaincode_update},
+    '/loulan/chaincode/upgrade'     : {'GET' : handle_chaincode_upgrade,       'POST' : handle_chaincode_upgrade},
     '/loulan/register'              : {'GET' : handle_register,                'POST' : handle_register},
     '/loulan/invoke'                : {'GET' : handle_invoke,                  'POST' : handle_invoke},
     '/loulan/query'                 : {'GET' : handle_query,                   'POST' : handle_query},
@@ -190,11 +190,9 @@ function handle_register(params, res, req){
     
     return __execRegister(params, req, true)
     .then((response)=>{
-            logger.debug('__execRegister return ok, res=', response)
             res.send(response)
         }, 
         (err)=> {
-            logger.debug('errResp=%j', err)
             res.send(err)
         })
 }
@@ -226,7 +224,7 @@ function __execRegister(params, req, outputRResult) {
 	return hfc_wrap.registerAndEnroll(username, orgname, true)
     .then((response)=> {
             //OK
-            logger.debug('registerAndEnroll resonsed ok, response=', response)
+            logger.debug('registerAndEnroll responsed ok, response=', response)
             if (funcName == "account" || funcName == "accountCB") {
                 ///TODO:
                 body.msg = response.message
@@ -237,7 +235,7 @@ function __execRegister(params, req, outputRResult) {
             }
         },
         (err)=> {
-            logger.debug('registerAndEnroll resonsed error, err=', err)
+            logger.debug('registerAndEnroll responsed error, err=%s', err)
             body.code = retCode.ERROR
             body.msg = '' + err
             return Promise.reject(body)
@@ -281,6 +279,7 @@ function handle_channel_create(params, res, req) {
         },
         (err)=>{
             logger.debug('createChannel failed, err=%s', err)
+            body.code = retCode.ERROR
             body.msg = '' + err
             res.send(body);
         });
@@ -323,6 +322,7 @@ function handle_channel_join(params, res, req) {
         },
         (err)=>{
             logger.debug('joinChannel failed, err=%s', err)
+            body.code = retCode.ERROR
             body.msg = '' + err
             res.send(body);
         });
@@ -379,13 +379,13 @@ function handle_chaincode_install(params, res, req) {
         },
         (err)=>{
             logger.error('installChaincode failed, err=%s', err)
+            body.code = retCode.ERROR
             body.msg = '' + err
             res.send(body);
         });
 }
 
-// Instantiate chaincode on target peers
-function handle_chaincode_instantiate(params, res, req) {
+function __handle_chaincode_instantiateOrUpgrade(params, res, req, type) {
     var body = {
         code : retCode.OK,
         msg: "OK",
@@ -430,18 +430,46 @@ function handle_chaincode_instantiate(params, res, req) {
     args = args.split(',')
     logger.debug('args=', args)
     
-	hfc_wrap.instantiateChaincode(channelName, chaincodeName, chaincodeVersion, fcn, args, username, orgname, 50000)
-	.then((response)=>{
-            logger.debug('instantiateChaincode success, response=', response)
-            body.msg = response.message
-            body.result = response.result
-            res.send(body);
-        },
-        (err)=>{
-            logger.error('instantiateChaincode failed, err=%s', err)
-            body.msg = '' + err
-            res.send(body);
-        });
+    if (type == 'instantiate') {
+        hfc_wrap.instantiateChaincode(channelName, chaincodeName, chaincodeVersion, fcn, args, username, orgname, 50000)
+        .then((response)=>{
+                logger.debug('instantiateChaincode success, response=', response)
+                body.msg = response.message
+                body.result = response.result
+                res.send(body);
+            },
+            (err)=>{
+                logger.error('instantiateChaincode failed, err=%s', err)
+                body.code = retCode.ERROR
+                body.msg = '' + err
+                res.send(body);
+            });
+    } else {
+        hfc_wrap.upgradeChaincode(channelName, chaincodeName, chaincodeVersion, fcn, args, username, orgname, 50000)
+        .then((response)=>{
+                logger.debug('upgradeChaincode success, response=', response)
+                body.msg = response.message
+                body.result = response.result
+                res.send(body);
+            },
+            (err)=>{
+                logger.error('upgradeChaincode failed, err=%s', err)
+                body.code = retCode.ERROR
+                body.msg = '' + err
+                res.send(body);
+            });
+    }
+    
+}
+
+// Instantiate chaincode on target peers
+function handle_chaincode_instantiate(params, res, req) {
+    return __handle_chaincode_instantiateOrUpgrade(params, res, req, 'instantiate')
+}
+
+// Upgrade chaincode on target peers
+function handle_chaincode_upgrade(params, res, req) {
+    return __handle_chaincode_instantiateOrUpgrade(params, res, req, 'upgrade')
 }
 
 // Invoke transaction on chaincode on target peers
@@ -499,6 +527,7 @@ function handle_invoke(params, res, req) {
         },
         (err)=>{
             logger.error('invoke failed, err=%s', err)
+            body.code = retCode.ERROR
             body.msg = '' + err
             res.send(body);
         });
@@ -561,6 +590,7 @@ function handle_query(params, res, req) {
         },
         (err)=>{
             logger.error('invoke failed, err=%s', err)
+            body.code = retCode.ERROR
             body.msg = '' + err
             res.send(body);
         });
