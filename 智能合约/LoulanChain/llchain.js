@@ -29,8 +29,8 @@ const cors = require('cors');
 //socketio功能需要使用如下的http和sockio
 const app = express();
 const http = require('http').Server(app);
-//这里的path参数，client端connnect时也必须用这个参数，会拼在url请求中，io.connect("https://xxx/yyy", { path:'/kdsocketio' })。nginx中可以用它来匹配url。
-const sockio = require('socket.io')(http, {path: '/kdsocketio'});  
+//这里的path参数，client端connnect时也必须用这个参数，会拼在url请求中，io.connect("https://xxx/yyy", { path:'/llchainsocketio' })。nginx中可以用它来匹配url。
+const sockio = require('socket.io')(http, {path: '/llchainsocketio'});  
 
 
 //NOTE: run config.js  before require hfc_wrap.js
@@ -45,7 +45,7 @@ const common = require('./lib/common');
 const host = hfc_wrap.getConfigSetting('host');
 const port = hfc_wrap.getConfigSetting('port');
 
-var logger = common.createLog("kd")
+var logger = common.createLog("llchain")
 logger.setLogLevel(logger.logLevel.DEBUG)
 
 
@@ -80,7 +80,7 @@ app.use(bodyParser.urlencoded({
 }));
 
 process.on('exit', function (){
-  logger.info(" ****  kd exit ****");
+  logger.info(" ****  llchain exit ****");
   //fs.closeSync(wFd);
   user.onExit();
 });
@@ -134,6 +134,7 @@ const routeTable = {
     '/llchain/channels/:channelName' : {'GET' : handle_queryChannels,        'POST' : handle_queryChannels},
     '/llchain/chaincodes/:type'      : {'GET' : handle_queryChaincodes,      'POST' : handle_queryChaincodes},   //type = installed/instantiated
     '/llchain/chain'                 : {'GET' : handle_queryChains,          'POST' : handle_queryChains},
+    '/llchain/getsometransonce'      : {'GET' : handle_queryTransInBlockOnce,'POST' : handle_queryTransInBlockOnce},
     '/llchain/setenv'                : {'GET' : handle_setenv,               'POST' : handle_setenv},
     '/llchain/test/'                 : {'GET' : handle_test,                 'POST' : handle_test},
 }
@@ -214,8 +215,8 @@ function handle_queryBlockById(params, res, req) {
             body.msg = 'ok'
             body.result = response
             res.send(body);
-        },
-        (err)=>{
+        })
+    .catch((err)=>{
             logger.error('getBlockById failed, err=%s', err)
             body.msg = '' + err
             res.send(body);
@@ -258,8 +259,8 @@ function handle_queryBlockByHash(params, res, req) {
             body.msg = 'ok'
             body.result = response
             res.send(body);
-        },
-        (err)=>{
+        })
+    .catch((err)=>{
             logger.error('getBlockByHash failed, err=%s', err)
             body.msg = '' + err
             res.send(body);
@@ -303,8 +304,8 @@ function handle_queryTransactions(params, res, req) {
             body.msg = 'ok'
             body.result = response
             res.send(body);
-        },
-        (err)=>{
+        })
+    .catch((err)=>{
             logger.error('queryTransactions failed, err=%s', err)
             body.msg = '' + err
             res.send(body);
@@ -342,8 +343,8 @@ function handle_queryChains(params, res, req) {
             body.msg = 'ok'
             body.result = response
             res.send(body);
-        },
-        (err)=>{
+        })
+    .catch((err)=>{
             logger.error('queryChains failed, err=%s', err)
             body.msg = '' + err
             res.send(body);
@@ -392,8 +393,8 @@ function handle_queryChaincodes(params, res, req) {
             body.msg = 'ok'
             body.result = response
             res.send(body);
-        },
-        (err)=>{
+        })
+    .catch((err)=>{
             logger.error('queryChaincodes(%s) failed, err=%s', installType, err)
             body.msg = '' + err
             res.send(body);
@@ -437,13 +438,216 @@ function handle_queryChannels(params, res, req) {
             body.msg = 'ok'
             body.result = response
             res.send(body);
-        },
-        (err)=>{
+        })
+    .catch((err)=>{
             logger.error('queryChannels failed, err=%s', err)
             body.msg = '' + err
             res.send(body);
         });
 }
+
+
+//  Query Get Trans in blocks
+function handle_queryTransInBlockOnce(params, res, req) {
+	logger.debug('==================== GET BLOCK BY NUMBER ==================');
+    var body = {
+        code : retCode.OK,
+        msg : "OK",
+    };
+
+	let peer = params.peer;
+    if (!peer) {
+        peer = 'peer1'
+    }
+	logger.debug('Peer : ' + peer);
+
+    var username = params.usr;
+	if (!username) {
+		username = 'admin'
+	}
+
+    var orgname = params.org;
+	if (!orgname) {
+        orgname = 'org1'
+	}
+    
+    var queryTxCount = params.qtc;
+	if (!queryTxCount) {
+		queryTxCount = 5
+	}
+
+    var order = params.ord;
+    if (!order) 
+        order = "desc" //不输入默认为降序，即从最新的数据查起
+    
+    var isDesc = false
+    if (order == "desc")
+        isDesc = true
+    
+    //获取区块高度
+    hfc_wrap.getChainInfo(peer, username, orgname)
+	.then((response)=>{
+            logger.debug('queryTransInBlock: queryChains success, response=', response)
+
+            var chainHight = hfc_wrap.getChainHight(response)
+            if (typeof(chainHight) != 'number') {
+                return Promise.reject('get hight of chain failed.')
+            }
+            
+            var latestBlockNum = chainHight - 1  //最新的block编号，从0开始到chainHight-1个
+            
+            var txRecords = []
+            
+            var startBlockNum = 0
+            if (isDesc)
+                startBlockNum = latestBlockNum
+
+            __getTxInfoInBlockOnce(latestBlockNum, startBlockNum, queryTxCount, isDesc, 1, txRecords, peer, username, orgname)
+            .then(()=>{
+                    logger.debug('txRecords=', txRecords)
+                    body.result = txRecords
+                    res.send(body)
+                },
+                (err)=>{
+                    return Promise.reject('get tx info failed, err=%s', err)
+                })
+        })
+    .catch((err)=>{
+            logger.error('queryTransInBlock: getChainInfo failed, err=%s', err)
+            body.msg = '' + err
+            res.send(body);
+    })
+
+
+}
+
+//txRecords作为入参传入，因为里面有递归调用，如果在本函数里用局部变量定义无法在递归中传递
+function __getTxInfoInBlockOnce(latestBlockNum, startBlockNum, queryTxCnt, isDesc, accIdxInArgs, txRecords, peer, username, orgname) {
+
+    var queryBlockCnt = queryTxCnt  //每个区块可能含有0个或多个交易信息，所以查询的区块数默认等于交易数
+
+    var blockNumList = [] //待查询的block列表
+    var endBlockNum
+
+    if (isDesc == true) { //降序
+        if (startBlockNum < 0) {
+            return Promise.resolve()
+        }
+        
+        endBlockNum = startBlockNum - queryBlockCnt + 1
+        if (endBlockNum < 0 )
+            endBlockNum = 0
+        
+        for (var i=startBlockNum; i>=endBlockNum; i--) {
+            blockNumList.push(i)
+        } 
+        
+    } else {
+        if (startBlockNum > latestBlockNum) {
+            return Promise.resolve()
+        }
+        
+        endBlockNum = startBlockNum + queryBlockCnt - 1
+        if (endBlockNum > latestBlockNum)
+            endBlockNum = latestBlockNum
+        
+        for (var i=startBlockNum; i<=endBlockNum; i++) {
+            blockNumList.push(i)
+        }
+    }
+
+    var tmpRecds = {}
+    var keyList = []
+    
+    var queryPromises = []
+
+    logger.debug("__getTxInfoInBlockOnce: begin get blocks(%j)", blockNumList)
+
+    //并行查询
+    blockNumList.forEach((blockIdx)=>{
+        let qPromise = hfc_wrap.getBlockByNumber(peer, blockIdx, username, orgname)
+            .then((response)=>{
+                    logger.debug('getBlockById success, response=', response)
+                    return Promise.resolve(response)
+                },
+                (err)=>{
+                    logger.error('getBlockById failed, blockIdx=%d err=%s', blockIdx, err)
+                    return Promise.reject(err)
+                })
+            .catch((err)=>{
+                logger.error('getBlockByNumber has some error. err=%s', err)
+                return reject(err)
+            });
+        queryPromises.push(qPromise)
+    })
+
+    //结果处理
+    return Promise.all(queryPromises)
+    .then((results)=>{
+            for (var i in results) {
+                var oneBlock = results[i]
+                var txInfo = hfc_wrap.getTxInfo(oneBlock, isDesc)
+                if (typeof(txInfo) != 'object') {
+                    return Promise.reject(logger.errorf('getTxInfo failed. err=%s', txInfo))
+                }
+                var txInfoList = txInfo
+                
+                for (var j in txInfoList) {
+                    var txObj = txInfoList[j]
+                    var args = hfc_wrap.getInvokeArgs(txObj.input.toString('hex'))
+                    
+                    logger.debug('block %d tx[%d], args=%j' , txObj.block, j, args)
+                    //accIdxInArgs指明账户名是第args中的几个参数
+                    if (args.length <= accIdxInArgs) {
+                        continue
+                    }
+
+                    var accountName = args[accIdxInArgs]
+                    //先过滤centerBank和kdcoinpool的交易
+                    if (accountName.indexOf("centerBank") >= 0 || accountName.indexOf("kdcoinpool") >= 0) {
+                        accountName = (new Buffer(common.md5sum(accountName), 'hex')).toString('base64')
+                    }
+                    
+                    txObj.txInfo = txObj.input.toString('base64')
+                    txObj.node = accountName
+
+                    txRecords.push(txObj)
+
+                    //最多记录 queryTxCnt 条
+                    if (txRecords.length >= queryTxCnt)
+                        break
+                }
+
+                //最多记录 queryTxCnt 条
+                if (txRecords.length >= queryTxCnt)
+                    break
+            }
+
+            //记录不够，再查一次
+            if (txRecords.length < queryTxCnt) {
+                //从上次查到的最小序列号开始
+                var nextStart
+                if (isDesc == true) { //降序
+                    nextStart = endBlockNum - 1
+                } else {
+                    nextStart = endBlockNum + 1
+                }
+
+                return __getTxInfoInBlockOnce(latestBlockNum, nextStart, queryTxCnt, isDesc, accIdxInArgs, txRecords, peer, username, orgname)
+            } else {
+                return Promise.resolve()
+            }
+            
+        },
+        (err)=>{
+            logger.error('get blokcs info has some err. err=%s', err)
+            return Promise.reject(err)
+        })
+    .catch((err)=>{
+        return Promise.reject(err)
+    })
+}
+
 
 function paraInvalidMessage(field) {
 	var response = {

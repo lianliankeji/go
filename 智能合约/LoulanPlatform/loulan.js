@@ -214,6 +214,9 @@ function __execRegister(params, req, outputRResult) {
 	if (!orgname) {
         orgname = 'org1'
 	}
+	logger.debug('username  : ' + username);
+	logger.debug('orgname  : ' + orgname);
+
     /*
 	var token = jwt.sign({
 		exp: Math.floor(Date.now() / 1000) + parseInt(hfc_wrap.getConfigSetting('jwt_expiretime')),
@@ -270,6 +273,8 @@ function handle_channel_create(params, res, req) {
 	if (!channelConfigPath) {
 		return res.send(paraInvalidMessage('\'channelConfigPath\''));
 	}
+	logger.debug('username  : ' + username);
+	logger.debug('orgname  : ' + orgname);
 
 	hfc_wrap.createChannel(channelName, channelConfigPath, username, orgname)
 	.then((response)=>{
@@ -313,6 +318,8 @@ function handle_channel_join(params, res, req) {
 	if (!orgname) {
         orgname = 'org1'
 	}
+	logger.debug('username  : ' + username);
+	logger.debug('orgname  : ' + orgname);
 
 	hfc_wrap.joinChannel(channelName, peers.split(','), username, orgname)
 	.then((response)=>{
@@ -370,6 +377,8 @@ function handle_chaincode_install(params, res, req) {
 	if (!orgname) {
         orgname = 'org1'
 	}
+	logger.debug('username  : ' + username);
+	logger.debug('orgname  : ' + orgname);
 
 	hfc_wrap.installChaincode(peers.split(','), chaincodeName, chaincodePath, chaincodeVersion, username, orgname)
 	.then((response)=>{
@@ -396,6 +405,7 @@ function __handle_chaincode_instantiateOrUpgrade(params, res, req, type) {
 	var channelName = params.channame;
 	var fcn = params.fcn;
 	var args = params.args;
+	logger.debug('type  : ' + type);
 	logger.debug('channelName  : ' + channelName);
 	logger.debug('chaincodeName : ' + chaincodeName);
 	logger.debug('chaincodeVersion  : ' + chaincodeVersion);
@@ -426,6 +436,8 @@ function __handle_chaincode_instantiateOrUpgrade(params, res, req, type) {
 	if (!orgname) {
         orgname = 'org1'
 	}
+	logger.debug('username  : ' + username);
+	logger.debug('orgname  : ' + orgname);
 
     args = args.split(',')
     logger.debug('args=', args)
@@ -514,9 +526,24 @@ function handle_invoke(params, res, req) {
 	if (!orgname) {
         orgname = 'org1'
 	}
+	logger.debug('username  : ' + username);
+	logger.debug('orgname  : ' + orgname);
 
-    args = args.split(',')
-    peers = peers.split(',')
+    if (typeof(args) == 'string') {
+        args = args.split(',')
+    } else {
+        if (!(args instanceof Array)) {
+            return res.send(paraInvalidMessage('\'args\''));
+        }
+    } 
+
+    if (typeof(peers) == 'string') {
+        peers = peers.split(',')
+    } else {
+        if (!(peers instanceof Array)) {
+            return res.send(paraInvalidMessage('\'peers\''));
+        }
+    } 
     
 	hfc_wrap.invokeChaincode(peers, channelName, chaincodeName, fcn, args, username, orgname)
 	.then((response)=>{
@@ -577,19 +604,21 @@ function handle_query(params, res, req) {
 	if (!orgname) {
         orgname = 'org1'
 	}
+	logger.debug('username  : ' + username);
+	logger.debug('orgname  : ' + orgname);
 
     args = args.split(',')
 
     
 	hfc_wrap.queryChaincode(peer, channelName, chaincodeName, args, fcn, username, orgname)
 	.then((response)=>{
-            logger.debug('invoke success, response=', response)
+            logger.debug('query success, response=', response)
             body.msg = response.message
             body.result = response.result
             res.send(body);
         },
         (err)=>{
-            logger.error('invoke failed, err=%s', err)
+            logger.error('query failed, err=%s', err)
             body.code = retCode.ERROR
             body.msg = '' + err
             res.send(body);
