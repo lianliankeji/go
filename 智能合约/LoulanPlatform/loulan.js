@@ -48,6 +48,13 @@ const port = hfc_wrap.getConfigSetting('port');
 var logger = common.createLog("loulan")
 logger.setLogLevel(logger.logLevel.DEBUG)
 
+const attrKeys = {
+    USRROLE: "usrrole",
+    USRNAME: "usrname",
+    USRTYPE: "usrtype"
+}
+const certAttrKeys = [attrKeys.USRROLE, attrKeys.USRNAME, attrKeys.USRTYPE]
+
 
 const retCode = {
     OK:                     0,
@@ -63,8 +70,6 @@ const retCode = {
     
     ERROR:                  0xffffffff
 }
-
-const globalCcid = "a71bc9939c8774ff6ebbea6984110e4a8307db002a31d40b50cefce2fe3342da"
 
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -205,7 +210,7 @@ function __execRegister(params, req, outputRResult) {
 
 	var username = params.usr;
 	var orgname = params.org;
-    var funcName = params.func;
+    var funcName = params.fcn;
 	logger.debug('User name : ' + username);
 	logger.debug('Org name  : ' + orgname);
 	if (!username) {
@@ -224,20 +229,28 @@ function __execRegister(params, req, outputRResult) {
 		orgname: orgname
 	}, app.get('secret'));
     */
-	return hfc_wrap.registerAndEnroll(username, orgname, true)
+    var attributes = [  {name: attrKeys.USRROLE, value: 'role'}, 
+                        {name: attrKeys.USRNAME, value: username}, 
+                        {name: attrKeys.USRTYPE, value: 'user'}]
+                        
+	return hfc_wrap.registerAndEnroll(username, orgname, true, attributes)
     .then((response)=> {
             //OK
             logger.debug('registerAndEnroll responsed ok, response=', response)
             if (funcName == "account" || funcName == "accountCB") {
-                ///TODO:
-                body.msg = response.message
-                return (body)
+                return __execInvoke(params, req, true)
+                .then((response)=>{
+                       return (response)
+                    }, 
+                    (err)=> {
+                        return Promise.reject(err.msg) //__execInvoke出错返回的是body，这里只取其msg，会在下面的catch捕获到
+                    })
             } else {
                 body.msg = response.message
                 return (body)
             }
-        },
-        (err)=> {
+        })
+    .catch((err)=>{
             logger.debug('registerAndEnroll responsed error, err=%s', err)
             body.code = retCode.ERROR
             body.msg = '' + err
@@ -281,8 +294,8 @@ function handle_channel_create(params, res, req) {
             logger.debug('createChannel success, response=', response)
             body.msg = response.message
             res.send(body)
-        },
-        (err)=>{
+        })
+    .catch((err)=>{
             logger.debug('createChannel failed, err=%s', err)
             body.code = retCode.ERROR
             body.msg = '' + err
@@ -326,8 +339,8 @@ function handle_channel_join(params, res, req) {
             logger.debug('joinChannel success, response=', response)
             body.msg = response.message
             res.send(body);
-        },
-        (err)=>{
+        })
+    .catch((err)=>{
             logger.debug('joinChannel failed, err=%s', err)
             body.code = retCode.ERROR
             body.msg = '' + err
@@ -385,8 +398,8 @@ function handle_chaincode_install(params, res, req) {
             logger.debug('installChaincode success, response=', response)
             body.msg = response.message
             res.send(body);
-        },
-        (err)=>{
+        })
+    .catch((err)=>{
             logger.error('installChaincode failed, err=%s', err)
             body.code = retCode.ERROR
             body.msg = '' + err
@@ -439,18 +452,31 @@ function __handle_chaincode_instantiateOrUpgrade(params, res, req, type) {
 	logger.debug('username  : ' + username);
 	logger.debug('orgname  : ' + orgname);
 
-    args = args.split(',')
-    logger.debug('args=', args)
+    if (typeof(args) == 'string') {
+        var delim = params.argsdelim ? params.argsdelim : ","
+        args = args.split(delim)
+    } else {
+        if (!(args instanceof Array)) {
+            return Promise.reject(paraInvalidMessage('\'args\''));
+        }
+    } 
+    var inputArgs = []
+    if (params.addtm) {
+        inputArgs.push(Date.now().toString())  // 第一个参数为调用时间
+    }
+    inputArgs = inputArgs.concat(args)
+
+    logger.debug('args=', inputArgs)
     
     if (type == 'instantiate') {
-        hfc_wrap.instantiateChaincode(channelName, chaincodeName, chaincodeVersion, fcn, args, username, orgname, 50000)
+        hfc_wrap.instantiateChaincode(channelName, chaincodeName, chaincodeVersion, fcn, inputArgs, username, orgname, 50000)
         .then((response)=>{
                 logger.debug('instantiateChaincode success, response=', response)
                 body.msg = response.message
                 body.result = response.result
                 res.send(body);
-            },
-            (err)=>{
+            })
+        .catch((err)=>{
                 logger.error('instantiateChaincode failed, err=%s', err)
                 body.code = retCode.ERROR
                 body.msg = '' + err
@@ -463,8 +489,8 @@ function __handle_chaincode_instantiateOrUpgrade(params, res, req, type) {
                 body.msg = response.message
                 body.result = response.result
                 res.send(body);
-            },
-            (err)=>{
+            })
+        .catch((err)=>{
                 logger.error('upgradeChaincode failed, err=%s', err)
                 body.code = retCode.ERROR
                 body.msg = '' + err
@@ -486,7 +512,18 @@ function handle_chaincode_upgrade(params, res, req) {
 
 // Invoke transaction on chaincode on target peers
 function handle_invoke(params, res, req) {
+
 	logger.debug('==================== INVOKE ON CHAINCODE ==================');
+    return __execInvoke(params, req, true)
+    .then((response)=>{
+            res.send(response)
+        }, 
+        (err)=> {
+            res.send(err)
+        })
+}
+
+function __execInvoke(params, req, outputRResult) {
     var body = {
         code : retCode.OK,
         msg: "OK",
@@ -500,7 +537,90 @@ function handle_invoke(params, res, req) {
 	logger.debug('channelName  : ' + channelName);
 	logger.debug('chaincodeName : ' + chaincodeName);
 	logger.debug('fcn  : ' + fcn);
-	logger.debug('args  : ' + args);
+	if (!chaincodeName) {
+		return Promise.reject(paraInvalidMessage('\'chaincodeName\''));
+	}
+	if (!channelName) {
+		return Promise.reject(paraInvalidMessage('\'channelName\''));
+	}
+	if (!fcn) {
+		return Promise.reject(paraInvalidMessage('\'fcn\''));
+	}
+	if (!args) {
+		return Promise.reject(paraInvalidMessage('\'args\''));
+	}
+
+    var username = params.usr;
+	if (!username) {
+		return Promise.reject(paraInvalidMessage('\'usr\''))
+	}
+    var orgname = params.org;
+	if (!orgname) {
+        orgname = 'org1'
+	}
+	logger.debug('username  : ' + username);
+	logger.debug('orgname  : ' + orgname);
+    
+    
+    if (typeof(args) == 'string') {
+        var delim = params.argsdelim ? params.argsdelim : ","
+        args = args.split(delim)
+    } else {
+        if (!(args instanceof Array)) {
+            return Promise.reject(paraInvalidMessage('\'args\''));
+        }
+    } 
+
+    var inputArgs = []
+    if (params.addtm) {
+        inputArgs.push(Date.now().toString())  // 第一个参数为调用时间
+    }
+    inputArgs = inputArgs.concat(args)
+
+	logger.debug('args  : ', inputArgs);
+
+    if (typeof(peers) == 'string') {
+        peers = peers.split(',')
+    } else {
+        if (!(peers instanceof Array)) {
+            return Promise.reject(paraInvalidMessage('\'peers\''));
+        }
+    } 
+
+    
+	return hfc_wrap.invokeChaincode(peers, channelName, chaincodeName, fcn, inputArgs, username, orgname)
+	.then((response)=>{
+            logger.debug('invoke success, response=', response)
+            body.msg = response.message
+            body.result = response.result
+            return body;
+        })
+    .catch((err)=>{
+            logger.error('invoke failed, err=%s', err)
+            body.code = retCode.ERROR
+            body.msg = '' + err
+            return Promise.reject(body);
+        });
+}
+
+// Query on chaincode on target peers
+function handle_query(params, res, req) {
+	logger.debug('==================== QUERY BY CHAINCODE ==================');
+    var body = {
+        code : retCode.OK,
+        msg: "OK",
+    };
+
+	var channelName = params.channame;
+	var chaincodeName = params.ccname;
+	let args = params.args;
+	let fcn = params.fcn;
+	let peer = params.peer;
+
+	logger.debug('channelName : ' + channelName);
+	logger.debug('chaincodeName : ' + chaincodeName);
+	logger.debug('fcn : ' + fcn);
+
 	if (!chaincodeName) {
 		res.send(paraInvalidMessage('\'chaincodeName\''));
 		return;
@@ -530,94 +650,30 @@ function handle_invoke(params, res, req) {
 	logger.debug('orgname  : ' + orgname);
 
     if (typeof(args) == 'string') {
-        args = args.split(',')
+        var delim = params.argsdelim ? params.argsdelim : ","
+        args = args.split(delim)
     } else {
         if (!(args instanceof Array)) {
-            return res.send(paraInvalidMessage('\'args\''));
+            return Promise.reject(paraInvalidMessage('\'args\''));
         }
     } 
 
-    if (typeof(peers) == 'string') {
-        peers = peers.split(',')
-    } else {
-        if (!(peers instanceof Array)) {
-            return res.send(paraInvalidMessage('\'peers\''));
-        }
-    } 
+    var inputArgs = []
+    if (params.addtm) {
+        inputArgs.push(Date.now().toString())  // 第一个参数为调用时间
+    }
+    inputArgs = inputArgs.concat(args)
+
+	logger.debug('args  : ', inputArgs);
     
-	hfc_wrap.invokeChaincode(peers, channelName, chaincodeName, fcn, args, username, orgname)
-	.then((response)=>{
-            logger.debug('invoke success, response=', response)
-            body.msg = response.message
-            body.result = response.result
-            res.send(body);
-        },
-        (err)=>{
-            logger.error('invoke failed, err=%s', err)
-            body.code = retCode.ERROR
-            body.msg = '' + err
-            res.send(body);
-        });
-}
-
-// Query on chaincode on target peers
-function handle_query(params, res, req) {
-	logger.debug('==================== QUERY BY CHAINCODE ==================');
-    var body = {
-        code : retCode.OK,
-        msg: "OK",
-    };
-
-	var channelName = params.channame;
-	var chaincodeName = params.ccname;
-	let args = params.args;
-	let fcn = params.fcn;
-	let peer = params.peer;
-
-	logger.debug('channelName : ' + channelName);
-	logger.debug('chaincodeName : ' + chaincodeName);
-	logger.debug('fcn : ' + fcn);
-	logger.debug('args : ' + args);
-
-	if (!chaincodeName) {
-		res.send(paraInvalidMessage('\'chaincodeName\''));
-		return;
-	}
-	if (!channelName) {
-		res.send(paraInvalidMessage('\'channelName\''));
-		return;
-	}
-	if (!fcn) {
-		res.send(paraInvalidMessage('\'fcn\''));
-		return;
-	}
-	if (!args) {
-		res.send(paraInvalidMessage('\'args\''));
-		return;
-	}
-
-    var username = params.usr;
-	if (!username) {
-		return res.send(paraInvalidMessage('\'usr\''))
-	}
-    var orgname = params.org;
-	if (!orgname) {
-        orgname = 'org1'
-	}
-	logger.debug('username  : ' + username);
-	logger.debug('orgname  : ' + orgname);
-
-    args = args.split(',')
-
-    
-	hfc_wrap.queryChaincode(peer, channelName, chaincodeName, args, fcn, username, orgname)
+	hfc_wrap.queryChaincode(peer, channelName, chaincodeName, inputArgs, fcn, username, orgname)
 	.then((response)=>{
             logger.debug('query success, response=', response)
             body.msg = response.message
             body.result = response.result
             res.send(body);
-        },
-        (err)=>{
+        })
+    .catch((err)=>{
             logger.error('query failed, err=%s', err)
             body.code = retCode.ERROR
             body.msg = '' + err
@@ -686,5 +742,4 @@ for (var path in routeTable) {
 
 
 http.listen(port, "127.0.0.1");
-logger.info("default ccid : %s", globalCcid);
 logger.info("listen on %d...", port);
