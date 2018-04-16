@@ -1757,6 +1757,20 @@ func (t *KD) Query(stub shim.ChaincodeStubInterface, function string, args []str
 
 		//通过返回0，表示检查通过
 		return []byte(strconv.FormatInt(0, 10)), nil
+	} else if function == "isAccSetPwd" { //账户是否设置密码
+		setPwd, err := t.isSetAccountPasswd(stub, accName, accountEnt)
+		if err != nil {
+			return nil, mylog.Errorf("Query(isAccSetPwd): IsSetAccountPasswd failed. err=%s, acc=%s", err, accName)
+		}
+
+		var retValues []byte
+		if setPwd {
+			retValues = []byte("1")
+		} else {
+			retValues = []byte("0")
+		}
+
+		return retValues, nil
 	}
 
 	return nil, mylog.Errorf("unknown function.")
@@ -5054,6 +5068,7 @@ func (t *KD) dumpWorldState(stub shim.ChaincodeStubInterface, queryTime int64, f
 		KeyCount   int64    `json:"keyCount"`
 		ErrKeyList []string `json:"errKeyList"`
 		GetNextErr bool     `json:"getNextErr"`
+		FileName   string   `json:"fileName"`
 		FileLine   int64    `json:"fileLine"`
 		FileSize   int64    `json:"fileSize"`
 		RunTime    string   `json:"runTime"`
@@ -5133,6 +5148,7 @@ func (t *KD) dumpWorldState(stub shim.ChaincodeStubInterface, queryTime int64, f
 	var endTime = time.Now()
 	var runTime = endTime.Sub(begTime)
 	qws.RunTime = runTime.String()
+	qws.FileName = newOutFile
 
 	mylog.Info("getWorldState: result=%+v.", qws)
 
