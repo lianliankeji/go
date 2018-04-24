@@ -162,9 +162,11 @@ var externReqParams_ChaincodeUpgrade
 
 
 //注册参数解析的handle
-var parseParamsHandle_Invoke
-var parseParamsHandle_Query
+var paramsFmtConvHandle_Invoke
+var paramsFmtConvHandle_Query
 
+var resultFormatHandle_Invoke
+var resultFormatHandle_Query
 
 var module_name
 
@@ -267,11 +269,14 @@ function __execRegister(params, req, outputRResult) {
         msg: "OK",
     };
 
+    if (outputRResult == true) 
+        logger.info("Enter Register")
+
 	logger.debug('params= \n', params);
 
 	var username = params.usr;
 	var orgname = params.org;
-    var funcName = params.fcn;
+    var funcName = params.fcn || params.func; //兼容老接口,老接口为func
 
 	if (!username) {
 		return Promise.reject(paraInvalidMessage("'usr'"))
@@ -370,7 +375,7 @@ function __execRegister(params, req, outputRResult) {
                         var indentity = hash.Hash160(response.cert).toString('base64')
                         logger.debug('indentity=  : ', indentity);
                         params.addusrindentity = indentity  //参数中添加indentity， invoke时会处理
-                        return __execInvoke(params, req, true)
+                        return __execInvoke(params, req, outputRResult)
                         .then((response)=>{
                                return response
                             }, 
@@ -380,6 +385,10 @@ function __execRegister(params, req, outputRResult) {
                     
                     })
                 } else {
+                    if (outputRResult == true) {
+                        logger.info("Register success: user=%s", username);
+                    }
+                    
                     return null
                 }
             })
@@ -387,7 +396,7 @@ function __execRegister(params, req, outputRResult) {
 
 	return promise1.then((invokeResp)=> {
             //OK
-            body.msg = util.format('Register: %s OK.', funcName ? funcName : '')
+            body.msg = util.format('Register(%s) OK.', funcName ? funcName : '')
             if (invokeResp) {
                 body.result = invokeResp.result
             }
@@ -422,18 +431,27 @@ function handle_invoke(params, res, req) {
         })
 }
 
-function __execInvoke(params, req, outputRResult) {
+function __execInvoke(params, req, outputQReslt) {
     var body = {
         code : retCode.OK,
         msg: "OK",
     };
+
+    if (outputQReslt == true)
+        logger.info("Enter Invoke")
+
+    if (paramsFmtConvHandle_Invoke) {
+        var rbody = paramsFmtConvHandle_Invoke(params)
+        if (rbody)
+            return Promise.reject(rbody);
+    }
 
 	logger.debug('params= \n', params);
 
 	var peers = params.peers;
 	var chaincodeName = params.ccname;
 	var channelName = params.channame;
-	var fcn = params.fcn;
+	var fcn = params.fcn || params.func; //兼容老接口,老接口为func
 	var args = params.args;
 
 	if (!chaincodeName) {
@@ -469,9 +487,11 @@ function __execInvoke(params, req, outputRResult) {
     }
 
     var inputArgs = []
-    if (params.autoadd) {
+    
+    //使用线上钱包时才能自动添加参数，因为签名是在本程序中做； 否则不能自动添加，因为签名是在客户端做的，会对参数做签名
+    if (params.useOLW && params.autoadd) {
         inputArgs.push(username) 
-        if (params.accequsr) {
+        if (params.accequsr) { //账户和用户名相同
             inputArgs.push(username)
         } else {
             var acc = params.acc
@@ -480,28 +500,15 @@ function __execInvoke(params, req, outputRResult) {
             }
             inputArgs.push(acc)
         }
-        inputArgs.push(Date.now().toString())  
-    }
+    } 
+
     
     if (args) {
         inputArgs = inputArgs.concat(args)
-    } else {
-        if (parseParamsHandle_Invoke) {
-            var parsedArgs = []
-            
-            var rbody = parseParamsHandle_Invoke(params, parsedArgs)
-            if (rbody)
-                return Promise.reject(rbody.msg);
-            
-            inputArgs = inputArgs.concat(parsedArgs)
-        }
     }
-    
-    //这两个参数只有在开户时才会设置
-    if (params.addusrindentity) {
-        inputArgs.push(params.addusrindentity)
-    }
-    if (params.addPubKeyHash) {
+
+    //这个参数只有在开户时才会设置
+    if (params.useOLW && params.addPubKeyHash) {
         inputArgs.push(params.addPubKeyHash)
     }
     
@@ -553,29 +560,74 @@ function __execInvoke(params, req, outputRResult) {
         promise0 = Promise.resolve(params.signature)
     }
     
+    
+    
+    var invokeRequest = {}
+    invokeRequest.fcn = fcn
+    invokeRequest.args = inputArgs
+    invokeRequest.org = orgname
+    invokeRequest.peers = peers
+    invokeRequest.user = username
+    invokeRequest.channame = channelName
+    invokeRequest.ccname = chaincodeName
+    
     return promise0.then((sign)=>{
         inputArgs.push(sign)
-
+        
+        
+        //这个参数只有在开户时才会设置。用户身份是平台自动添加的，所以要放在签名之后，因为签名可能是在客户端做的
+        if (params.addusrindentity) {
+            inputArgs.push(params.addusrindentity)
+        }
+        
         logger.debug('args  : ', inputArgs);
+
 
         return hfc_wrap.invokeChaincode(peers, channelName, chaincodeName, fcn, inputArgs, username, orgname)
         .then((response)=>{
                 logger.debug('invoke success, response=', response)
-                body.msg = response.message
+                body.msg = util.format("Invoke(%s) OK.", fcn)
                 body.result = response.result
 
                 if (params.exportInvokeIntf) {
                     exportInvokeIntf(username, req, body);
                     body.exportIntfUrl = getExportIntfUrl(username);
                 }
+                
+                if (outputQReslt == true) {
+                    //去掉无用的信息,不打印
+                    if (fcn == "account" || fcn == "accountCB") {
+                        
+                    } else {
+                        
+                    }                        
+                        
+                    logger.info("Invoke success: request=%j, results=%j",invokeRequest, response.result);
+                }
+
+                if (resultFormatHandle_Invoke) {
+                    resultFormatHandle_Invoke(params, req, body)
+                }
 
                 return body;
         })
     })
     .catch((err)=>{
-            logger.error('invoke failed, err=%s', err)
+            logger.debug('invoke failed, err=%s', err)
             body.code = retCode.ERROR
             body.msg = '' + err
+            
+            if (outputQReslt == true) {
+                //去掉无用的信息,不打印
+                if (fcn == "account" || fcn == "accountCB") {
+                    
+                } else {
+                    
+                }                        
+                logger.error("Invoke failed : request=%j, error=%j", invokeRequest, err);
+            }
+            
+            
             return Promise.reject(body);
         });
     
@@ -589,17 +641,29 @@ function handle_query(params, res, req) {
         msg: "OK",
     };
 
+    var outputQReslt = true
+    if (outputQReslt == true) {    
+        logger.info("Enter Query")
+    }
+
     for (var p in externReqParams_Query) {
         if (params[p] == undefined)
             params[p] = externReqParams_Query[p]
     }
-
+    
+    
+    if (paramsFmtConvHandle_Query) {
+        var rbody = paramsFmtConvHandle_Query(params)
+        if (rbody)
+            return res.send(rbody);
+    }
+        
 	logger.debug('params= \n', params);
 
 	var channelName = params.channame;
 	var chaincodeName = params.ccname;
 	let args = params.args;
-	let fcn = params.fcn;
+	let fcn = params.fcn || params.func; //兼容老接口,老接口为func
 	let peer = params.peer;
 
 
@@ -639,9 +703,10 @@ function handle_query(params, res, req) {
     }
 
     var inputArgs = []
-    if (params.autoadd) {
+    //使用线上钱包时才能自动添加参数，因为签名是在本程序中做； 否则不能自动添加，因为签名是在客户端做的，会对参数做签名
+    if (params.useOLW && params.autoadd) {
         inputArgs.push(username) 
-        if (params.accequsr) {
+        if (params.accequsr) { //账户和用户名相同
             inputArgs.push(username)
         } else {
             var acc = params.acc
@@ -650,21 +715,9 @@ function handle_query(params, res, req) {
             }
             inputArgs.push(acc)
         }
-        inputArgs.push(Date.now().toString()) 
     }
     if (args) {
         inputArgs = inputArgs.concat(args)
-    } else {
-        if (parseParamsHandle_Query) {
-            var parsedArgs = []
-            
-            var rbody = parseParamsHandle_Query(params, parsedArgs)
-            if (rbody)
-                return res.send(rbody.msg);
-            
-            inputArgs = inputArgs.concat(parsedArgs)
-        }
-        
     }
 
     /* 可以没有参数
@@ -708,15 +761,25 @@ function handle_query(params, res, req) {
     }
 
             
+    var queryRequest = {}
+    queryRequest.fcn = fcn
+    queryRequest.args = inputArgs
+    queryRequest.org = orgname
+    queryRequest.peer = peer
+    queryRequest.user = username
+    queryRequest.channame = channelName
+    queryRequest.ccname = chaincodeName
+
     return promise0.then((sign)=>{
         inputArgs.push(sign)
     
         logger.debug('args  : ', inputArgs);
     
+
         return hfc_wrap.queryChaincode(peer, channelName, chaincodeName, inputArgs, fcn, username, orgname)
         .then((response)=>{
                 logger.debug('query success, response=', response)
-                body.msg = response.message
+                body.msg = util.format("Query(%s) OK.", fcn)
                 body.result = response.result
                 
                 if (params.exportInvokeIntf) {
@@ -724,7 +787,52 @@ function handle_query(params, res, req) {
                     body.exportIntfUrl = getExportIntfUrl(username);
                 }
                 
-                res.send(body);
+                var promise1
+                if (fcn == "getInfoForWeb") {
+                    promise1 = new Promise((resolve, reject)=>{
+                        return __queryTransInBlockOnce(params, req, true)
+                        .then((response)=>{
+                                return resolve(response.result)
+                            }, 
+                            (err)=> {
+                                return reject(err.msg) //只取错误信息
+                            })
+                    })
+                    
+                } else {
+                    promise1 = Promise.resolve()
+                }
+                
+                return promise1.then((txInfos)=>{
+                    if (fcn == "getInfoForWeb") {
+                        var queryObj = JSON.parse(response.result)
+                        txInfos.accountCnt = queryObj.accountcount
+                        txInfos.issuedAmt = queryObj.issueamt
+                        txInfos.totalAmt = queryObj.issuetotalamt
+                        txInfos.circulateAmt = queryObj.circulateamt
+                        txInfos.nodesCnt = 4
+                        
+                        body.result = txInfos
+                    }
+                    
+                    logger.debug("resultFormatHandle_Query =",resultFormatHandle_Query)
+                    if (resultFormatHandle_Query) {
+                        resultFormatHandle_Query(params, req, body)
+                    }
+                    
+                    res.send(body);
+                   
+
+                    if (outputQReslt == true) {
+                        var resultStr = response.result
+                        //去掉无用的信息,不打印
+                        var maxPrtLen = 256
+                        if (resultStr.length > maxPrtLen)
+                            resultStr = resultStr.substr(0, maxPrtLen) + "......"
+                        logger.info("Query success: request=%j, results=%s",queryRequest, resultStr);
+                    }
+
+                })
             })
     })
     .catch((err)=>{
@@ -732,6 +840,11 @@ function handle_query(params, res, req) {
             body.code = retCode.ERROR
             body.msg = '' + err
             res.send(body);
+            
+            if (outputQReslt == true) {
+                //去掉无用的信息,不打印
+                logger.error("Query failed : request=%j, error=%j", queryRequest, err);
+            }
         });
 }
 
@@ -775,6 +888,7 @@ function handle_queryBlockById(params, res, req) {
         })
     .catch((err)=>{
             logger.error('getBlockById failed, err=%s', err)
+            body.code = retCode.ERROR
             body.msg = '' + err
             res.send(body);
         });
@@ -821,6 +935,7 @@ function handle_queryBlockByHash(params, res, req) {
         })
     .catch((err)=>{
             logger.error('getBlockByHash failed, err=%s', err)
+            body.code = retCode.ERROR
             body.msg = '' + err
             res.send(body);
         });
@@ -866,6 +981,7 @@ function handle_queryTransactions(params, res, req) {
         })
     .catch((err)=>{
             logger.error('queryTransactions failed, err=%s', err)
+            body.code = retCode.ERROR
             body.msg = '' + err
             res.send(body);
         });
@@ -906,6 +1022,7 @@ function handle_queryChains(params, res, req) {
         })
     .catch((err)=>{
             logger.error('queryChains failed, err=%s', err)
+            body.code = retCode.ERROR
             body.msg = '' + err
             res.send(body);
         });
@@ -958,6 +1075,7 @@ function handle_queryChaincodes(params, res, req) {
         })
     .catch((err)=>{
             logger.error('queryChaincodes(%s) failed, err=%s', installType, err)
+            body.code = retCode.ERROR
             body.msg = '' + err
             res.send(body);
         });
@@ -999,6 +1117,7 @@ function handle_queryChannels(params, res, req) {
         })
     .catch((err)=>{
             logger.error('queryChannels failed, err=%s', err)
+            body.code = retCode.ERROR
             body.msg = '' + err
             res.send(body);
         });
@@ -1007,6 +1126,18 @@ function handle_queryChannels(params, res, req) {
 
 //  Query Get Trans in blocks
 function handle_queryTransInBlockOnce(params, res, req) {
+	logger.debug('==================== GET BLOCK BY NUMBER ==================');
+
+	return __queryTransInBlockOnce(params, req)
+    .then((response)=>{
+            res.send(response)
+        }, 
+        (err)=> {
+            res.send(err)
+        })
+}
+
+function __queryTransInBlockOnce(params, req, gotChainHight) {
 	logger.debug('==================== GET BLOCK BY NUMBER ==================');
     var body = {
         code : retCode.OK,
@@ -1055,17 +1186,25 @@ function handle_queryTransInBlockOnce(params, res, req) {
             
             var latestBlockNum = chainHight - 1  //最新的block编号，从0开始到chainHight-1个
             
+            
             var txRecords = []
             
             var startBlockNum = 0
             if (isDesc)
                 startBlockNum = latestBlockNum
 
-            __getTxInfoInBlockOnce(latestBlockNum, startBlockNum, queryTxCount, isDesc, 1, txRecords, peer, username, orgname)
+            return __getTxInfoInBlockOnce(latestBlockNum, startBlockNum, queryTxCount, isDesc, 1, txRecords, peer, username, orgname)
             .then(()=>{
                     logger.debug('txRecords=', txRecords)
-                    body.result = txRecords
-                    res.send(body)
+                    if (gotChainHight == true){
+                        var retObj = {}
+                        retObj.latestBlock = latestBlockNum
+                        retObj.txRecords = txRecords
+                        body.result = retObj
+                    } else {
+                        body.result = txRecords
+                    }
+                    return (body)
                 },
                 (err)=>{
                     return Promise.reject('get tx info failed, err=%s', err)
@@ -1073,8 +1212,9 @@ function handle_queryTransInBlockOnce(params, res, req) {
         })
     .catch((err)=>{
             logger.error('queryTransInBlock: getChainInfo failed, err=%s', err)
+            body.code = retCode.ERROR
             body.msg = '' + err
-            res.send(body);
+            return Promise.reject(body)
     })
 
 
@@ -1169,6 +1309,7 @@ function __getTxInfoInBlockOnce(latestBlockNum, startBlockNum, queryTxCnt, isDes
                     
                     txObj.txInfo = txObj.input.toString('base64')
                     txObj.node = accountName
+                    delete txObj.input
 
                     txRecords.push(txObj)
 
@@ -1429,6 +1570,8 @@ function __chaincode_instantiateOrUpgrade(params, req, type, outputRResult) {
         code : retCode.OK,
         msg: "OK",
     };
+    
+    logger.info("Enter "+type);
 
 	logger.debug('params= \n', params);
 
@@ -1891,19 +2034,6 @@ function __handle_comm__(req, res) {
             params[p] = externReqParams_All[p]
     }
     
-////////////////////////////////////////////////////////////////////
-//临时打桩， 上线时删掉
-for (var k in params) {
-    if (k == 'ccname') {
-        var v = params[k]
-        if (v == "hhhh")
-            params[k] = "19"
-        else if (v == "MogaoTestCC")
-            params[k] = "21"
-    }
-}
-////////////////////////////////////////////////////////////////////
-    
     //调用处理函数
     return handle(params, res, req)
 }
@@ -1975,8 +2105,27 @@ function Loulan_SetWalletPath(p) {
     walletPath = p
 }
 
+function Loulan_RegisterInvokeParamsFmtConvHandle(fn) {
+    paramsFmtConvHandle_Invoke = fn
+}
+
+function Loulan_RegisterQueryParamsFmtConvHandle(fn) {
+    paramsFmtConvHandle_Query = fn
+}
+
+
+
+
+function Loulan_RegisterQueryResultFormatHandle(fn) {
+    resultFormatHandle_Query = fn
+}
+function Loulan_RegisterInvokeResultFormatHandle(fn) {
+    resultFormatHandle_Invoke = fn
+}
+
+
 function Loulan_Start(subCfgFile) {
-    
+
     if (!module_name) {
         throw new Error("please call 'loulan.SetModuleName(moduleName)' first.");
     }
@@ -1994,6 +2143,8 @@ function Loulan_Start(subCfgFile) {
     logger.info("listen on %s:%d...", host, port);
 }
 
+exports.retCode = retCode
+exports.paraInvalidMessage = paraInvalidMessage
 exports.SetModuleName = Loulan_SetModuleName
 exports.SetWalletPath = Loulan_SetWalletPath
 exports.SetRequireParams = Loulan_SetRequireParams
@@ -2001,4 +2152,8 @@ exports.SetLogger = Loulan_SetLogger
 exports.UseDefaultRoute = Loulan_UseDefaultRoute
 exports.RegisterRoute = Loulan_RegisterRoute
 exports.SetExportIntfPath = Loulan_SetExportIntfPath
+exports.RegisterInvokeParamsFmtConvHandle = Loulan_RegisterInvokeParamsFmtConvHandle
+exports.RegisterQueryParamsFmtConvHandle = Loulan_RegisterQueryParamsFmtConvHandle
+exports.RegisterQueryResultFormatHandle = Loulan_RegisterQueryResultFormatHandle
+exports.RegisterInvokeResultFormatHandle = Loulan_RegisterInvokeResultFormatHandle
 exports.Start = Loulan_Start

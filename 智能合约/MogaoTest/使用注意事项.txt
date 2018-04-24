@@ -1,0 +1,9 @@
+在linux上启动时，需要在本目录建立LoulanPlatform目录下的两个文件loulan.js和config.js的硬链接（软连接不行）, 然后再建立lib和artifacts的软连接
+命令如下：
+cd 当前目录
+ln ../LoulanPlatform/loulan.js
+ln ../LoulanPlatform/config.js
+ln -s ../lib/
+ln -s ../artifacts/
+
+修改loulan.js 和 config.js时只在LoulanPlatform目录下修改，其它各目录都引用这个文件即可。

@@ -1,0 +1,15 @@
+{
+   "host":"localhost",
+   "port":"8751",
+   "jwt_expiretime": "36000",
+   "channelName":"retail-channel",
+   "CC_SRC_PATH":"./ccpath",
+   "keyValueStore":"../fabric-client-kvs",
+   "eventWaitTime":"30000",
+   "admins":[
+      {
+         "username":"admin",
+         "secret":"adminpasswd"
+      }
+   ]
+}

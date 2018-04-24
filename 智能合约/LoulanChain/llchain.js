@@ -131,8 +131,8 @@ const routeTable = {
     '/llchain/blocks/:blockId'       : {'GET' : handle_queryBlockById,       'POST' : handle_queryBlockById},
     '/llchain/blocks'                : {'GET' : handle_queryBlockByHash,     'POST' : handle_queryBlockByHash},
     '/llchain/transactions/:trxnId'  : {'GET' : handle_queryTransactions,    'POST' : handle_queryTransactions},
-    '/llchain/channels/:channelName' : {'GET' : handle_queryChannels,        'POST' : handle_queryChannels},
-    '/llchain/chaincodes/:type'      : {'GET' : handle_queryChaincodes,      'POST' : handle_queryChaincodes},   //type = installed/instantiated
+    '/llchain/channels/'             : {'GET' : handle_queryChannels,        'POST' : handle_queryChannels},        //查询所有的channel信息
+    '/llchain/chaincodes/:type'      : {'GET' : handle_queryChaincodes,      'POST' : handle_queryChaincodes},      //查询chaincodes的相关信息 type = installed/instantiated
     '/llchain/chain'                 : {'GET' : handle_queryChains,          'POST' : handle_queryChains},
     '/llchain/getsometransonce'      : {'GET' : handle_queryTransInBlockOnce,'POST' : handle_queryTransInBlockOnce},
     '/llchain/setenv'                : {'GET' : handle_setenv,               'POST' : handle_setenv},
@@ -140,13 +140,13 @@ const routeTable = {
 }
 
 //for test
-function handle_test(params, res, req){  
+function handle_test(params, res, req){
     var body = {
         code : retCode.OK,
         msg: "OK",
         result: ""
     };
-    
+
     body.result=params
     res.send(body)
     return
@@ -209,7 +209,7 @@ function handle_queryBlockById(params, res, req) {
         orgname = 'org1'
 	}
 
-	hfc_wrap.getBlockByNumber(peer, blockId, username, orgname)
+	return hfc_wrap.getBlockByNumber(peer, blockId, username, orgname)
 	.then((response)=>{
             logger.debug('getBlockById success, response=', response)
             body.msg = 'ok'
@@ -253,7 +253,7 @@ function handle_queryBlockByHash(params, res, req) {
 	}
 
 
-	hfc_wrap.getBlockByHash(peer, hash, username, orgname)
+	return hfc_wrap.getBlockByHash(peer, hash, username, orgname)
 	.then((response)=>{
             logger.debug('getBlockByHash success, response=', response)
             body.msg = 'ok'
@@ -298,7 +298,7 @@ function handle_queryTransactions(params, res, req) {
         orgname = 'org1'
 	}
 
-	hfc_wrap.getTransactionByID(peer, trxnId, username, orgname)
+	return hfc_wrap.getTransactionByID(peer, trxnId, username, orgname)
 	.then((response)=>{
             logger.debug('queryTransactions success, response=', response)
             body.msg = 'ok'
@@ -337,7 +337,7 @@ function handle_queryChains(params, res, req) {
         orgname = 'org1'
 	}
 
-	hfc_wrap.getChainInfo(peer, username, orgname)
+	return hfc_wrap.getChainInfo(peer, username, orgname)
 	.then((response)=>{
             logger.debug('queryChains success, response=', response)
             body.msg = 'ok'
@@ -387,7 +387,7 @@ function handle_queryChaincodes(params, res, req) {
         orgname = 'org1'
 	}
 
-	hfc_wrap.getChaincodes(peer, installType, username, orgname)
+	return hfc_wrap.getChaincodes(peer, installType, username, orgname)
 	.then((response)=>{
             logger.debug('queryChaincodes(%s) success, response=', installType, response)
             body.msg = 'ok'
@@ -410,12 +410,6 @@ function handle_queryChannels(params, res, req) {
         msg : "OK",
     };
 
-    var channelName = params.channelName
-	logger.debug('channelName : ' + channelName);
-	if (!channelName) {
-		return res.json(paraInvalidMessage('\'channelName\''));
-	}
-
 	var peer = params.peer;
 	logger.debug('peer: ' + peer);
 	if (!peer) {
@@ -432,7 +426,7 @@ function handle_queryChannels(params, res, req) {
         orgname = 'org1'
 	}
 
-	hfc_wrap.getChannels(peer, username, orgname)
+	return hfc_wrap.getChannels(peer, username, orgname)
 	.then((response)=>{
             logger.debug('queryChannels success, response=', response)
             body.msg = 'ok'
@@ -485,7 +479,7 @@ function handle_queryTransInBlockOnce(params, res, req) {
         isDesc = true
     
     //获取区块高度
-    hfc_wrap.getChainInfo(peer, username, orgname)
+    return hfc_wrap.getChainInfo(peer, username, orgname)
 	.then((response)=>{
             logger.debug('queryTransInBlock: queryChains success, response=', response)
 

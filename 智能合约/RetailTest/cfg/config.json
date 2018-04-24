@@ -1,0 +1,15 @@
+{
+   "host":"localhost",
+   "port":"8802",
+   "jwt_expiretime": "36000",
+   "channelName":"retailtest-channel",
+   "CC_SRC_PATH":"/home/fabric_smartcontract/",
+   "keyValueStore":"../fabric-client-kvs",
+   "eventWaitTime":"30000",
+   "admins":[
+      {
+         "username":"admin",
+         "secret":"adminpasswd"
+      }
+   ]
+}

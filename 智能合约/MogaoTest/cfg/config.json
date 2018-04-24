@@ -1,0 +1,15 @@
+{
+   "host":"localhost",
+   "port":"8801",
+   "jwt_expiretime": "36000",
+   "channelName":"mogaotest-channel",
+   "CC_SRC_PATH":"./ccpath",
+   "keyValueStore":"../fabric-client-kvs",
+   "eventWaitTime":"30000",
+   "admins":[
+      {
+         "username":"admin",
+         "secret":"adminpasswd"
+      }
+   ]
+}
