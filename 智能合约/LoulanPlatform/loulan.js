@@ -246,7 +246,7 @@ function handle_setenv(params, res, req){
 ///////////////////////// REST ENDPOINTS START HERE ///////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 // Register and enroll user
-function handle_register(params, res, req){
+function handle_register(params, res, req, serialno){
     logger.debug('enter handle_register')
     
     for (var p in externReqParams_Register) {
@@ -254,7 +254,7 @@ function handle_register(params, res, req){
             params[p] = externReqParams_Register[p]
     }
     
-    return __execRegister(params, req, true)
+    return __execRegister(params, req, true, serialno)
     .then((response)=>{
             res.send(response)
         }, 
@@ -263,14 +263,14 @@ function handle_register(params, res, req){
         })
 }
 
-function __execRegister(params, req, outputRResult) {
+function __execRegister(params, req, outputRResult, serialno) {
     var body = {
         code : retCode.OK,
         msg: "OK",
     };
 
     if (outputRResult == true) 
-        logger.info("Enter Register")
+        logger.info("Enter Register.%d", serialno)
 
 	logger.debug('params= \n', params);
 
@@ -375,7 +375,7 @@ function __execRegister(params, req, outputRResult) {
                         var indentity = hash.Hash160(response.cert).toString('base64')
                         logger.debug('indentity=  : ', indentity);
                         params.addusrindentity = indentity  //参数中添加indentity， invoke时会处理
-                        return __execInvoke(params, req, outputRResult)
+                        return __execInvoke(params, req, outputRResult, serialno)
                         .then((response)=>{
                                return response
                             }, 
@@ -385,10 +385,6 @@ function __execRegister(params, req, outputRResult) {
                     
                     })
                 } else {
-                    if (outputRResult == true) {
-                        logger.info("Register success: user=%s", username);
-                    }
-                    
                     return null
                 }
             })
@@ -396,16 +392,29 @@ function __execRegister(params, req, outputRResult) {
 
 	return promise1.then((invokeResp)=> {
             //OK
-            body.msg = util.format('Register(%s) OK.', funcName ? funcName : '')
+            if (funcName)
+                body.msg = util.format('Register(%s) OK.', funcName)
+            else 
+                body.msg = util.format('Register OK.')
             if (invokeResp) {
                 body.result = invokeResp.result
             }
+            
+            if (outputRResult == true) {
+                logger.info("Register.%d success: user=%s", serialno, username);
+            }
+            
             return (body)
         })
     .catch((err)=>{
             logger.debug('register responsed error, err=%s', err)
             body.code = retCode.ERROR
             body.msg = util.format('Register: %s err, %s.', funcName ? funcName : '', err)
+            
+            if (outputRResult == true) {
+                logger.info("Register.%d failed: user=%s, err=%j", serialno, username, err);
+            }
+            
             return Promise.reject(body)
         });
 }
@@ -414,7 +423,7 @@ function __execRegister(params, req, outputRResult) {
 
 
 // Invoke transaction on chaincode on target peers
-function handle_invoke(params, res, req) {
+function handle_invoke(params, res, req, serialno) {
 
     for (var p in externReqParams_Invoke) {
         if (params[p] == undefined)
@@ -422,7 +431,7 @@ function handle_invoke(params, res, req) {
     }
 
 	logger.debug('==================== INVOKE ON CHAINCODE ==================');
-    return __execInvoke(params, req, true)
+    return __execInvoke(params, req, true, serialno)
     .then((response)=>{
             res.send(response)
         }, 
@@ -431,14 +440,14 @@ function handle_invoke(params, res, req) {
         })
 }
 
-function __execInvoke(params, req, outputQReslt) {
+function __execInvoke(params, req, outputQReslt, serialno) {
     var body = {
         code : retCode.OK,
         msg: "OK",
     };
 
     if (outputQReslt == true)
-        logger.info("Enter Invoke")
+        logger.info("Enter Invoke.%d", serialno)
 
     if (paramsFmtConvHandle_Invoke) {
         var rbody = paramsFmtConvHandle_Invoke(params)
@@ -602,7 +611,7 @@ function __execInvoke(params, req, outputQReslt) {
                         
                     }                        
                         
-                    logger.info("Invoke success: request=%j, results=%j",invokeRequest, response.result);
+                    logger.info("Invoke.%d success: request=%j, results=%j", serialno, invokeRequest, response.result);
                 }
 
                 if (resultFormatHandle_Invoke) {
@@ -624,7 +633,7 @@ function __execInvoke(params, req, outputQReslt) {
                 } else {
                     
                 }                        
-                logger.error("Invoke failed : request=%j, error=%j", invokeRequest, err);
+                logger.error("Invoke.%d failed : request=%j, error=%j", serialno, invokeRequest, err);
             }
             
             
@@ -634,7 +643,7 @@ function __execInvoke(params, req, outputQReslt) {
 }
 
 // Query on chaincode on target peers
-function handle_query(params, res, req) {
+function handle_query(params, res, req, serialno) {
 	logger.debug('==================== QUERY BY CHAINCODE ==================');
     var body = {
         code : retCode.OK,
@@ -643,7 +652,7 @@ function handle_query(params, res, req) {
 
     var outputQReslt = true
     if (outputQReslt == true) {    
-        logger.info("Enter Query")
+        logger.info("Enter Query.%d", serialno)
     }
 
     for (var p in externReqParams_Query) {
@@ -829,21 +838,21 @@ function handle_query(params, res, req) {
                         var maxPrtLen = 256
                         if (resultStr.length > maxPrtLen)
                             resultStr = resultStr.substr(0, maxPrtLen) + "......"
-                        logger.info("Query success: request=%j, results=%s",queryRequest, resultStr);
+                        logger.info("Query.%d success: request=%j, results=%s", serialno, queryRequest, resultStr);
                     }
 
                 })
             })
     })
     .catch((err)=>{
-            logger.error('query failed, err=%s', err)
+            //logger.error('query failed, err=%s', err)
             body.code = retCode.ERROR
             body.msg = '' + err
             res.send(body);
             
             if (outputQReslt == true) {
                 //去掉无用的信息,不打印
-                logger.error("Query failed : request=%j, error=%j", queryRequest, err);
+                logger.error("Query.%d failed : request=%j, error=%j", serialno, queryRequest, err);
             }
         });
 }
@@ -857,6 +866,11 @@ function handle_queryBlockById(params, res, req) {
     };
 
 	logger.debug('params= \n', params);
+
+    var channelName = params.channame;
+    if (!channelName) {
+        return res.json(paraInvalidMessage("'channame'"));
+    }
 
 	let blockId = params.blockId;
 	let peer = params.peer;
@@ -879,7 +893,7 @@ function handle_queryBlockById(params, res, req) {
         orgname = 'org1'
 	}
 
-	return hfc_wrap.getBlockByNumber(peer, blockId, username, orgname)
+	return hfc_wrap.getBlockByNumber(peer, blockId, username, orgname, channelName)
 	.then((response)=>{
             logger.debug('getBlockById success, response=', response)
             body.msg = 'ok'
@@ -904,6 +918,11 @@ function handle_queryBlockByHash(params, res, req) {
 
 	logger.debug('params= \n', params);
 
+    var channelName = params.channame;
+    if (!channelName) {
+        return res.json(paraInvalidMessage("'channame'"));
+    }
+
 	let hash = params.hash;
 	let peer = params.peer;
     if (!peer) {
@@ -926,7 +945,7 @@ function handle_queryBlockByHash(params, res, req) {
 	}
 
 
-	return hfc_wrap.getBlockByHash(peer, hash, username, orgname)
+	return hfc_wrap.getBlockByHash(peer, hash, username, orgname, channelName)
 	.then((response)=>{
             logger.debug('getBlockByHash success, response=', response)
             body.msg = 'ok'
@@ -951,6 +970,11 @@ function handle_queryTransactions(params, res, req) {
 
 	logger.debug('params= \n', params);
 
+    var channelName = params.channame;
+    if (!channelName) {
+        return res.json(paraInvalidMessage("'channame'"));
+    }
+
 	let trxnId = params.trxnId;
 	let peer = params.peer;
     if (!peer) {
@@ -972,7 +996,7 @@ function handle_queryTransactions(params, res, req) {
         orgname = 'org1'
 	}
 
-	return hfc_wrap.getTransactionByID(peer, trxnId, username, orgname)
+	return hfc_wrap.getTransactionByID(peer, trxnId, username, orgname, channelName)
 	.then((response)=>{
             logger.debug('queryTransactions success, response=', response)
             body.msg = 'ok'
@@ -998,6 +1022,11 @@ function handle_queryChains(params, res, req) {
     
 	logger.debug('params= \n', params);
 
+    var channelName = params.channame;
+    if (!channelName) {
+        return res.json(paraInvalidMessage("'channame'"));
+    }
+
 	let peer = params.peer;
     if (!peer) {
         peer = 'peer0'
@@ -1013,7 +1042,7 @@ function handle_queryChains(params, res, req) {
         orgname = 'org1'
 	}
 
-	return hfc_wrap.getChainInfo(peer, username, orgname)
+	return hfc_wrap.getChainInfo(peer, username, orgname, channelName)
 	.then((response)=>{
             logger.debug('queryChains success, response=', response)
             body.msg = 'ok'
@@ -1048,10 +1077,18 @@ function handle_queryChaincodes(params, res, req) {
 		return res.json(paraInvalidMessage('\'type\''));
     }
     
+    var channelName = params.channame;
+
+    
 	if (installType === 'installed') {
 		logger.debug(
 			'================ GET INSTALLED CHAINCODES ======================');
 	} else {
+        
+        if (!channelName) {
+            return res.json(paraInvalidMessage("'channame'"));
+        }
+        
 		logger.debug(
 			'================ GET INSTANTIATED CHAINCODES ======================');
 	}
@@ -1066,7 +1103,7 @@ function handle_queryChaincodes(params, res, req) {
         orgname = 'org1'
 	}
 
-	return hfc_wrap.getChaincodes(peer, installType, username, orgname)
+	return hfc_wrap.getChaincodes(peer, installType, username, orgname, channelName)
 	.then((response)=>{
             logger.debug('queryChaincodes(%s) success, response=', installType, response)
             body.msg = 'ok'
@@ -1145,6 +1182,11 @@ function __queryTransInBlockOnce(params, req, gotChainHight) {
     };
 
 	logger.debug('params= \n', params);
+    
+    var channelName = params.channame;
+    if (!channelName) {
+        return res.json(paraInvalidMessage("'channame'"));
+    }
 
 	let peer = params.peer;
     if (!peer) {
@@ -1193,7 +1235,7 @@ function __queryTransInBlockOnce(params, req, gotChainHight) {
             if (isDesc)
                 startBlockNum = latestBlockNum
 
-            return __getTxInfoInBlockOnce(latestBlockNum, startBlockNum, queryTxCount, isDesc, 1, txRecords, peer, username, orgname)
+            return __getTxInfoInBlockOnce(latestBlockNum, startBlockNum, queryTxCount, isDesc, 1, txRecords, peer, username, orgname, channelName)
             .then(()=>{
                     logger.debug('txRecords=', txRecords)
                     if (gotChainHight == true){
@@ -1221,7 +1263,7 @@ function __queryTransInBlockOnce(params, req, gotChainHight) {
 }
 
 //txRecords作为入参传入，因为里面有递归调用，如果在本函数里用局部变量定义无法在递归中传递
-function __getTxInfoInBlockOnce(latestBlockNum, startBlockNum, queryTxCnt, isDesc, accIdxInArgs, txRecords, peer, username, orgname) {
+function __getTxInfoInBlockOnce(latestBlockNum, startBlockNum, queryTxCnt, isDesc, accIdxInArgs, txRecords, peer, username, orgname, channelName) {
 
     var queryBlockCnt = queryTxCnt  //每个区块可能含有0个或多个交易信息，所以查询的区块数默认等于交易数
 
@@ -1264,7 +1306,7 @@ function __getTxInfoInBlockOnce(latestBlockNum, startBlockNum, queryTxCnt, isDes
 
     //并行查询
     blockNumList.forEach((blockIdx)=>{
-        let qPromise = hfc_wrap.getBlockByNumber(peer, blockIdx, username, orgname)
+        let qPromise = hfc_wrap.getBlockByNumber(peer, blockIdx, username, orgname, channelName)
             .then((response)=>{
                     logger.debug('getBlockById success, response=', response)
                     return Promise.resolve(response)
@@ -1333,7 +1375,7 @@ function __getTxInfoInBlockOnce(latestBlockNum, startBlockNum, queryTxCnt, isDes
                     nextStart = endBlockNum + 1
                 }
 
-                return __getTxInfoInBlockOnce(latestBlockNum, nextStart, queryTxCnt, isDesc, accIdxInArgs, txRecords, peer, username, orgname)
+                return __getTxInfoInBlockOnce(latestBlockNum, nextStart, queryTxCnt, isDesc, accIdxInArgs, txRecords, peer, username, orgname, channelName)
             } else {
                 return Promise.resolve()
             }
@@ -1600,7 +1642,7 @@ function __chaincode_instantiateOrUpgrade(params, req, type, outputRResult) {
 		return Promise.reject(paraInvalidMessage("'ccvers'"));
 	}
 	if (!channelName) {
-		//return Promise.reject(paraInvalidMessage("'channame'"));
+		return Promise.reject(paraInvalidMessage("'channame'"));
 	}
 
     var username = params.usr;
@@ -1651,7 +1693,7 @@ function __chaincode_instantiateOrUpgrade(params, req, type, outputRResult) {
               (err)=>{ logger.error('%s notifyChaincodeState(%d) failed: err=%s', type, subscribe.chaincodeStates.Deploying, err) //失败了只记录日志，部署或升级继续 
               })
         .then(()=>{
-            return hfc_wrap.instantiateChaincode(peers, chaincodeName, chaincodeVersion, fcn, inputArgs, username, orgname, 180000, 50000)
+            return hfc_wrap.instantiateChaincode(peers, channelName, chaincodeName, chaincodeVersion, fcn, inputArgs, username, orgname, 180000, 50000)
         })
         .then((response)=>{
                 logger.debug('instantiateChaincode success, response=', response)
@@ -1708,7 +1750,7 @@ function __chaincode_instantiateOrUpgrade(params, req, type, outputRResult) {
               (err)=>{ logger.error('%s notifyChaincodeState(%d) failed: err=%s', type, subscribe.chaincodeStates.Upgrading, err) //失败了只记录日志，部署或升级继续 
               })
         .then(()=>{
-            return hfc_wrap.upgradeChaincode(peers, chaincodeName, chaincodeVersion, fcn, inputArgs, username, orgname, 180000, 50000)
+            return hfc_wrap.upgradeChaincode(peers, channelName, chaincodeName, chaincodeVersion, fcn, inputArgs, username, orgname, 180000, 50000)
         })
         .then((response)=>{
                 logger.debug('upgradeChaincode success, response=', response)
@@ -1990,6 +2032,7 @@ function getExportIntfUrl(usr) {
     return exportIntfAddr + exportIntfBaseUrl + '/' + getExportInfoFileRelativePath(usr)
 }
 
+var accessSeq = 0
 //公共处理
 function __handle_comm__(req, res) {
     //logger.info('new http req=%d, res=%d', req.socket._idleStart, res.socket._idleStart)
@@ -2035,7 +2078,8 @@ function __handle_comm__(req, res) {
     }
     
     //调用处理函数
-    return handle(params, res, req)
+    accessSeq++
+    return handle(params, res, req, accessSeq)
 }
 
 
@@ -2132,15 +2176,22 @@ function Loulan_Start(subCfgFile) {
     
     subscribe.init(subCfgFile)
     
-    hfc_wrap.initNetworkTopo();
-    
-    for (var path in routeTable) {
-        app.get(path, __handle_comm__)
-        app.post(path, __handle_comm__)
-    }
+    hfc_wrap.initNetworkTopo()
+    .then(()=>{
+        for (var path in routeTable) {
+            app.get(path, __handle_comm__)
+            app.post(path, __handle_comm__)
+        }
 
-    http.listen(port, host);
-    logger.info("listen on %s:%d...", host, port);
+        http.listen(port, host);
+        logger.info("listen on %s:%d...", host, port);
+        
+    })
+    .catch((err)=>{
+        logger.error("Loulan_Start: initNetworkTopo error, err=%s", err)
+        process.exit(1)
+    })
+    
 }
 
 exports.retCode = retCode
