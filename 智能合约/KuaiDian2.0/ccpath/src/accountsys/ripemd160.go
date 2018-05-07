@@ -10,6 +10,8 @@ package main
 // http://homes.esat.kuleuven.be/~cosicart/pdf/AB-9601/AB-9601.pdf.
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"hash"
 )
 
@@ -61,15 +63,25 @@ const (
 	ripemd160_s4 = 0xc3d2e1f0
 )
 
-type RIPEMD160 struct {
-}
+func RipemdHash160(data []byte) ([]byte, error) {
 
-func NewRipemd160() *RIPEMD160 {
-	return &RIPEMD160{}
+	sha := sha256.New()
+	_, err := sha.Write(data)
+	if err != nil {
+		return nil, fmt.Errorf("Hash160: sha.Write failed, err=%s", err)
+	}
+
+	rip := NewRipemd160()
+	_, err = rip.Write(sha.Sum(nil))
+	if err != nil {
+		return nil, fmt.Errorf("Hash160: rip160.Write failed, err=%s", err)
+	}
+
+	return rip.Sum(nil), nil
 }
 
 // New returns a new hash.Hash computing the checksum.
-func (rip *RIPEMD160) New() hash.Hash {
+func NewRipemd160() hash.Hash {
 	result := new(digest)
 	result.Reset()
 	return result

@@ -4,17 +4,17 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/md5"
-	"runtime/debug"
-	//"crypto/x509"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	//"encoding/pem"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +22,13 @@ import (
 	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/core/chaincode/shim"
 	pb "github.com/hyperledger/fabric/protos/peer"
+)
+
+//流程控制
+const (
+	Ctrl_isTestChain        = false //是否是测试链。
+	Ctrl_needCheckSign      = true  //是否检查签名。
+	Ctrl_needCheckIndentity = true  //是否检查用户身份。
 )
 
 const (
@@ -61,6 +68,8 @@ const (
 
 	CONTROL_CC_NAME              = "sysctrlcc"
 	CONTROL_CC_GETPARA_FUNC_NAME = "getParameter"
+
+	CROSSCCCALL_PREFIX = "^_^~"
 )
 
 //这里定义的错误码会返回给前端，所以不要修改已有的错误码，如果要修改，请和前端一起修改
@@ -76,22 +85,22 @@ const (
 
 type UserEntity struct {
 	EntID       string   `json:"id"`  //ID
-	AuthAccList []string `json:"aal"` //此user授权给了哪些账户
-	//AccList     []string `json:"al"`  //此user的账户列表   //目前一个用户就一个账户，暂时不用这个字段
+	AuthAccList []string `json:"aal"` //此user被授权给了哪些账户
+	AccList     []string `json:"al"`  //此user的自己的账户列表
 }
 
 //账户信息Entity
 // 一系列ID（或账户）都定义为字符串类型。因为putStat函数的第一个参数为字符串类型，这些ID（或账户）都作为putStat的第一个参数；另外从SDK传过来的参数也都是字符串类型。
 type AccountEntity struct {
-	EntID             string `json:"id"`   //银行/企业/项目/个人ID
-	EntType           int    `json:"etp"`  //类型 中央银行:1, 企业:2, 项目:3, 个人:4
-	TotalAmount       int64  `json:"tamt"` //货币总数额(发行或接收)
-	RestAmount        int64  `json:"ramt"` //账户余额
-	Time              int64  `json:"time"` //开户时间
-	Owner             string `json:"own"`  //该实例所属的用户
-	OwnerPubKeyHash   string `json:"opbk"` //公钥hash
-	OwnerIdentityHash string `json:"oidt"` //身份hash
-
+	EntID             string              `json:"id"`   //银行/企业/项目/个人ID
+	EntType           int                 `json:"etp"`  //类型 中央银行:1, 企业:2, 项目:3, 个人:4
+	TotalAmount       int64               `json:"tamt"` //货币总数额(发行或接收)
+	RestAmount        int64               `json:"ramt"` //账户余额
+	Time              int64               `json:"time"` //开户时间
+	Owner             string              `json:"own"`  //该实例所属的用户
+	OwnerPubKeyHash   string              `json:"opbk"` //公钥hash
+	OwnerIdentityHash string              `json:"oidt"` //身份hash
+	AuthUserHashMap   map[string][]string `json:"auhm"` //授权用户的pubkey和indentity的hash
 }
 
 type UserAttrs struct {
@@ -121,7 +130,6 @@ type AppInfo struct {
 }
 
 type PubTrans struct {
-	AppID        string `json:"app"`  //应用ID  目前一条链一个账户体系，但是可能会有多种应用，所以交易信息记录一下应用id，可以按应用来过滤交易信息
 	FromID       string `json:"fid"`  //发送方ID
 	TransFlag    int    `json:"tsf"`  //交易标志，收入还是支出
 	Amount       int64  `json:"amt"`  //交易数额
@@ -131,6 +139,7 @@ type PubTrans struct {
 	TxID         string `json:"txid"` //交易ID
 	Time         int64  `json:"time"` //交易时间
 	GlobalSerial int64  `json:"gser"` //全局交易序列号
+	AppID        string `json:"app"`  //应用ID  目前一条链一个账户体系，但是可能会有多种应用，所以交易信息记录一下应用id，可以按应用来过滤交易信息
 }
 
 //交易内容  注意，Transaction中的字段名（包括json字段名）不能和PubTrans中的字段名重复，否则解析会出问题
@@ -206,21 +215,21 @@ func init() {
 }
 
 func (b *BASE) Init(stub shim.ChaincodeStubInterface) (pbResponse pb.Response) {
-	baselogger.Debug("Enter Init")
 	function, args := stub.GetFunctionAndParameters()
+	defer func() {
+		if excption := recover(); excption != nil {
+			pbResponse = shim.Error(baselogger.SError("Init(%s) got an unexpect error:%s", function, excption))
+			baselogger.Critical("Init got exception, stack:\n%s", string(debug.Stack()))
+		}
+	}()
+
+	baselogger.Debug("Enter Init")
 
 	baselogger.Info("func =%s, args = %+v", function, args)
 
 	stateCache.create()
 	defer func() {
 		stateCache.destroy()
-	}()
-
-	defer func() {
-		if excption := recover(); excption != nil {
-			pbResponse = shim.Error(baselogger.SError("Init(%s) got an unexpect error:%s", function, excption))
-			baselogger.Critical("Init got exception, stack:\n%s", string(debug.Stack()))
-		}
 	}()
 
 	/*
@@ -248,19 +257,28 @@ func (b *BASE) Init(stub shim.ChaincodeStubInterface) (pbResponse pb.Response) {
 
 	if function == "init" { //合约实例化时，默认会执行init函数，除非在调用合约实例化接口时指定了其它的函数
 		baselogger.Debug("enter init")
-		//do someting,but not return
+		//do someting
 
-		//DO NOT return, need call 'InitHook' follow
-		//return shim.Success(nil)
+		//虚拟一个超级账户，设置货币发行总额，给央行发行货币。
+		err = b.setIssueAmountTotal(stub, 10000000000, initTime)
+		if err != nil {
+			return shim.Error(baselogger.SError("Init setIssueAmountTotal error, err=%s.", err))
+		}
+
+		if InitHook == nil {
+			return shim.Success(nil)
+		}
 
 	} else if function == "upgrade" { //升级时默认会执行upgrade函数，除非在调用合约升级接口时指定了其它的函数
 		baselogger.Debug("enter upgrade")
-		//do someting, but not return when success
+		//do someting
 
-		//DO NOT return, need call 'InitHook' follow
-		//return shim.Success(nil)
+		if InitHook == nil {
+			return shim.Success(nil)
+		}
 	}
 
+	//这个判断不能放在上面的else分支， 因为执行了base的init，还需要执行InitHook里的init
 	if InitHook != nil {
 		retBytes, err := InitHook(stub, &initFixArgs)
 		if err != nil {
@@ -272,18 +290,12 @@ func (b *BASE) Init(stub shim.ChaincodeStubInterface) (pbResponse pb.Response) {
 	return shim.Success(nil)
 }
 
+var sysFunc = []string{"account", "transefer", "transefer3", "registerApp",
+	"getBalance", "getBalanceAndLocked", "getTransInfo", "isAccExists", "getAppInfo", "getStatisticInfo"}
+
 // Transaction makes payment of X units from A to B
 func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response) {
-
-	baselogger.Debug("Enter Invoke")
 	function, args := stub.GetFunctionAndParameters()
-	baselogger.Debug("func =%s, args = %+v", function, args)
-
-	stateCache.create()
-	defer func() {
-		stateCache.destroy()
-	}()
-
 	defer func() {
 		if excption := recover(); excption != nil {
 			pbResponse = shim.Error(baselogger.SError("Invoke(%s) got an unexpect error:%s", function, excption))
@@ -291,7 +303,24 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 		}
 	}()
 
+	baselogger.Debug("Enter Invoke")
+	baselogger.Debug("func =%s, args = %+v", function, args)
+
+	stateCache.create()
+	defer func() {
+		stateCache.destroy()
+	}()
+
 	var err error
+
+	var crossCallChaincodeName = ""
+	var crossCallFlag = args[len(args)-1]
+	if b.isCrossChaincodeCallFlag(crossCallFlag) {
+		crossCallChaincodeName = b.getCrossChaincodeName(crossCallFlag)
+		//去掉最后一个参数，该参数是自动添加用来区分是不是跨合约调用的
+		args = args[:len(args)-1]
+		baselogger.Debug("func =%s, args = %+v", function, args)
+	}
 
 	var fixedArgCount = 2
 	//最后一个参数为签名，所以参数必须大于fixedArgCount个
@@ -308,32 +337,15 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 
 	var invokeTime = timestamp.Seconds*1000 + int64(timestamp.Nanos/1000000) //精确到毫秒
 
-	var signBase64 = args[len(args)-1]
-	var sign []byte
-	sign, err = base64.StdEncoding.DecodeString(signBase64)
-	if err != nil {
-		return shim.Error(baselogger.SError("Invoke convert sign(%s) failed. err=%s", signBase64, err))
-	}
-	if len(sign) == 0 {
-		return shim.Error(baselogger.SError("Invoke can not get signature."))
-	}
-
 	var invokeFixArgs BaseInvokeArgs
 	invokeFixArgs.FixedArgCount = fixedArgCount
 	invokeFixArgs.UserName = userName
 	invokeFixArgs.AccountName = accName
 	invokeFixArgs.InvokeTime = invokeTime
 
-	//客户端签名的生成： 把函数名和输入的参数用","拼接为字符串，然后计算其Sha256作为msg，然后用私钥对msg做签名。所以这里用同样的方法生成msg
-	var allArgsString = function + "," + strings.Join(args[:len(args)-1], ",") //不包括签名本身
-	msg, err := baseCrypto.Sha256([]byte(allArgsString))
-	if err != nil {
-		return shim.Error(baselogger.SError("Invoke get sign-msg failed. err=%s", err))
-	}
-	baselogger.Debug("allArgsString =%s", allArgsString)
-	baselogger.Debug("sign-msg =%v", msg)
-
 	var accountEnt *AccountEntity = nil
+
+	var sign, signMsg []byte
 
 	//开户时验证在客户函数中做
 	if function != "account" && function != "accountCB" {
@@ -354,19 +366,33 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 		}
 
 		//非account时签名为最后一个参数
-		sign, msg, err := b.getSignAndMsg(stub, len(args)-1)
+		sign, signMsg, err = b.getSignAndMsg(function, args, len(args)-1)
 		if err != nil {
 			return shim.Error(baselogger.SError("Invoke: getSignAndMsg(%s) failed, err=%s.", accName, err))
 		}
 
 		//校验修改Entity的用户身份，只有Entity的所有者才能修改自己的Entity
-		if err = b.verifyIdentity(stub, userName, sign, msg, accountEnt.OwnerPubKeyHash, accountEnt.OwnerIdentityHash, accountEnt); err != nil {
+		if err = b.verifyIdentity(stub, userName, sign, signMsg, accountEnt, "", ""); err != nil {
 			return shim.Error(baselogger.SError("Invoke: verifyIdentity(%s) failed.", accName))
 		}
 
+		//去除签名参数
+		args = args[:len(args)-1]
 	}
 
 	invokeFixArgs.AccountEnt = accountEnt
+
+	if len(crossCallChaincodeName) > 0 && !b.isAccountSysFunc(function) {
+		var calledArgs = stub.GetArgs()
+		//这里获取的是原始参数，所以要去掉后两个参数，最后一个参数是自动添加用来区分是不是跨合约调用的，倒数第二个为签名
+		payload, err := b.corssChaincodeCall(stub, calledArgs[:len(calledArgs)-2], crossCallChaincodeName, userName, accName, sign, signMsg)
+		if err != nil {
+			baselogger.Error("Invoke: invoke chaincode '%s' failed, err=%s", crossCallChaincodeName, err)
+			return shim.Error(err.Error()) //直接返回被调用者的错误信息
+		}
+
+		return shim.Success(payload)
+	}
 
 	if function == "account" {
 		baselogger.Debug("Enter account")
@@ -384,12 +410,12 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 		var userIdHash = args[len(args)-1]       //base64
 
 		//签名为倒数第二个参数
-		sign, msg, err := b.getSignAndMsg(stub, len(args)-2)
+		sig, msg, err := b.getSignAndMsg(function, args, len(args)-2)
 		if err != nil {
 			return shim.Error(baselogger.SError("Invoke(account): getSignAndMsg(%s) failed, err=%s.", accName, err))
 		}
 		//校验修改Entity的用户身份，只有Entity的所有者才能修改自己的Entity
-		if err = b.verifyIdentity(stub, userName, sign, msg, userPubKeyHash, userIdHash, nil); err != nil {
+		if err = b.verifyIdentity(stub, userName, sig, msg, nil, userPubKeyHash, userIdHash); err != nil {
 			return shim.Error(baselogger.SError("Invoke(account) verifyIdentity(%s) failed.", accName))
 		}
 
@@ -415,13 +441,13 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 		var userIdHash = args[len(args)-1]       //base64
 
 		//签名为倒数第二个参数
-		sign, msg, err := b.getSignAndMsg(stub, len(args)-2)
+		sig, msg, err := b.getSignAndMsg(function, args, len(args)-2)
 		if err != nil {
 			return shim.Error(baselogger.SError("Invoke(account): getSignAndMsg(%s) failed, err=%s.", accName, err))
 		}
 
 		//校验修改Entity的用户身份，只有Entity的所有者才能修改自己的Entity
-		if err = b.verifyIdentity(stub, userName, sign, msg, userPubKeyHash, userIdHash, nil); err != nil {
+		if err = b.verifyIdentity(stub, userName, sig, msg, nil, userPubKeyHash, userIdHash); err != nil {
 			return shim.Error(baselogger.SError("Invoke(accountCB) verifyIdentity(%s) failed.", accName))
 		}
 
@@ -487,21 +513,21 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 			return shim.Error(baselogger.SError("Invoke(transefer) miss arg, got %d, at least need %d.", len(args), argCount))
 		}
 
-		var appid = args[fixedArgCount]
-
-		var toAcc = args[fixedArgCount+1]
+		var toAcc = args[fixedArgCount]
 
 		var transAmount int64
-		transAmount, err = strconv.ParseInt(args[fixedArgCount+2], 0, 64)
+		transAmount, err = strconv.ParseInt(args[fixedArgCount+1], 0, 64)
 		if err != nil {
-			return shim.Error(baselogger.SError("Invoke(transefer): convert issueAmount(%s) failed. err=%s", args[fixedArgCount+2], err))
+			return shim.Error(baselogger.SError("Invoke(transefer): convert issueAmount(%s) failed. err=%s", args[fixedArgCount+1], err))
 		}
 		baselogger.Debug("transAmount= %+v", transAmount)
+
+		var appid = args[fixedArgCount+2]
 
 		//以下为可选参数
 		var description string
 		var transType string
-		var sameEntSaveTransFlag bool = false
+		var sameEntSaveTransFlag bool = true
 
 		if len(args) > argCount {
 			description = args[argCount]
@@ -511,9 +537,17 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 		}
 		if len(args) > argCount+2 {
 			var sameEntSaveTrans = args[argCount+2] //如果转出和转入账户相同，是否记录交易 0表示不记录 1表示记录
-			if sameEntSaveTrans == "1" {
-				sameEntSaveTransFlag = true
+			if sameEntSaveTrans != "1" {
+				sameEntSaveTransFlag = false
 			}
+		}
+
+		idExist, err := b.isAppExists(stub, appid)
+		if err != nil {
+			return shim.Error(baselogger.SError("Invoke(transefer) failed, err=%s.", err))
+		}
+		if !idExist {
+			return shim.Error(baselogger.SError("Invoke(transefer) appid(%s) not exist, please register it first.", appid))
 		}
 
 		_, err = b.transferCoin(stub, accName, toAcc, transType, description, transAmount, invokeTime, sameEntSaveTransFlag, appid)
@@ -528,21 +562,21 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 			return shim.Error(baselogger.SError("Invoke(transeferLockAmt) miss arg, got %d, at least need %d.", len(args), argCount))
 		}
 
-		var appid = args[fixedArgCount]
-		var toAcc = args[fixedArgCount+1]
+		var toAcc = args[fixedArgCount]
 
 		var transAmount int64
-		transAmount, err = strconv.ParseInt(args[fixedArgCount+2], 0, 64)
+		transAmount, err = strconv.ParseInt(args[fixedArgCount+1], 0, 64)
 		if err != nil {
-			return shim.Error(baselogger.SError("Invoke(transeferLockAmt): convert issueAmount(%s) failed. err=%s", args[fixedArgCount+2], err))
+			return shim.Error(baselogger.SError("Invoke(transeferLockAmt): convert issueAmount(%s) failed. err=%s", args[fixedArgCount+1], err))
 		}
 
-		var lockCfgs = args[fixedArgCount+3]
+		var lockCfgs = args[fixedArgCount+2]
+		var appid = args[fixedArgCount+3]
 
 		//以下为可选参数
 		var description string
 		var transType string
-		var sameEntSaveTransFlag bool = false
+		var sameEntSaveTransFlag bool = true
 
 		if len(args) > argCount {
 			description = args[argCount]
@@ -552,8 +586,8 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 		}
 		if len(args) > argCount+2 {
 			var sameEntSaveTrans = args[argCount+2] //如果转出和转入账户相同，是否记录交易 0表示不记录 1表示记录
-			if sameEntSaveTrans == "1" {
-				sameEntSaveTransFlag = true
+			if sameEntSaveTrans != "1" {
+				sameEntSaveTransFlag = false
 			}
 		}
 
@@ -565,6 +599,14 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 
 		if lockedThistime > transAmount {
 			return shim.Error(baselogger.SError("Invoke(transeferLockAmt): lockAmt(%d) > transAmount(%d).", lockedThistime, transAmount))
+		}
+
+		idExist, err := b.isAppExists(stub, appid)
+		if err != nil {
+			return shim.Error(baselogger.SError("Invoke(transeferLockAmt) failed, err=%s.", err))
+		}
+		if !idExist {
+			return shim.Error(baselogger.SError("Invoke(transeferLockAmt) appid(%s) not exist, please register it first.", appid))
 		}
 
 		_, err = b.transferCoin(stub, accName, toAcc, transType, description, transAmount, invokeTime, sameEntSaveTransFlag, appid)
@@ -666,7 +708,7 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 
 		return shim.Success(nil)
 
-	} else if function == "RegisterApp" {
+	} else if function == "registerApp" {
 		var argCount = fixedArgCount + 3
 		if len(args) < argCount {
 			return shim.Error(baselogger.SError("Invoke(RegisterApp) miss arg, got %d, need %d.", len(args), argCount))
@@ -677,6 +719,10 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 		ai.Description = args[fixedArgCount+1]
 		ai.Company = args[fixedArgCount+2]
 		ai.Creater = accName
+
+		if len(strings.TrimSpace(ai.AppID)) == 0 {
+			return shim.Error(baselogger.SError("Invoke(RegisterApp) appid is empty."))
+		}
 
 		ok, err := b.isAppExists(stub, ai.AppID)
 		if err != nil {
@@ -693,6 +739,106 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 
 		return shim.Success(nil)
 
+	} else if function == "recharge" { //测试链才有
+		if Ctrl_isTestChain {
+			var argCount = fixedArgCount + 1
+			if len(args) < argCount {
+				return shim.Error(baselogger.SError("Invoke(lockAccAmt) miss arg, got %d, need %d.", len(args), argCount))
+			}
+
+			var rechargeAmount int64
+			rechargeAmount, err = strconv.ParseInt(args[fixedArgCount], 0, 64)
+			if err != nil {
+				return shim.Error(baselogger.SError("Invoke(recharge): convert rechargeAmount(%s) failed. err=%s", args[fixedArgCount], err))
+			}
+
+			accountEnt.TotalAmount = rechargeAmount
+			accountEnt.RestAmount = rechargeAmount
+
+			err = b.setAccountEntity(stub, accountEnt)
+			if err != nil {
+				return shim.Error(baselogger.SError("Invoke(recharge): save account failed. err=%s", err))
+			}
+
+			return shim.Success(nil)
+		} else {
+			return shim.Error(baselogger.SError("Invoke(recharge): can not run this function."))
+		}
+
+	} else if function == "authAccountManager" { //授权本账户的其它管理者， 即多个用户可以操作同一个账户
+		var argCount = fixedArgCount + 2
+		if len(args) < argCount {
+			return shim.Error(baselogger.SError("Invoke(authAccountManager) miss arg, got %d, at least need %d.", len(args), argCount))
+		}
+
+		var manager = args[fixedArgCount+0]
+		var operate = args[fixedArgCount+1] // add or delete
+
+		var addFlag = false
+		if operate == "add" {
+			addFlag = true
+		} else if operate != "delete" {
+			return shim.Error(baselogger.SError("Invoke(authAccountManager) operate must be 'add' or 'delete'."))
+		}
+
+		//manager获取失败，报错
+		managerEnt, err := b.getUserEntity(stub, manager)
+		if err != nil && err != ErrNilEntity {
+			return shim.Error(baselogger.SError("Invoke(authAccountManager) getUserEntity failed. err=%s, entname=%s", err, manager))
+		}
+
+		if addFlag {
+			//添加时，manager 必存在
+			if managerEnt == nil {
+				return shim.Error(baselogger.SError("Invoke(authAccountManager) manager(%s) not exists. ", manager))
+			}
+
+			//获取manager 的hash值 （从账户中取）
+			var mngAccName = managerEnt.AccList[0]
+			mngAccEnt, err := b.getAccountEntity(stub, mngAccName)
+			if err != nil {
+				return shim.Error(baselogger.SError("Invoke(authAccountManager) getAccountEntity failed. err=%s, entname=%s", err, mngAccName))
+			}
+
+			//在当前账户中加入新的用户
+			if accountEnt.AuthUserHashMap == nil {
+				accountEnt.AuthUserHashMap = make(map[string][]string)
+			}
+			//第一个元素为身份hash，第二个为pubkey的hash
+			accountEnt.AuthUserHashMap[manager] = []string{mngAccEnt.OwnerIdentityHash, mngAccEnt.OwnerPubKeyHash}
+
+			if !strSliceContains(managerEnt.AuthAccList, accName) {
+				managerEnt.AuthAccList = append(managerEnt.AuthAccList, accName)
+			}
+
+		} else {
+			delete(accountEnt.AuthUserHashMap, manager)
+			//删除时，如果manager 不存在则不处理
+			if managerEnt == nil {
+				baselogger.Warn("manager(%s) not exists.", manager)
+			} else {
+				managerEnt.AuthAccList = strSliceDelete(managerEnt.AuthAccList, accName)
+			}
+		}
+
+		baselogger.Debug("Invoke(authAccountManager) AccountEntity before =%+v.", *accountEnt)
+
+		err = b.setAccountEntity(stub, accountEnt)
+		if err != nil {
+			return shim.Error(baselogger.SError("Invoke(authAccountManager) setAccountEntity failed. err=%s, entname=%s", err, accountEnt.EntID))
+		}
+
+		baselogger.Debug("Invoke(authAccountManager) AccountEntity  after =%+v.", *accountEnt)
+
+		baselogger.Debug("Invoke(authAccountManager):  UserEntity before %+v", *managerEnt)
+
+		err = b.setUserEntity(stub, managerEnt)
+		if err != nil {
+			return shim.Error(baselogger.SError("Invoke(authAccountManager) setUserEntity failed. err=%s, entname=%s", err, accountEnt.EntID))
+		}
+		baselogger.Debug("Invoke(authAccountManager):  UserEntity after %+v", *managerEnt)
+
+		return shim.Success(nil)
 	} else {
 
 		retValue, err := b.Query(stub, &invokeFixArgs)
@@ -785,19 +931,14 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs) ([]
 		return (qbalB), nil
 
 	} else if function == "getTransInfo" { //查询交易记录
-		var argCount = fixedArgCount + 8
+		var argCount = fixedArgCount + 3
 		if len(args) < argCount {
 			return nil, baselogger.Errorf("queryTx miss arg, got %d, need %d.", len(args), argCount)
 		}
 
+		var appid string
 		var begSeq int64
 		var txCount int64
-		var transLvl uint64
-		var begTime int64
-		var endTime int64
-		var txAcc string
-		var queryMaxSeq int64
-		var queryOrder string
 
 		begSeq, err = strconv.ParseInt(args[fixedArgCount], 0, 64)
 		if err != nil {
@@ -808,29 +949,49 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs) ([]
 			return nil, baselogger.Errorf("queryTx ParseInt for endSeq(%s) failed. err=%s", args[fixedArgCount+1], err)
 		}
 
-		transLvl, err = strconv.ParseUint(args[fixedArgCount+2], 0, 64)
-		if err != nil {
-			return nil, baselogger.Errorf("queryTx ParseInt for transLvl(%s) failed. err=%s", args[fixedArgCount+2], err)
+		appid = args[fixedArgCount+2]
+
+		var txAcc string //查询指定用户
+		var transLvl uint64 = 2
+
+		var begTime int64 = 0
+		var endTime int64 = -1
+		var queryOrder string = "desc" //升序 降序
+		//本次查询的最大序列号，如果倒序查询时， 比如是从最新的第10条开始查的，查询过程中，又产生了新的记录，最新的为11条，那么第二次查询时，就会从第11条倒序查询，返回重复数据。
+		//在第一次查询返回时，会返回此参数，如果前端后续查询时，把这个参数带下来，还从第10条开始查就不会出这样的问题了。
+		var queryMaxSeq int64 = -1
+
+		if len(args) > argCount {
+			txAcc = args[argCount]
+		}
+		if len(args) > argCount+1 {
+			transLvl, err = strconv.ParseUint(args[argCount+1], 0, 64)
+			if err != nil {
+				return nil, baselogger.Errorf("queryTx ParseInt for transLvl(%s) failed. err=%s", args[argCount+1], err)
+			}
 		}
 
-		begTime, err = strconv.ParseInt(args[fixedArgCount+3], 0, 64)
-		if err != nil {
-			return nil, baselogger.Errorf("queryTx ParseInt for begTime(%s) failed. err=%s", args[fixedArgCount+3], err)
+		if len(args) > argCount+2 {
+			begTime, err = strconv.ParseInt(args[argCount+2], 0, 64)
+			if err != nil {
+				return nil, baselogger.Errorf("queryTx ParseInt for begTime(%s) failed. err=%s", args[argCount+2], err)
+			}
 		}
-		endTime, err = strconv.ParseInt(args[fixedArgCount+4], 0, 64)
-		if err != nil {
-			return nil, baselogger.Errorf("queryTx ParseInt for endTime(%s) failed. err=%s", args[fixedArgCount+4], err)
+		if len(args) > argCount+3 {
+			endTime, err = strconv.ParseInt(args[argCount+3], 0, 64)
+			if err != nil {
+				return nil, baselogger.Errorf("queryTx ParseInt for endTime(%s) failed. err=%s", args[argCount+3], err)
+			}
 		}
-
-		//查询指定账户的交易记录
-		txAcc = args[fixedArgCount+5]
-
-		queryMaxSeq, err = strconv.ParseInt(args[fixedArgCount+6], 0, 64)
-		if err != nil {
-			return nil, baselogger.Errorf("queryTx ParseInt for queryMaxSeq(%s) failed. err=%s", args[fixedArgCount+6], err)
+		if len(args) > argCount+4 {
+			queryOrder = args[argCount+4]
 		}
-
-		queryOrder = args[fixedArgCount+7]
+		if len(args) > argCount+5 {
+			queryMaxSeq, err = strconv.ParseInt(args[argCount+5], 0, 64)
+			if err != nil {
+				return nil, baselogger.Errorf("queryTx ParseInt for queryMaxSeq(%s) failed. err=%s", args[argCount+5], err)
+			}
+		}
 
 		var isAsc = false
 		if queryOrder == "asc" {
@@ -839,14 +1000,15 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs) ([]
 
 		if b.isAdmin(stub, accName) {
 			//管理员账户时，如果不传入txAcc，则查询所有交易记录；否则查询指定账户交易记录
+			//transLvl 只能管理员有权设置
 			if len(txAcc) == 0 {
-				retValue, err := b.queryTransInfos(stub, transLvl, begSeq, txCount, begTime, endTime, queryMaxSeq, isAsc)
+				retValue, err := b.queryTransInfos(stub, transLvl, begSeq, txCount, begTime, endTime, queryMaxSeq, isAsc, appid)
 				if err != nil {
 					return nil, baselogger.Errorf("queryTx queryTransInfos failed. err=%s", err)
 				}
 				return (retValue), nil
 			} else {
-				retValue, err := b.queryAccTransInfos(stub, txAcc, begSeq, txCount, begTime, endTime, queryMaxSeq, isAsc)
+				retValue, err := b.queryAccTransInfos(stub, txAcc, begSeq, txCount, begTime, endTime, queryMaxSeq, isAsc, appid)
 				if err != nil {
 					return nil, baselogger.Errorf("queryTx queryAccTransInfos failed. err=%s", err)
 				}
@@ -854,7 +1016,7 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs) ([]
 			}
 		} else {
 			//非管理员账户，只能查询自己的交易记录，忽略txAcc参数
-			retValue, err := b.queryAccTransInfos(stub, accName, begSeq, txCount, begTime, endTime, queryMaxSeq, isAsc)
+			retValue, err := b.queryAccTransInfos(stub, accName, begSeq, txCount, begTime, endTime, queryMaxSeq, isAsc, appid)
 			if err != nil {
 				return nil, baselogger.Errorf("queryTx queryAccTransInfos2 failed. err=%s", err)
 			}
@@ -896,7 +1058,7 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs) ([]
 		return (retValue), nil
 
 	} else if function == "isAccExists" { //账户是否存在
-		accExist, err := b.isEntityExists(stub, accName)
+		accExist, err := b.isAccEntityExists(stub, accName)
 		if err != nil {
 			return nil, baselogger.Errorf("accExists: isEntityExists (id=%s) failed. err=%s", accName, err)
 		}
@@ -942,7 +1104,7 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs) ([]
 		}
 		return (retValue), nil
 
-	} else if function == "getInfoForWeb" {
+	} else if function == "getStatisticInfo" {
 		//是否是管理员帐户，管理员用户才可以查
 		if !b.isAdmin(stub, accName) {
 			return nil, baselogger.Errorf("%s can't query InfoForWeb.", accName)
@@ -950,12 +1112,15 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs) ([]
 
 		var argCount = fixedArgCount + 1
 		if len(args) < argCount {
-			return nil, baselogger.Errorf("getInfoForWeb miss arg, got %d, need %d.", len(args), argCount)
+			return nil, baselogger.Errorf("getStatisticInfo miss arg, got %d, need %d.", len(args), argCount)
 		}
 
-		retValue, err := b.getInfo4Web(stub, args[fixedArgCount])
+		//计算货币流通量的账户
+		var circulateAmtAccName = args[fixedArgCount]
+
+		retValue, err := b.getSysStatisticInfo(stub, circulateAmtAccName)
 		if err != nil {
-			return nil, baselogger.Errorf("getInfoForWeb: getInfo4Web failed. err=%s", err)
+			return nil, baselogger.Errorf("getStatisticInfo: getInfo4Web failed. err=%s", err)
 		}
 		return (retValue), nil
 
@@ -993,7 +1158,7 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs) ([]
 		}
 
 		//收款账户是否存在  这个检查放到最后执行
-		exists, err := Base.isEntityExists(stub, toAcc)
+		exists, err := Base.isAccEntityExists(stub, toAcc)
 		if err != nil {
 			return nil, baselogger.Errorf("transPreCheck: isEntityExists(%s) failed. err=%s", toAcc, err)
 		}
@@ -1038,7 +1203,7 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs) ([]
 	}
 }
 
-func (b *BASE) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64, begIdx, count, begTime, endTime, queryMaxSeq int64, isAsc bool) ([]byte, error) {
+func (b *BASE) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64, begIdx, count, begTime, endTime, queryMaxSeq int64, isAsc bool, appid string) ([]byte, error) {
 	var maxSeq int64
 	var err error
 
@@ -1137,6 +1302,9 @@ func (b *BASE) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64
 			//取匹配的transLvl
 			var qTrans QueryTransRecd
 			if trans.TransLvl&transLvl != 0 && trans.Time >= begTime && trans.Time <= endTime {
+				if len(appid) > 0 && appid != trans.AppID {
+					continue
+				}
 				qTrans.Serial = trans.GlobalSerial
 				qTrans.PubTrans = trans.PubTrans
 				queryResult.TransRecords = append(queryResult.TransRecords, qTrans)
@@ -1160,6 +1328,9 @@ func (b *BASE) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64
 			//取匹配的transLvl
 			var qTrans QueryTransRecd
 			if trans.TransLvl&transLvl != 0 && trans.Time >= begTime && trans.Time <= endTime {
+				if len(appid) > 0 && appid != trans.AppID {
+					continue
+				}
 				qTrans.Serial = maxSeq - trans.GlobalSerial + 1
 				qTrans.PubTrans = trans.PubTrans
 				queryResult.TransRecords = append(queryResult.TransRecords, qTrans)
@@ -1178,7 +1349,7 @@ func (b *BASE) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64
 	return retTransInfo, nil
 }
 
-func (b *BASE) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName string, begIdx, count, begTime, endTime, queryMaxSeq int64, isAsc bool) ([]byte, error) {
+func (b *BASE) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName string, begIdx, count, begTime, endTime, queryMaxSeq int64, isAsc bool, appid string) ([]byte, error) {
 	var maxSeq int64
 	var err error
 
@@ -1316,6 +1487,9 @@ func (b *BASE) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName stri
 
 			var qTrans QueryTransRecd
 			if trans.Time >= begTime && trans.Time <= endTime {
+				if len(appid) > 0 && appid != trans.AppID {
+					continue
+				}
 				qTrans.Serial = loop
 				qTrans.PubTrans = trans.PubTrans
 				queryResult.TransRecords = append(queryResult.TransRecords, qTrans)
@@ -1351,6 +1525,9 @@ func (b *BASE) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName stri
 
 			var qTrans QueryTransRecd
 			if trans.Time >= begTime && trans.Time <= endTime {
+				if len(appid) > 0 && appid != trans.AppID {
+					continue
+				}
 				qTrans.Serial = maxSeq - loop + 1
 				qTrans.PubTrans = trans.PubTrans
 				queryResult.TransRecords = append(queryResult.TransRecords, qTrans)
@@ -1427,16 +1604,16 @@ func (b *BASE) getAllAccAmt(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	return retValue, nil
 }
 
-func (b *BASE) getInfo4Web(stub shim.ChaincodeStubInterface, circulateAmtAccName string) ([]byte, error) {
+func (b *BASE) getSysStatisticInfo(stub shim.ChaincodeStubInterface, circulateAmtAccName string) ([]byte, error) {
 
-	type QueryWebInfo struct {
+	type SysStatisticInfo struct {
 		AccountNum       int64 `json:"accountcount"`  //账户数量
 		IssueTotalAmount int64 `json:"issuetotalamt"` //预计发行总量
 		IssueAmount      int64 `json:"issueamt"`      //已发行数量
 		CirculateAmount  int64 `json:"circulateamt"`  //流通数量
 	}
 
-	var qwi QueryWebInfo
+	var qwi SysStatisticInfo
 	qwi.AccountNum = 0
 	qwi.IssueTotalAmount = 0
 	qwi.IssueAmount = 0
@@ -1492,23 +1669,28 @@ func (b *BASE) getInfo4Web(stub shim.ChaincodeStubInterface, circulateAmtAccName
 }
 
 func (b *BASE) needCheckSign(stub shim.ChaincodeStubInterface) bool {
-	//默认返回true，除非读取到指定参数
+	/*
+		//默认返回true，除非读取到指定参数
 
-	var args = util.ToChaincodeArgs(CONTROL_CC_GETPARA_FUNC_NAME, "checkSiagnature")
+		var args = util.ToChaincodeArgs(CONTROL_CC_GETPARA_FUNC_NAME, "checkSiagnature")
 
-	response := stub.InvokeChaincode(CONTROL_CC_NAME, args, "")
-	if response.Status != shim.OK {
-		baselogger.Errorf("needCheckSign: InvokeChaincode failed, response=%+v.", response)
+		response := stub.InvokeChaincode(CONTROL_CC_NAME, args, "")
+		if response.Status != shim.OK {
+			baselogger.Errorf("needCheckSign: InvokeChaincode failed, response=%+v.", response)
+			return true
+		}
+
+		paraValue := string(response.Payload)
+		if paraValue == "0" {
+			return false
+		}
+
 		return true
-	}
-
-	paraValue := string(response.Payload)
-	if paraValue == "0" {
-		return false
-	}
-
-	return true
+	*/
+	return Ctrl_needCheckSign
 }
+
+var secp256k1 = NewSecp256k1()
 
 func (b *BASE) verifySign(stub shim.ChaincodeStubInterface, ownerPubKeyHash string, sign, signMsg []byte) error {
 
@@ -1523,8 +1705,6 @@ func (b *BASE) verifySign(stub shim.ChaincodeStubInterface, ownerPubKeyHash stri
 		return nil
 	}
 
-	secp256k1 := NewSecp256k1()
-
 	baselogger.Debug("verifySign: sign = %v", sign)
 	baselogger.Debug("verifySign: signMsg = %v", signMsg)
 
@@ -1538,7 +1718,7 @@ func (b *BASE) verifySign(stub shim.ChaincodeStubInterface, ownerPubKeyHash stri
 	}
 	baselogger.Debug("verifySign: pubKey = %v", pubKey)
 
-	hash, err := baseCrypto.Hash160(pubKey)
+	hash, err := RipemdHash160(pubKey)
 	if err != nil {
 		return baselogger.Errorf("verifySign: Hash160 error, err=%s.", err)
 	}
@@ -1553,25 +1733,44 @@ func (b *BASE) verifySign(stub shim.ChaincodeStubInterface, ownerPubKeyHash stri
 	return nil
 }
 
-func (b *BASE) verifyIdentity(stub shim.ChaincodeStubInterface, userName string, sign, signMsg []byte, ownerPubKeyHash, ownerIdentityHash string, accountEnt *AccountEntity) error {
+func (b *BASE) verifyIdentity(stub shim.ChaincodeStubInterface, userName string, sign, signMsg []byte, accountEnt *AccountEntity, ownerPubKeyHash, ownerIdentityHash string) error {
 
-	if accountEnt != nil && accountEnt.Owner != userName {
-		return baselogger.Errorf("verifyIdentity: username not match, user=%s", userName)
+	var comparedPubKeyHash = ownerPubKeyHash
+	var comparedIndentityHash = ownerIdentityHash
+
+	baselogger.Debug("verifyIdentity: accountEnt = %+v", accountEnt)
+
+	if accountEnt != nil {
+		comparedPubKeyHash = accountEnt.OwnerPubKeyHash
+		comparedIndentityHash = accountEnt.OwnerIdentityHash
 	}
 
-	creatorByte, err := stub.GetCreator()
-	if err != nil {
-		return baselogger.Errorf("verifyIdentity: GetCreator error, user=%s err=%s.", userName, err)
-	}
-	baselogger.Debug("verifyIdentity: creatorByte = %s", string(creatorByte))
+	if Ctrl_needCheckIndentity {
+		if accountEnt != nil && accountEnt.Owner != userName {
+			if _, ok := accountEnt.AuthUserHashMap[userName]; !ok {
+				return baselogger.Errorf("verifyIdentity: username not match, user=%s", userName)
+			}
+			var hashs = accountEnt.AuthUserHashMap[userName]
+			if len(hashs) < 2 {
+				return baselogger.Errorf("verifyIdentity: hash  illegal(%d).", len(hashs))
+			}
+			//第一个元素为身份hash，第二个为pubkey的hash
+			comparedIndentityHash = hashs[0]
+			comparedPubKeyHash = hashs[1]
+		}
 
-	certStart := bytes.IndexAny(creatorByte, "-----BEGIN")
-	if certStart == -1 {
-		return baselogger.Errorf("verifyIdentity: No certificate found, user=%s.", userName)
-	}
-	certText := creatorByte[certStart:]
+		creatorByte, err := stub.GetCreator()
+		if err != nil {
+			return baselogger.Errorf("verifyIdentity: GetCreator error, user=%s err=%s.", userName, err)
+		}
+		baselogger.Debug("verifyIdentity: creatorByte = %s", string(creatorByte))
 
-	/*
+		certStart := bytes.IndexAny(creatorByte, "-----BEGIN")
+		if certStart == -1 {
+			return baselogger.Errorf("verifyIdentity: No certificate found, user=%s.", userName)
+		}
+		certText := creatorByte[certStart:]
+
 		block, _ := pem.Decode(certText)
 		if block == nil {
 			return baselogger.Errorf("verifyIdentity: Decode failed, user=%s.", userName)
@@ -1584,35 +1783,37 @@ func (b *BASE) verifyIdentity(stub shim.ChaincodeStubInterface, userName string,
 		}
 		baselogger.Debug("verifyIdentity: cert = %+v", *cert)
 
-		uname := cert.Subject.CommonName
-		baselogger.Debug("verifyIdentity: uname = %s", uname)
-	*/
+		nameInCert := cert.Subject.CommonName
+		baselogger.Debug("verifyIdentity: nameInCert = %s", nameInCert)
 
-	var userId = string(certText)
-	hash, err := baseCrypto.Hash160(certText)
-	if err != nil {
-		return baselogger.Errorf("verifyIdentity: Hash160 error, user=%s err=%s.", userName, err)
+		//传入的用户名是否是登录的用户
+		if userName != nameInCert {
+			return baselogger.Errorf("verifyIdentity: username not match the cert(%s.%s).", userName, nameInCert)
+		}
+
+		var userId = string(certText)
+		hash, err := RipemdHash160(certText)
+		if err != nil {
+			return baselogger.Errorf("verifyIdentity: Hash160 error, user=%s err=%s.", userName, err)
+		}
+		var userIdHash = base64.StdEncoding.EncodeToString(hash)
+
+		baselogger.Debug("verifyIdentity: userId = %s", userId)
+		baselogger.Debug("verifyIdentity: userIdHash = %s", userIdHash)
+		baselogger.Debug("verifyIdentity: entIdHash = %s", comparedIndentityHash)
+
+		if userIdHash != comparedIndentityHash {
+			return baselogger.Errorf("verifyIdentity: indentity invalid.")
+		}
 	}
-	var userIdHash = base64.StdEncoding.EncodeToString(hash)
 
-	baselogger.Debug("verifyIdentity: userId = %s", userId)
-	baselogger.Debug("verifyIdentity: userIdHash = %s", userIdHash)
-
-	baselogger.Debug("verifyIdentity: entIdHash = %s", ownerIdentityHash)
-
-	if userIdHash != ownerIdentityHash {
-		return baselogger.Errorf("verifyIdentity: indentity invalid.")
-	}
-
-	return b.verifySign(stub, ownerPubKeyHash, sign, signMsg)
+	return b.verifySign(stub, comparedPubKeyHash, sign, signMsg)
 }
 
 func (b *BASE) getAccountEntityKey(accName string) string {
 	return ACC_ENTITY_PREFIX + accName
 }
-func (b *BASE) getAccountNameFromKey(entKey string) string {
-	return entKey[len(ACC_ENTITY_PREFIX):]
-}
+
 func (b *BASE) getAccountLockInfoKey(accName string) string {
 	return ACC_AMTLOCK_PREFIX + accName
 }
@@ -1670,7 +1871,7 @@ func (b *BASE) getAccountLockedAmount(stub shim.ChaincodeStubInterface, accName 
 
 }
 
-func (b *BASE) isEntityExists(stub shim.ChaincodeStubInterface, entName string) (bool, error) {
+func (b *BASE) isAccEntityExists(stub shim.ChaincodeStubInterface, entName string) (bool, error) {
 	var entB []byte
 	var err error
 
@@ -1972,31 +2173,33 @@ func (b *BASE) newAccount(stub shim.ChaincodeStubInterface, accName string, accT
 		return nil, err
 	}
 
-	accExist, err = b.isEntityExists(stub, accName)
+	accExist, err = b.isAccEntityExists(stub, accName)
 	if err != nil {
 		return nil, baselogger.Errorf("isEntityExists (id=%s) failed. err=%s", accName, err)
 	}
 
 	if accExist {
-		//兼容kd老版本，没有userIdHash和userPubKeyHash的情况，如果这两个字段为空，只写这两个字段，后续可以删除
-		accEnt, err := b.getAccountEntity(stub, accName)
-		if err != nil {
-			return nil, baselogger.Errorf("getAccountEntity (id=%s) failed. err=%s", accName, err)
-		}
-		if len(accEnt.OwnerIdentityHash) == 0 || len(accEnt.OwnerPubKeyHash) == 0 {
-			accEnt.OwnerIdentityHash = userIdHash
-			accEnt.OwnerPubKeyHash = userPubKeyHash
-
-			err = b.setAccountEntity(stub, accEnt)
+		/*
+			//兼容kd老版本，没有userIdHash和userPubKeyHash的情况，如果这两个字段为空，只写这两个字段，后续可以删除
+			accEnt, err := b.getAccountEntity(stub, accName)
 			if err != nil {
-				return nil, baselogger.Errorf("setAccountEntity (id=%s) failed. err=%s", accName, err)
+				return nil, baselogger.Errorf("getAccountEntity (id=%s) failed. err=%s", accName, err)
 			}
-			return nil, nil
-		}
-		//兼容kd老版本，没有userIdHash和userPubKeyHash的情况，如果这两个字段为空，只写这两个字段，后续可以删除
+			if (len(accEnt.OwnerIdentityHash) == 0 && len(userIdHash) > 0) ||
+				(len(accEnt.OwnerPubKeyHash) == 0 && len(userPubKeyHash) > 0) {
+				accEnt.OwnerIdentityHash = userIdHash
+				accEnt.OwnerPubKeyHash = userPubKeyHash
+
+				err = b.setAccountEntity(stub, accEnt)
+				if err != nil {
+					return nil, baselogger.Errorf("setAccountEntity (id=%s) failed. err=%s", accName, err)
+				}
+				return nil, nil
+			}
+			//兼容kd老版本，没有userIdHash和userPubKeyHash的情况，如果这两个字段为空，只写这两个字段，后续可以删除
+		*/
 
 		return nil, baselogger.Errorf("account (id=%s) failed, already exists.", accName)
-
 	}
 
 	var ent AccountEntity
@@ -2022,6 +2225,26 @@ func (b *BASE) newAccount(stub shim.ChaincodeStubInterface, accName string, accT
 	}
 
 	baselogger.Debug("openAccount success: %+v", ent)
+
+	puserEnt, err := b.getUserEntity(stub, userName)
+	if err != nil && err != ErrNilEntity {
+		return nil, baselogger.Errorf("openAccount getUserEntity (id=%s) failed. err=%s", userName, err)
+	}
+
+	var userEnt UserEntity
+	if puserEnt == nil {
+		userEnt.EntID = userName
+	} else {
+		userEnt = *puserEnt
+	}
+	userEnt.AccList = append(userEnt.AccList, accName)
+
+	err = b.setUserEntity(stub, &userEnt)
+	if err != nil {
+		return nil, baselogger.Errorf("openAccount setUserEntity (id=%s) failed. err=%s", userName, err)
+	}
+
+	baselogger.Debug("setUserEntity success: %+v", userEnt)
 
 	//央行账户此处不保存
 	if !isCBAcc {
@@ -2594,7 +2817,7 @@ func (b *BASE) getUserEntity(stub shim.ChaincodeStubInterface, userName string) 
 	}
 
 	if entB == nil {
-		return nil, nil //UserEntity不一定存在，不存在时不报错
+		return nil, ErrNilEntity
 	}
 
 	if err = json.Unmarshal(entB, &ue); err != nil {
@@ -2619,12 +2842,9 @@ func (b *BASE) setUserEntity(stub shim.ChaincodeStubInterface, ue *UserEntity) e
 	return nil
 }
 
-func (b *BASE) getSignAndMsg(stub shim.ChaincodeStubInterface, signIdx int) ([]byte, []byte, error) {
+func (b *BASE) getSignAndMsg(function string, args []string, signIdx int) ([]byte, []byte, error) {
 	var err error
 
-	function, args := stub.GetFunctionAndParameters()
-
-	//签名为最后一个参数
 	var signBase64 = args[signIdx]
 
 	var sign []byte
@@ -2681,6 +2901,13 @@ func (b *BASE) getAppInfo(stub shim.ChaincodeStubInterface, appid string) (*AppI
 	return &ai, nil
 }
 
+func (b *BASE) isCrossChaincodeCallFlag(flag string) bool {
+	return strings.HasPrefix(flag, CROSSCCCALL_PREFIX)
+}
+func (b *BASE) getCrossChaincodeName(flag string) string {
+	return flag[len(CROSSCCCALL_PREFIX):]
+}
+
 func (b *BASE) isAppExists(stub shim.ChaincodeStubInterface, appid string) (bool, error) {
 	appB, err := stateCache.getState_Ex(stub, b.getAppRecdKey(appid))
 	if err != nil {
@@ -2692,6 +2919,55 @@ func (b *BASE) isAppExists(stub shim.ChaincodeStubInterface, appid string) (bool
 	}
 
 	return false, nil
+}
+
+func (b *BASE) isAccountSysFunc(function string) bool {
+	return strSliceContains(sysFunc, function)
+}
+
+func (b *BASE) corssChaincodeCall(stub shim.ChaincodeStubInterface, args [][]byte, chaincodeName, currUserName, currAccountName string, sign, signMsg []byte) ([]byte, error) {
+	baselogger.Debug("before invoke")
+	response := stub.InvokeChaincode(chaincodeName, args, "")
+	if response.Status != shim.OK {
+		baselogger.Errorf("InvokeChaincode failed, response=%+v.", response)
+		return nil, errors.New(response.Message)
+	}
+	baselogger.Debug(" after invoke, payload=%s, payload len=%v", string(response.Payload), len(response.Payload))
+
+	var invokeRslt InvokeResult
+	err := json.Unmarshal(response.Payload, &invokeRslt)
+	if err != nil {
+		return nil, baselogger.Errorf("InvokeChaincode(%s) Unmarshal error, err=%s.", chaincodeName, err)
+	}
+
+	if len(invokeRslt.TransInfos) > 0 {
+
+		var noCurrAccMap = make(map[string]int)
+		for _, tx := range invokeRslt.TransInfos {
+			//转出账户不是当前账户
+			if tx.FromID != currAccountName {
+				noCurrAccMap[tx.FromID] = 0
+			}
+		}
+		//转出账户不是当前账户， 校验用户身份，看当前用户是否能操作该账户。  如果是当前账户，已经校验过了
+		for noCurrAcc, _ := range noCurrAccMap {
+			fromAcc, err := b.getAccountEntity(stub, noCurrAcc)
+			if err != nil {
+				return nil, baselogger.Errorf("InvokeChaincode(%s) transfer failed, get transfer-from account failed, err=%s.", chaincodeName, err)
+			}
+			if err := b.verifyIdentity(stub, currUserName, sign, signMsg, fromAcc, "", ""); err != nil {
+				return nil, baselogger.Errorf("InvokeChaincode(%s) transfer failed, verify user and transfer-from account failed, err=%s.", chaincodeName, err)
+			}
+		}
+		for _, tx := range invokeRslt.TransInfos {
+			_, err = b.transferCoin(stub, tx.FromID, tx.ToID, tx.TransType, tx.Description, tx.Amount, tx.Time, true, tx.AppID)
+			if err != nil {
+				return nil, baselogger.Errorf("InvokeChaincode(%s) transferCoin error, err=%s.", chaincodeName, err)
+			}
+		}
+	}
+
+	return invokeRslt.Payload, nil
 }
 
 func (b *BASE) isAdmin(stub shim.ChaincodeStubInterface, accName string) bool {

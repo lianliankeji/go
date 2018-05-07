@@ -60,6 +60,9 @@ const attrKeys = {
 }
 const certAttrKeys = [attrKeys.USRROLE, attrKeys.USRNAME, attrKeys.USRTYPE]
 
+const accountSysCC = "accountsys"
+
+const crossCCCallFlag = "^_^~"
 
 const retCode = {
     OK:                     0,
@@ -205,6 +208,10 @@ const defaultRouteTable = {
     '/_loulan__/chains/getsometransonce'      : {'GET' : handle_queryTransInBlockOnce,'POST' : handle_queryTransInBlockOnce},
 }
 
+function getCrossCallCcname(chaincodeName) {
+    return crossCCCallFlag + chaincodeName
+}
+
 //for test
 function handle_test(params, res, req){
     var body = {
@@ -277,10 +284,27 @@ function __execRegister(params, req, outputRResult, serialno) {
 	var username = params.usr;
 	var orgname = params.org;
     var funcName = params.fcn || params.func; //兼容老接口,老接口为func
+    var args = params.args
+
+    if (args) {
+        if (typeof(args) == 'string') {
+            var delim = params.argsdelim ? params.argsdelim : ","
+            args = args.split(delim)
+        } else {
+            if (!(args instanceof Array)) {
+                return Promise.reject(paraInvalidMessage('\'args\''));
+            }
+        } 
+    }
 
 	if (!username) {
-		return Promise.reject(paraInvalidMessage("'usr'"))
+        if (!args || !args[0]) {
+            return Promise.reject(paraInvalidMessage('\'usr\''))
+        } else {
+            username = args[0] //args的第一个参数为用户名
+        }
 	}
+
 	if (!orgname) {
         orgname = 'org1'
 	}
@@ -473,17 +497,6 @@ function __execInvoke(params, req, outputQReslt, serialno) {
 		return Promise.reject(paraInvalidMessage('\'fcn\''));
 	}
 
-    var username = params.usr;
-	if (!username) {
-		return Promise.reject(paraInvalidMessage('\'usr\''))
-	}
-    var orgname = params.org;
-	if (!orgname) {
-        orgname = 'org1'
-	}
-	logger.debug('username  : ' + username);
-	logger.debug('orgname  : ' + orgname);
-    
     if (args) {
         if (typeof(args) == 'string') {
             var delim = params.argsdelim ? params.argsdelim : ","
@@ -494,6 +507,22 @@ function __execInvoke(params, req, outputQReslt, serialno) {
             }
         } 
     }
+
+    var username = params.usr;
+	if (!username) {
+        if (!args || !args[0]) {
+            return Promise.reject(paraInvalidMessage('\'usr\''))
+        } else {
+            username = args[0] //args的第一个参数为用户名
+        }
+	}
+    var orgname = params.org;
+	if (!orgname) {
+        orgname = 'org1'
+	}
+	logger.debug('username  : ' + username);
+	logger.debug('orgname  : ' + orgname);
+    
 
     var inputArgs = []
     
@@ -587,6 +616,11 @@ function __execInvoke(params, req, outputQReslt, serialno) {
         //这个参数只有在开户时才会设置。用户身份是平台自动添加的，所以要放在签名之后，因为签名可能是在客户端做的
         if (params.addusrindentity) {
             inputArgs.push(params.addusrindentity)
+        }
+        
+        if (params.useaccsys &&  accountSysCC  != chaincodeName) {
+            inputArgs.push(getCrossCallCcname(chaincodeName))
+            chaincodeName = accountSysCC
         }
         
         logger.debug('args  : ', inputArgs);
@@ -689,17 +723,6 @@ function handle_query(params, res, req, serialno) {
 		return;
 	}
 
-    var username = params.usr;
-	if (!username) {
-		return res.send(paraInvalidMessage('\'usr\''))
-	}
-    var orgname = params.org;
-	if (!orgname) {
-        orgname = 'org1'
-	}
-	logger.debug('username  : ' + username);
-	logger.debug('orgname  : ' + orgname);
-
     if (args) {
         if (typeof(args) == 'string') {
             var delim = params.argsdelim ? params.argsdelim : ","
@@ -710,6 +733,23 @@ function handle_query(params, res, req, serialno) {
             }
         } 
     }
+
+    var username = params.usr;
+	if (!username) {
+        if (!args || !args[0]) {
+            return res.send(paraInvalidMessage('\'usr\''))
+        } else {
+            username = args[0] //args的第一个参数为用户名
+        }
+	}
+    
+    var orgname = params.org;
+	if (!orgname) {
+        orgname = 'org1'
+	}
+	logger.debug('username  : ' + username);
+	logger.debug('orgname  : ' + orgname);
+
 
     var inputArgs = []
     //使用线上钱包时才能自动添加参数，因为签名是在本程序中做； 否则不能自动添加，因为签名是在客户端做的，会对参数做签名
@@ -782,6 +822,11 @@ function handle_query(params, res, req, serialno) {
     return promise0.then((sign)=>{
         inputArgs.push(sign)
     
+        if (params.useaccsys &&  accountSysCC  != chaincodeName) {
+            inputArgs.push(getCrossCallCcname(chaincodeName))
+            chaincodeName = accountSysCC
+        }
+
         logger.debug('args  : ', inputArgs);
     
 
@@ -1607,13 +1652,13 @@ function __chaincode_install(params, req, outputRResult) {
         });
 }
 
-function __chaincode_instantiateOrUpgrade(params, req, type, outputRResult) {
+function __chaincode_instantiateOrUpgrade(params, req, type, serialno) {
     var body = {
         code : retCode.OK,
         msg: "OK",
     };
     
-    logger.info("Enter "+type);
+    logger.info("Enter %s.%d", type, serialno);
 
 	logger.debug('params= \n', params);
 
@@ -1678,6 +1723,16 @@ function __chaincode_instantiateOrUpgrade(params, req, type, outputRResult) {
 
     logger.debug('args=', inputArgs)
     
+    var requestObj = {}
+    requestObj.peers = peers
+    requestObj.channame = channelName
+    requestObj.ccname = chaincodeName
+    requestObj.ccver = chaincodeVersion
+    requestObj.fcn = fcn
+    requestObj.inputArgs = inputArgs
+    requestObj.username = username
+    requestObj.orgname = orgname
+    
     if (type == 'instantiate') {
         
         var proms0
@@ -1712,11 +1767,11 @@ function __chaincode_instantiateOrUpgrade(params, req, type, outputRResult) {
                       (err)=>{ logger.error('%s notifyChaincodeState(%d) failed: err=%s', type, subscribe.chaincodeStates.DeploySuccess, err) //失败了只记录日志，部署或升级继续 
                       })
                 .then(()=>{
+                    logger.info("%s.%d success: request=%j", type, serialno, requestObj);
                     return (body);
                 })
             })
         .catch((err)=>{
-                logger.error('instantiateChaincode failed, err=%s', err)
                 body.code = retCode.ERROR
                 body.msg = '' + err
                 
@@ -1732,6 +1787,7 @@ function __chaincode_instantiateOrUpgrade(params, req, type, outputRResult) {
                       (err)=>{ logger.error('%s notifyChaincodeState(%d) failed: err=%s', type, subscribe.chaincodeStates.DeployFailed, err) //失败了只记录日志，部署或升级继续 
                       })
                 .then(()=>{
+                    logger.error("%s.%d failed: request=%j, err=%j", type, serialno, requestObj, err);
                     return Promise.reject(body);
                 })
             });
@@ -1769,11 +1825,11 @@ function __chaincode_instantiateOrUpgrade(params, req, type, outputRResult) {
                       (err)=>{ logger.error('%s notifyChaincodeState(%d) failed: err=%s', type, subscribe.chaincodeStates.UpgradeSuccess, err) //失败了只记录日志，部署或升级继续 
                       })
                 .then(()=>{
+                    logger.info("%s.%d success: request=%j", type, serialno, requestObj);
                     return (body);
                 })
             })
         .catch((err)=>{
-                logger.error('upgradeChaincode failed, err=%s', err)
                 body.code = retCode.ERROR
                 body.msg = '' + err
                 
@@ -1789,6 +1845,7 @@ function __chaincode_instantiateOrUpgrade(params, req, type, outputRResult) {
                       (err)=>{ logger.error('%s notifyChaincodeState(%d) failed: err=%s', type, subscribe.chaincodeStates.UpgradeFailed, err) //失败了只记录日志，部署或升级继续 
                       })
                 .then(()=>{
+                    logger.error("%s.%d failed: request=%j, err=%j", type, serialno, requestObj, err);
                     return Promise.reject(body);
                 })
             });
@@ -1796,7 +1853,7 @@ function __chaincode_instantiateOrUpgrade(params, req, type, outputRResult) {
 }
 
 // Instantiate chaincode on target peers
-function handle_chaincode_instantiate(params, res, req) {
+function handle_chaincode_instantiate(params, res, req, serialno) {
     for (var p in externReqParams_ChaincodeInstantiate) {
         if (params[p] == undefined)
             params[p] = externReqParams_ChaincodeInstantiate[p]
@@ -1814,7 +1871,7 @@ function handle_chaincode_instantiate(params, res, req) {
         respSent = true
     }
 
-    return __chaincode_instantiateOrUpgrade(params, req, 'instantiate')
+    return __chaincode_instantiateOrUpgrade(params, req, 'instantiate', serialno)
     .then((okResp)=>{
         if (!respSent) {
             res.send(okResp)
@@ -1830,7 +1887,7 @@ function handle_chaincode_instantiate(params, res, req) {
 }
 
 // Upgrade chaincode on target peers
-function handle_chaincode_upgrade(params, res, req) {
+function handle_chaincode_upgrade(params, res, req, serialno) {
     for (var p in externReqParams_ChaincodeUpgrade) {
         if (params[p] == undefined)
             params[p] = externReqParams_ChaincodeUpgrade[p]
@@ -1850,7 +1907,7 @@ function handle_chaincode_upgrade(params, res, req) {
         respSent = true
     }
 
-    return __chaincode_instantiateOrUpgrade(params, req, 'upgrade')
+    return __chaincode_instantiateOrUpgrade(params, req, 'upgrade', serialno)
     .then((okResp)=>{
         if (!respSent) {
             res.send(okResp)
@@ -1865,7 +1922,7 @@ function handle_chaincode_upgrade(params, res, req) {
     })
 }
 
-function handle_chaincode_instll_instantiate(params, res, req) {
+function handle_chaincode_instll_instantiate(params, res, req, serialno) {
     var body = {
         code : retCode.OK,
         msg: "OK",
@@ -1893,7 +1950,7 @@ function handle_chaincode_instll_instantiate(params, res, req) {
                 respSent = true
             }
 
-            return __chaincode_instantiateOrUpgrade(params, req, 'instantiate')
+            return __chaincode_instantiateOrUpgrade(params, req, 'instantiate', serialno)
             .then((response)=>{
                     logger.debug('instantiate OK.');
                     body.msg = 'install and instantiate OK.'
@@ -1928,7 +1985,7 @@ function handle_chaincode_instll_instantiate(params, res, req) {
 }
 
 
-function handle_chaincode_instll_upgrade(params, res, req) {
+function handle_chaincode_instll_upgrade(params, res, req, serialno) {
     var body = {
         code : retCode.OK,
         msg: "OK",
@@ -1956,7 +2013,7 @@ function handle_chaincode_instll_upgrade(params, res, req) {
                 respSent = true
             }
 
-            return __chaincode_instantiateOrUpgrade(params, req, 'upgrade')
+            return __chaincode_instantiateOrUpgrade(params, req, 'upgrade', serialno)
             .then((response)=>{
                     logger.debug('upgrade OK.');
                     body.msg = 'install and upgrade OK.'
@@ -2025,7 +2082,7 @@ function getExportInfoFileAbsolutePath(usr) {
     return mpath.join(exportIntfFileRootPath, getExportInfoFileRelativePath(usr))
 }
 function getExportInfoFileRelativePath(usr) {
-    return mpath.join(module_name, usr+'.intf')
+    return mpath.join(module_name, usr+'.txt')
 }
 
 function getExportIntfUrl(usr) {

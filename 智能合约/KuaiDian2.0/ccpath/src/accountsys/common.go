@@ -187,25 +187,6 @@ func (me *MyCrypto) AESDecrypt(bits int, key, iv, data []byte) ([]byte, error) {
 	return decrypted, nil
 }
 
-func (me *MyCrypto) Hash160(data []byte) ([]byte, error) {
-
-	sha := sha256.New()
-	_, err := sha.Write(data)
-	if err != nil {
-		return nil, commlogger.Errorf("Hash160: sha.Write failed, err=%s", err)
-	}
-
-	var ripemd160 = NewRipemd160()
-	rip := ripemd160.New()
-	_, err = rip.Write(sha.Sum(nil))
-	if err != nil {
-		return nil, commlogger.Errorf("Hash160: rip.Write failed, err=%s", err)
-	}
-
-	return rip.Sum(nil), nil
-
-}
-
 func (me *MyCrypto) Sha256(data []byte) ([]byte, error) {
 
 	sha := sha256.New()
@@ -327,9 +308,18 @@ func (t *StateWorldCache) getState_Ex(stub shim.ChaincodeStubInterface, key stri
 			return value, nil
 		}
 	}
-	return stub.GetState(key)
+	value, err := stub.GetState(key)
+	if err == nil {
+		t.stateCache[key] = value
+	}
+
+	return value, err
 }
+
 func (t *StateWorldCache) putState_Ex(stub shim.ChaincodeStubInterface, key string, value []byte) error {
-	t.stateCache[key] = value
-	return stub.PutState(key, value)
+	err := stub.PutState(key, value)
+	if err == nil {
+		t.stateCache[key] = value
+	}
+	return err
 }
