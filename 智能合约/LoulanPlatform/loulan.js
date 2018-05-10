@@ -611,48 +611,70 @@ function __execInvoke(params, req, outputQReslt, serialno) {
     
     return promise0.then((sign)=>{
         inputArgs.push(sign)
-        
+
+        var promise1
         
         //这个参数只有在开户时才会设置。用户身份是平台自动添加的，所以要放在签名之后，因为签名可能是在客户端做的
         if (params.addusrindentity) {
             inputArgs.push(params.addusrindentity)
+            promise1 = Promise.resolve()
+        } else {
+            //如果是开户操作，加上 usrindentity   在楼兰平台上的测试链中，可能会直接执行 account
+            if (fcn == "account") {
+                promise1 = new Promise((resolve, reject)=>{
+                    return hfc_wrap.getUserCert(username, orgname, true)
+                    .then((cert)=>{
+                        var indentity = hash.Hash160(cert).toString('base64')
+                        logger.debug('indentity=  : ', indentity);
+                        inputArgs.push(indentity)
+                        return resolve()
+                    })
+                    .catch((err)=>{
+                        return reject(err)
+                    })
+                })
+            } else {
+                promise1 = Promise.resolve()
+            }
         }
         
-        if (params.useaccsys &&  accountSysCC  != chaincodeName) {
-            inputArgs.push(getCrossCallCcname(chaincodeName))
-            chaincodeName = accountSysCC
-        }
-        
-        logger.debug('args  : ', inputArgs);
+        return promise1.then(()=>{
+            if (params.useaccsys &&  accountSysCC  != chaincodeName) {
+                inputArgs.push(getCrossCallCcname(chaincodeName))
+                chaincodeName = accountSysCC
+            }
+            
+            logger.debug('args  : ', inputArgs);
 
 
-        return hfc_wrap.invokeChaincode(peers, channelName, chaincodeName, fcn, inputArgs, username, orgname)
-        .then((response)=>{
-                logger.debug('invoke success, response=', response)
-                body.msg = util.format("Invoke(%s) OK.", fcn)
-                body.result = response.result
+            return hfc_wrap.invokeChaincode(peers, channelName, chaincodeName, fcn, inputArgs, username, orgname)
+            .then((response)=>{
+                    logger.debug('invoke success, response=', response)
+                    body.msg = util.format("Invoke(%s) OK.", fcn)
+                    body.result = response.result
 
-                if (params.exportInvokeIntf) {
-                    exportInvokeIntf(username, req, body);
-                    body.exportIntfUrl = getExportIntfUrl(username);
-                }
-                
-                if (outputQReslt == true) {
-                    //去掉无用的信息,不打印
-                    if (fcn == "account" || fcn == "accountCB") {
-                        
-                    } else {
-                        
-                    }                        
-                        
-                    logger.info("Invoke.%d success: request=%j, results=%j", serialno, invokeRequest, response.result);
-                }
+                    if (params.exportInvokeIntf) {
+                        exportInvokeIntf(username, req, body);
+                        body.exportIntfUrl = getExportIntfUrl(username);
+                    }
+                    
+                    if (outputQReslt == true) {
+                        //去掉无用的信息,不打印
+                        if (fcn == "account" || fcn == "accountCB") {
+                            
+                        } else {
+                            
+                        }                        
+                            
+                        logger.info("Invoke.%d success: request=%j, results=%j", serialno, invokeRequest, response.result);
+                    }
 
-                if (resultFormatHandle_Invoke) {
-                    resultFormatHandle_Invoke(params, req, body)
-                }
+                    if (resultFormatHandle_Invoke) {
+                        resultFormatHandle_Invoke(params, req, body)
+                    }
 
-                return body;
+                    return body;
+            })
         })
     })
     .catch((err)=>{
