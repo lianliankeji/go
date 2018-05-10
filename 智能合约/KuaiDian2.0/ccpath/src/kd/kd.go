@@ -309,9 +309,9 @@ func (t *KD) __Init(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	//init函数属于非常规操作，记录日志
 	kdlogger.Info("func =%s, args = %+v", function, args)
 
-	stateCache.create()
+	stateCache.create(stub)
 	defer func() {
-		stateCache.destroy()
+		stateCache.destroy(stub)
 	}()
 
 	/*
@@ -419,12 +419,12 @@ func (t *KD) __Init(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	}
 }
 
-var transInfos []TransferInfo
+var transInfos = make(map[string][]TransferInfo) //支持invoke重入，用txid标识每个invoke中的交易
 
 func (t *KD) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response) {
 	function, _ := stub.GetFunctionAndParameters()
 	defer func() {
-		transInfos = nil //每次invoke结束释放
+		delete(transInfos, stub.GetTxID()) //每次invoke结束释放
 		if excption := recover(); excption != nil {
 			pbResponse = shim.Error(kdlogger.SError("Invoke(%s) got an unexpect error:%s", function, excption))
 			kdlogger.Critical("Invoke got exception, stack:\n%s", string(debug.Stack()))
@@ -432,7 +432,7 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response) {
 	}()
 
 	//每次invoke必须初始化
-	transInfos = nil
+	transInfos[stub.GetTxID()] = nil
 
 	payload, err := t.__Invoke(stub)
 	if err != nil {
@@ -441,7 +441,7 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response) {
 
 	if CROSSCHAINCODE_CALL_THIS {
 		var invokeRslt InvokeResult
-		invokeRslt.TransInfos = transInfos
+		invokeRslt.TransInfos = transInfos[stub.GetTxID()]
 		invokeRslt.Payload = payload
 
 		invokeRsltB, err := json.Marshal(invokeRslt)
@@ -464,9 +464,9 @@ func (t *KD) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	function, args := stub.GetFunctionAndParameters()
 	kdlogger.Debug("func =%s, args = %+v", function, args)
 
-	stateCache.create()
+	stateCache.create(stub)
 	defer func() {
-		stateCache.destroy()
+		stateCache.destroy(stub)
 	}()
 
 	var err error
@@ -3501,9 +3501,9 @@ func (t *KD) transferCoin(stub shim.ChaincodeStubInterface, from, to, transType,
 	txInfo.Amount = amount
 	txInfo.Time = transeTime
 
-	transInfos = append(transInfos, txInfo)
+	transInfos[stub.GetTxID()] = append(transInfos[stub.GetTxID()], txInfo)
 
-	kdlogger.Debug("transInfos=%+v", transInfos)
+	kdlogger.Debug("transInfos=%+v", transInfos[stub.GetTxID()])
 
 	return nil, nil
 }

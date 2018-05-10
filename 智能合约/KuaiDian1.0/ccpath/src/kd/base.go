@@ -24,6 +24,13 @@ import (
 	pb "github.com/hyperledger/fabric/protos/peer"
 )
 
+//流程控制
+const (
+	Ctrl_isTestChain        = true
+	Ctrl_needCheckIndentity = false
+	Ctrl_needCheckSign      = false //是否检查签名。 该合约在测试链不用检查，正式链需要检查。
+)
+
 const (
 	TRANS_PAY    = 0 //交易支出
 	TRANS_INCOME = 1 //交易收入
@@ -654,6 +661,32 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 		}
 
 		return shim.Success(nil)
+
+	} else if function == "recharge" { //测试链才有
+		if Ctrl_isTestChain {
+			var argCount = fixedArgCount + 1
+			if len(args) < argCount {
+				return shim.Error(baselogger.SError("Invoke(lockAccAmt) miss arg, got %d, need %d.", len(args), argCount))
+			}
+
+			var rechargeAmount int64
+			rechargeAmount, err = strconv.ParseInt(args[fixedArgCount], 0, 64)
+			if err != nil {
+				return shim.Error(baselogger.SError("Invoke(recharge): convert rechargeAmount(%s) failed. err=%s", args[fixedArgCount], err))
+			}
+
+			accountEnt.TotalAmount = rechargeAmount
+			accountEnt.RestAmount = rechargeAmount
+
+			err = b.setAccountEntity(stub, accountEnt)
+			if err != nil {
+				return shim.Error(baselogger.SError("Invoke(recharge): save account failed. err=%s", err))
+			}
+
+			return shim.Success(nil)
+		} else {
+			return shim.Error(baselogger.SError("Invoke(recharge): can not run this function."))
+		}
 
 	} else {
 
@@ -1401,6 +1434,10 @@ func (b *BASE) needCheckSign(stub shim.ChaincodeStubInterface) bool {
 
 func (b *BASE) verifySign(stub shim.ChaincodeStubInterface, ownerPubKeyHash string, sign, signMsg []byte) error {
 
+	if !Ctrl_needCheckSign {
+		return nil
+	}
+
 	//没有保存pubkey，不验证
 	if len(ownerPubKeyHash) == 0 {
 		baselogger.Debug("verifySign: pubkey is nil, do not check signature.")
@@ -1443,6 +1480,10 @@ func (b *BASE) verifySign(stub shim.ChaincodeStubInterface, ownerPubKeyHash stri
 }
 
 func (b *BASE) verifyIdentity(stub shim.ChaincodeStubInterface, userName string, sign, signMsg []byte, ownerPubKeyHash, ownerIdentityHash string, accountEnt *AccountEntity) error {
+
+	if !Ctrl_needCheckIndentity {
+		return nil
+	}
 
 	if accountEnt != nil && accountEnt.Owner != userName {
 		return baselogger.Errorf("verifyIdentity: username not match, user=%s", userName)
