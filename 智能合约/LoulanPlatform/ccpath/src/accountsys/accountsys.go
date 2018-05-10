@@ -15,6 +15,7 @@ import (
 	"math"
 	"os"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -22,13 +23,6 @@ import (
 	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/core/chaincode/shim"
 	pb "github.com/hyperledger/fabric/protos/peer"
-)
-
-//流程控制
-const (
-	Ctrl_isTestChain        = false //是否是测试链。
-	Ctrl_needCheckSign      = true  //是否检查签名。
-	Ctrl_needCheckIndentity = true  //是否检查用户身份。
 )
 
 const (
@@ -42,14 +36,15 @@ const (
 	/*********************************************/
 	/****** 适配新模块请修改此常量，一般用模块名命名******/
 	/*********************************************/
-	EXTEND_MODULE_NAME = "kd"
+	EXTEND_MODULE_NAME = "acsys"
 
 	//每个key都加上前缀，便于区分，也便于以后在线升级时处理方便
 	TRANSSEQ_PREFIX      = "!" + EXTEND_MODULE_NAME + "@txSeqPre~"          //序列号生成器的key的前缀。使用的是worldState存储
 	TRANSINFO_PREFIX     = "!" + EXTEND_MODULE_NAME + "@txInfoPre~"         //全局交易信息的key的前缀。使用的是worldState存储
 	ONE_ACC_TRANS_PREFIX = "!" + EXTEND_MODULE_NAME + "@oneAccTxPre~"       //存储单个账户的交易的key前缀
-	UER_ENTITY_PREFIX    = "!" + EXTEND_MODULE_NAME + "@usrEntPre~"         //存储某个用户的用户信息的key前缀。
+	USR_ENTITY_PREFIX    = "!" + EXTEND_MODULE_NAME + "@usrEntPre~"         //存储某个用户的用户信息的key前缀。
 	ACC_ENTITY_PREFIX    = "!" + EXTEND_MODULE_NAME + "@accEntPre~"         //存储某个账户的账户信息的key前缀。
+	USR_INFOS_PREFIX     = "!" + EXTEND_MODULE_NAME + "@usrInfoPre~"        //存储某个用户的信息的key前缀。
 	CENTERBANK_ACC_KEY   = "!" + EXTEND_MODULE_NAME + "@centerBankAccKey@!" //央行账户的key。使用的是worldState存储
 	ALL_ACC_INFO_KEY     = "!" + EXTEND_MODULE_NAME + "@allAccInfoKey@!"    //存储所有账户名的key。使用的是worldState存储
 	ACC_STATIC_INFO_KEY  = "!" + EXTEND_MODULE_NAME + "@accStatcInfoKey@!"  //存储所有账户统计信息的key。
@@ -101,6 +96,12 @@ type AccountEntity struct {
 	OwnerPubKeyHash   string              `json:"opbk"` //公钥hash
 	OwnerIdentityHash string              `json:"oidt"` //身份hash
 	AuthUserHashMap   map[string][]string `json:"auhm"` //授权用户的pubkey和indentity的hash
+}
+
+type UserInfo struct {
+	EntID          string `json:"id"`
+	ProfilePicture string `json:"pic"`
+	Nickname       string `json:"nnm"`
 }
 
 type UserAttrs struct {
@@ -178,6 +179,21 @@ type QueryBalanceAndLocked struct {
 	LockCfg      []CoinLockCfg `json:"lockcfg"`
 }
 
+type TopNData struct {
+	Ranking            int    `json:"rank"`
+	UserProfilePicture string `json:"picture"`
+	UserNickname       string `json:"nickname"`
+	AccountName        string `json:"acc"`
+	RestAmount         int64  `json:"restamt"`
+}
+
+type QueryAccAmtRankAndTopN struct {
+	AccoutName string     `json:"acc"`
+	RestAmount int64      `json:"restamt"`
+	Ranking    string     `json:"rank"`
+	TopN       []TopNData `json:"topn"`
+}
+
 type BaseInitArgs struct {
 	FixedArgCount int
 	InitTime      int64
@@ -227,9 +243,9 @@ func (b *BASE) Init(stub shim.ChaincodeStubInterface) (pbResponse pb.Response) {
 
 	baselogger.Info("func =%s, args = %+v", function, args)
 
-	stateCache.create()
+	stateCache.create(stub)
 	defer func() {
-		stateCache.destroy()
+		stateCache.destroy(stub)
 	}()
 
 	/*
@@ -290,8 +306,8 @@ func (b *BASE) Init(stub shim.ChaincodeStubInterface) (pbResponse pb.Response) {
 	return shim.Success(nil)
 }
 
-var sysFunc = []string{"account", "transefer", "transefer3", "registerApp",
-	"getBalance", "getBalanceAndLocked", "getTransInfo", "isAccExists", "getAppInfo", "getStatisticInfo"}
+var sysFunc = []string{"account", "transefer", "transefer3", "registerApp", "updateUserInfo",
+	"getBalance", "getBalanceAndLocked", "getTransInfo", "isAccExists", "getAppInfo", "getStatisticInfo", "getRankingAndTopN", "getUserInfo"}
 
 // Transaction makes payment of X units from A to B
 func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response) {
@@ -306,9 +322,9 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 	baselogger.Debug("Enter Invoke")
 	baselogger.Debug("func =%s, args = %+v", function, args)
 
-	stateCache.create()
+	stateCache.create(stub)
 	defer func() {
-		stateCache.destroy()
+		stateCache.destroy(stub)
 	}()
 
 	var err error
@@ -362,7 +378,7 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 					return shim.Success([]byte(strconv.FormatInt(ERRCODE_TRANS_PAY_ACCOUNT_NOT_EXIST, 10)))
 				}
 			}
-			return shim.Error(baselogger.SError("Invoke getAccountEntity failed. err=%s", err))
+			return shim.Error(baselogger.SError("Invoke getAccountEntity(%s) failed. err=%s", accName, err))
 		}
 
 		//非account时签名为最后一个参数
@@ -398,7 +414,7 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 		baselogger.Debug("Enter account")
 		var usrType int
 
-		//args:[usrname, accname, pubkey, signature, userIdentity]
+		//args:[usrname, accname, pubkey,..., signature, userIdentity]
 		//因为userIdentity是平台自动添加的，而签名是在客户端做的，所以把userIdentity放在最后
 
 		var argCount = fixedArgCount + 3
@@ -406,14 +422,21 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 			return shim.Error(fmt.Sprintf("Invoke(account) miss arg, got %d, at least need %d.", len(args), argCount))
 		}
 
-		var userPubKeyHash = args[fixedArgCount] //base64
-		var userIdHash = args[len(args)-1]       //base64
+		//先取出固定参数 signature 和 userIdentity，因为这两个参数是平台自动加入args中的，所以一定有
+		var userIdHash = args[len(args)-1] //base64
 
 		//签名为倒数第二个参数
 		sig, msg, err := b.getSignAndMsg(function, args, len(args)-2)
 		if err != nil {
 			return shim.Error(baselogger.SError("Invoke(account): getSignAndMsg(%s) failed, err=%s.", accName, err))
 		}
+
+		//然后去掉最后两个参数 signature 和 userIdentity ， 方便后续的可选参数处理
+		args = args[:len(args)-2]
+		argCount -= 2
+
+		var userPubKeyHash = args[fixedArgCount] //base64
+
 		//校验修改Entity的用户身份，只有Entity的所有者才能修改自己的Entity
 		if err = b.verifyIdentity(stub, userName, sig, msg, nil, userPubKeyHash, userIdHash); err != nil {
 			return shim.Error(baselogger.SError("Invoke(account) verifyIdentity(%s) failed.", accName))
@@ -423,6 +446,24 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 		if err != nil {
 			return shim.Error(baselogger.SError("Invoke(account) newAccount failed. err=%s", err))
 		}
+
+		//可选参数
+		var userPicture string
+		var userNickname string
+		if len(args) > argCount {
+			userPicture = args[argCount]
+		}
+		if len(args) > argCount+1 {
+			userNickname = args[argCount+1]
+		}
+
+		if len(userPicture) > 0 || len(userNickname) > 0 {
+			err = b.updateUserInfo(stub, userName, userPicture, userNickname)
+			if err != nil {
+				return shim.Error(baselogger.SError("Invoke(updateUserInfo) updateUserInfo failed, err=%s.", err))
+			}
+		}
+
 		return shim.Success(nil)
 
 	} else if function == "accountCB" {
@@ -839,9 +880,24 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 		baselogger.Debug("Invoke(authAccountManager):  UserEntity after %+v", *managerEnt)
 
 		return shim.Success(nil)
+	} else if function == "updateUserInfo" {
+		var argCount = fixedArgCount + 2
+		if len(args) < argCount {
+			return shim.Error(baselogger.SError("Invoke(updateUserInfo) miss arg, got %d, at least need %d.", len(args), argCount))
+		}
+
+		var picture = args[fixedArgCount+0]
+		var nickname = args[fixedArgCount+1]
+
+		err = b.updateUserInfo(stub, userName, picture, nickname)
+		if err != nil {
+			return shim.Error(baselogger.SError("Invoke(updateUserInfo) updateUserInfo failed, err=%s.", err))
+		}
+
+		return shim.Success(nil)
 	} else {
 
-		retValue, err := b.Query(stub, &invokeFixArgs)
+		retValue, err := b.Query(stub, &invokeFixArgs, function, args)
 
 		if err != nil {
 			//如果是因为没找到处理函数，尝试在扩展模块中查找
@@ -868,15 +924,14 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 }
 
 // Query callback representing the query of a chaincode
-func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs) ([]byte, error) {
+func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs, function string, args []string) ([]byte, error) {
 	baselogger.Debug("Enter Query")
-	function, args := stub.GetFunctionAndParameters()
 	baselogger.Debug("func =%s, args = %+v", function, args)
 
 	var err error
 
 	var fixedArgCount = ifas.FixedArgCount
-	//var userName = ifas.UserName
+	var userName = ifas.UserName
 	var accName = ifas.AccountName
 	var queryTime = ifas.InvokeTime
 
@@ -1193,6 +1248,54 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs) ([]
 		returnValue, err := json.Marshal(appList)
 		if err != nil {
 			return nil, baselogger.Errorf("getAppInfo: Marshal failed. err=%s", err)
+		}
+
+		return returnValue, nil
+
+	} else if function == "getRankingAndTopN" {
+
+		var argCount = fixedArgCount + 3
+		if len(args) < argCount {
+			return nil, baselogger.Errorf("getRankingAndTopN miss arg, got %d, need %d.", len(args), argCount)
+		}
+
+		var topN int
+		topN, err = strconv.Atoi(args[fixedArgCount])
+		if err != nil {
+			return nil, baselogger.Errorf("convert topN(%s) failed. err=%s", args[fixedArgCount], err)
+		}
+
+		var excludeAccStr = args[fixedArgCount+1]
+		var excludeAcc = strings.Split(excludeAccStr, ",")
+
+		var appid = args[fixedArgCount+2]
+
+		rankAndTopN, err := b.getAccoutAmountRankingOrTopN(stub, userName, accName, topN, excludeAcc, appid)
+		if err != nil {
+			return nil, baselogger.Errorf("get ranking or topN failed. err=%s", err)
+		}
+
+		returnValue, err := json.Marshal(*rankAndTopN)
+		if err != nil {
+			return nil, baselogger.Errorf("Marshal failed. err=%s", err)
+		}
+
+		return returnValue, nil
+
+	} else if function == "getUserInfo" {
+		pUser, err := b.getUserInfo(stub, userName)
+		if err != nil && err != ErrNilEntity {
+			return nil, baselogger.Errorf("getUserInfo failed. err=%s", err)
+		}
+
+		var userInfo UserInfo = UserInfo{}
+		if pUser != nil {
+			userInfo = *pUser
+		}
+
+		returnValue, err := json.Marshal(userInfo)
+		if err != nil {
+			return nil, baselogger.Errorf("Marshal failed. err=%s", err)
 		}
 
 		return returnValue, nil
@@ -2803,7 +2906,7 @@ func (b *BASE) setAccountLockAmountCfg(stub shim.ChaincodeStubInterface, accName
 }
 
 func (b *BASE) getUserEntityKey(userName string) string {
-	return UER_ENTITY_PREFIX + userName
+	return USR_ENTITY_PREFIX + userName
 }
 
 func (b *BASE) getUserEntity(stub shim.ChaincodeStubInterface, userName string) (*UserEntity, error) {
@@ -2968,6 +3071,176 @@ func (b *BASE) corssChaincodeCall(stub shim.ChaincodeStubInterface, args [][]byt
 	}
 
 	return invokeRslt.Payload, nil
+}
+
+type AccountAmount struct {
+	UserName   string `json:"user"`
+	AccoutName string `json:"acc"`
+	Amount     int64  `json:"amt"`
+}
+type AccountAmountList []AccountAmount
+
+func (c AccountAmountList) Len() int {
+	return len(c)
+}
+func (c AccountAmountList) Swap(i, j int) {
+	c[i], c[j] = c[j], c[i]
+}
+func (c AccountAmountList) Less(i, j int) bool {
+	return c[i].Amount > c[j].Amount
+}
+
+func (b *BASE) getAccoutAmountRankingOrTopN(stub shim.ChaincodeStubInterface, userName, accName string, topN int, excludeAcc []string, appid string) (*QueryAccAmtRankAndTopN, error) {
+	var qaart QueryAccAmtRankAndTopN
+	qaart.AccoutName = accName
+	qaart.RestAmount = 0
+	qaart.Ranking = "-"
+	qaart.TopN = []TopNData{}
+
+	if len(accName) == 0 && topN <= 0 {
+		return nil, baselogger.Errorf("nothing to do(%s,%d).", accName, topN)
+	}
+
+	var err error
+	var accEnt *AccountEntity = nil
+	if len(accName) > 0 {
+		accEnt, err = b.getAccountEntity(stub, accName)
+		if err != nil {
+			return nil, baselogger.Errorf("getAccountEntity(%s) failed. err=%s", accName, err)
+		}
+	}
+
+	accsB, err := stateCache.getState_Ex(stub, ALL_ACC_INFO_KEY)
+	if err != nil {
+		return nil, baselogger.Errorf("GetState failed. err=%s", err)
+	}
+
+	var aal AccountAmountList
+	var accRanking int64 = 1
+	if accsB != nil {
+		var allAccs = bytes.NewBuffer(accsB)
+		var acc []byte
+		var accS string
+		var tmpEnt *AccountEntity
+		for {
+			acc, err = allAccs.ReadBytes(MULTI_STRING_DELIM)
+			if err != nil {
+				if err == io.EOF {
+					break
+				} else {
+					baselogger.Error("ReadBytes failed. err=%s", err)
+					continue
+				}
+			}
+			acc = acc[:len(acc)-1] //去掉末尾的分隔符
+			accS = string(acc)
+			if strSliceContains(excludeAcc, accS) {
+				continue
+			}
+
+			tmpEnt, err = b.getAccountEntity(stub, accS)
+			if err != nil {
+				baselogger.Error("getAccountEntity(%s) failed. err=%s", string(acc), err)
+				continue
+			}
+			if accEnt != nil && tmpEnt.RestAmount > accEnt.RestAmount {
+				accRanking++
+			}
+
+			if topN >= 1 {
+				aal = append(aal, AccountAmount{UserName: tmpEnt.Owner, AccoutName: accS, Amount: tmpEnt.RestAmount})
+			}
+		}
+	}
+
+	if accEnt != nil {
+		qaart.Ranking = strconv.FormatInt(accRanking, 10)
+		qaart.RestAmount = accEnt.RestAmount
+	}
+
+	if topN >= 1 {
+		sort.Sort(aal)
+		for idx, aa := range aal {
+			var tnd TopNData
+			tnd.AccountName = aa.AccoutName
+			tnd.RestAmount = aa.Amount
+			tnd.Ranking = idx + 1
+			userInfo, _ := b.getUserInfo(stub, aa.UserName)
+			if userInfo != nil {
+				tnd.UserProfilePicture = userInfo.ProfilePicture
+				tnd.UserNickname = userInfo.Nickname
+			}
+			qaart.TopN = append(qaart.TopN, tnd)
+			if len(qaart.TopN) >= topN {
+				break
+			}
+		}
+	}
+
+	return &qaart, nil
+}
+
+func (b *BASE) getUserInfoKey(userName string) string {
+	return USR_INFOS_PREFIX + userName
+}
+
+func (b *BASE) setUserInfo(stub shim.ChaincodeStubInterface, user *UserInfo) error {
+
+	userB, err := json.Marshal(user)
+	if err != nil {
+		return baselogger.Errorf("Marshal failed. err=%s", err)
+	}
+
+	err = stateCache.putState_Ex(stub, b.getUserInfoKey(user.EntID), userB)
+	if err != nil {
+		return baselogger.Errorf("PutState failed. err=%s", err)
+	}
+
+	return nil
+}
+
+func (b *BASE) getUserInfo(stub shim.ChaincodeStubInterface, userName string) (*UserInfo, error) {
+	userB, err := stateCache.getState_Ex(stub, b.getUserInfoKey(userName))
+	if err != nil {
+		return nil, baselogger.Errorf("GetState failed. err=%s", err)
+	}
+
+	if userB == nil {
+		return nil, ErrNilEntity
+	}
+
+	var ui UserInfo
+	err = json.Unmarshal(userB, &ui)
+	if err != nil {
+		return nil, baselogger.Errorf("Unmarshal failed. err=%s", err)
+	}
+
+	return &ui, nil
+}
+
+func (b *BASE) updateUserInfo(stub shim.ChaincodeStubInterface, userName, picture, nickname string) error {
+
+	var userInfo UserInfo
+	pUser, err := b.getUserInfo(stub, userName)
+	if err != nil && err != ErrNilEntity {
+		return baselogger.Errorf("getUserInfo failed, err=%s.", err)
+	}
+
+	if pUser == nil {
+		userInfo.EntID = userName
+	} else {
+		userInfo = *pUser
+	}
+
+	userInfo.Nickname = nickname
+	userInfo.ProfilePicture = picture
+
+	err = b.setUserInfo(stub, &userInfo)
+	if err != nil {
+		return baselogger.Errorf("setUserInfo failed, err=%s.", err)
+	}
+
+	return nil
 }
 
 func (b *BASE) isAdmin(stub shim.ChaincodeStubInterface, accName string) bool {
