@@ -419,12 +419,11 @@ func (t *KD) __Init(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	}
 }
 
-var transInfos = make(map[string][]TransferInfo) //支持invoke重入，用txid标识每个invoke中的交易
+var transInfoCache = NewTransferInfoCache()
 
 func (t *KD) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response) {
 	function, _ := stub.GetFunctionAndParameters()
 	defer func() {
-		delete(transInfos, stub.GetTxID()) //每次invoke结束释放
 		if excption := recover(); excption != nil {
 			pbResponse = shim.Error(kdlogger.SError("Invoke(%s) got an unexpect error:%s", function, excption))
 			kdlogger.Critical("Invoke got exception, stack:\n%s", string(debug.Stack()))
@@ -432,7 +431,10 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response) {
 	}()
 
 	//每次invoke必须初始化
-	transInfos[stub.GetTxID()] = nil
+	transInfoCache.Create(stub)
+	defer func() {
+		transInfoCache.Destroy(stub)
+	}()
 
 	payload, err := t.__Invoke(stub)
 	if err != nil {
@@ -441,7 +443,7 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response) {
 
 	if CROSSCHAINCODE_CALL_THIS {
 		var invokeRslt InvokeResult
-		invokeRslt.TransInfos = transInfos[stub.GetTxID()]
+		invokeRslt.TransInfos = transInfoCache.Get(stub)
 		invokeRslt.Payload = payload
 
 		invokeRsltB, err := json.Marshal(invokeRslt)
@@ -3501,9 +3503,9 @@ func (t *KD) transferCoin(stub shim.ChaincodeStubInterface, from, to, transType,
 	txInfo.Amount = amount
 	txInfo.Time = transeTime
 
-	transInfos[stub.GetTxID()] = append(transInfos[stub.GetTxID()], txInfo)
+	transInfoCache.Add(stub, &txInfo)
 
-	kdlogger.Debug("transInfos=%+v", transInfos[stub.GetTxID()])
+	kdlogger.Debug("transInfos=%+v", transInfoCache.Get(stub))
 
 	return nil, nil
 }

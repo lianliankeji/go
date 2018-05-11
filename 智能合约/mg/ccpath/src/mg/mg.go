@@ -375,9 +375,9 @@ func (t *MG) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response) {
 	}()
 
 	//每次invoke必须初始化
-	transInfoCache.create(stub)
+	transInfoCache.Create(stub)
 	defer func() {
-		transInfoCache.destroy(stub)
+		transInfoCache.Destroy(stub)
 	}()
 
 	payload, err := t.__Invoke(stub)
@@ -387,7 +387,7 @@ func (t *MG) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response) {
 
 	if CROSSCHAINCODE_CALL_THIS {
 		var invokeRslt InvokeResult
-		invokeRslt.TransInfos = transInfoCache.getTransferInfos(stub)
+		invokeRslt.TransInfos = transInfoCache.Get(stub)
 		invokeRslt.Payload = payload
 
 		invokeRsltB, err := json.Marshal(invokeRslt)
@@ -2723,9 +2723,9 @@ func (t *MG) transferCoin(stub shim.ChaincodeStubInterface, from, to, transType,
 	txInfo.Amount = amount
 	txInfo.Time = transeTime
 
-	transInfoCache.addTransferInfo(stub, &txInfo)
+	transInfoCache.Add(stub, &txInfo)
 
-	mglogger.Debug("transInfos=%+v", transInfoCache.getTransferInfos(stub))
+	mglogger.Debug("transInfos=%+v", transInfoCache.Get(stub))
 
 	return nil, nil
 }

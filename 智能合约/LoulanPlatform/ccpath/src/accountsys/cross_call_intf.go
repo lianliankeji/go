@@ -33,23 +33,23 @@ func NewTransferInfoCache() *TransferInfoCache {
 	return &t
 }
 
-func (t *TransferInfoCache) create(stub shim.ChaincodeStubInterface) {
+func (t *TransferInfoCache) Create(stub shim.ChaincodeStubInterface) {
 }
 
-func (t *TransferInfoCache) destroy(stub shim.ChaincodeStubInterface) {
+func (t *TransferInfoCache) Destroy(stub shim.ChaincodeStubInterface) {
 	t.lock.Lock()
 	delete(t.transCache, stub.GetTxID())
 	t.lock.Unlock()
 }
 
-func (t *TransferInfoCache) getTransferInfos(stub shim.ChaincodeStubInterface) []TransferInfo {
+func (t *TransferInfoCache) Get(stub shim.ChaincodeStubInterface) []TransferInfo {
 	t.lock.RLock() //读锁
 	defer t.lock.RUnlock()
 	return t.transCache[stub.GetTxID()]
 
 }
 
-func (t *TransferInfoCache) addTransferInfo(stub shim.ChaincodeStubInterface, transInfo *TransferInfo) {
+func (t *TransferInfoCache) Add(stub shim.ChaincodeStubInterface, transInfo *TransferInfo) {
 	t.lock.Lock()
 	t.transCache[stub.GetTxID()] = append(t.transCache[stub.GetTxID()], *transInfo)
 	t.lock.Unlock()
