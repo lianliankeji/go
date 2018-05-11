@@ -309,9 +309,9 @@ func (t *KD) __Init(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	//init函数属于非常规操作，记录日志
 	kdlogger.Info("func =%s, args = %+v", function, args)
 
-	stateCache.create(stub)
+	stateCache.Create(stub)
 	defer func() {
-		stateCache.destroy(stub)
+		stateCache.Destroy(stub)
 	}()
 
 	/*
@@ -363,7 +363,7 @@ func (t *KD) __Init(stub shim.ChaincodeStubInterface) ([]byte, error) {
 			return nil, kdlogger.Errorf("Init Marshal error, err=%s.", err)
 		}
 
-		err = stateCache.putState_Ex(stub, t.getGlobalRackAllocRateKey(), eapJson)
+		err = stateCache.PutState_Ex(stub, t.getGlobalRackAllocRateKey(), eapJson)
 		if err != nil {
 			return nil, kdlogger.Errorf("Init PutState_Ex error, err=%s.", err)
 		}
@@ -387,7 +387,7 @@ func (t *KD) __Init(stub shim.ChaincodeStubInterface) ([]byte, error) {
 			return nil, kdlogger.Errorf("Init Marshal(serc) error, err=%s.", err)
 		}
 
-		err = stateCache.putState_Ex(stub, t.getGlobalRackEncourageScoreCfgKey(), sercJson)
+		err = stateCache.PutState_Ex(stub, t.getGlobalRackEncourageScoreCfgKey(), sercJson)
 		if err != nil {
 			return nil, kdlogger.Errorf("Init PutState_Ex(serc) error, err=%s.", err)
 		}
@@ -404,7 +404,7 @@ func (t *KD) __Init(stub shim.ChaincodeStubInterface) ([]byte, error) {
 			return nil, kdlogger.Errorf("Init Marshal(rfc) error, err=%s.", err)
 		}
 
-		err = stateCache.putState_Ex(stub, t.getGlobalRackFinancCfgKey(), rfcJson)
+		err = stateCache.PutState_Ex(stub, t.getGlobalRackFinancCfgKey(), rfcJson)
 		if err != nil {
 			return nil, kdlogger.Errorf("Init PutState_Ex(rfc) error, err=%s.", err)
 		}
@@ -466,9 +466,9 @@ func (t *KD) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	function, args := stub.GetFunctionAndParameters()
 	kdlogger.Debug("func =%s, args = %+v", function, args)
 
-	stateCache.create(stub)
+	stateCache.Create(stub)
 	defer func() {
-		stateCache.destroy(stub)
+		stateCache.Destroy(stub)
 	}()
 
 	var err error
@@ -505,7 +505,7 @@ func (t *KD) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
 		var appid = args[fixedArgCount]
 		kdlogger.Errorf("saveAppid: appid=%s", appid)
 
-		err = stateCache.putState_Ex(stub, APPID_KEY, []byte(appid))
+		err = stateCache.PutState_Ex(stub, APPID_KEY, []byte(appid))
 		if err != nil {
 			return nil, kdlogger.Errorf("Invoke(saveAppid) save appid failed, err=%s.", err)
 		}
@@ -634,7 +634,7 @@ func (t *KD) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
 			stateKey = t.getRackAllocRateKey(rackid)
 		}
 
-		err = stateCache.putState_Ex(stub, stateKey, eapJson)
+		err = stateCache.PutState_Ex(stub, stateKey, eapJson)
 		if err != nil {
 			return nil, kdlogger.Errorf("Invoke(setAllocCfg) PutState_Ex error, err=%s.", err)
 		}
@@ -666,14 +666,14 @@ func (t *KD) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
 
 		var eap EarningAllocRate
 
-		eapB, err := stateCache.getState_Ex(stub, t.getRackAllocRateKey(rackid))
+		eapB, err := stateCache.GetState_Ex(stub, t.getRackAllocRateKey(rackid))
 		if err != nil {
 			return nil, kdlogger.Errorf("Invoke(allocEarning) GetState(rackid=%s) failed. err=%s", rackid, err)
 		}
 		if eapB == nil {
 			kdlogger.Warn("Invoke(allocEarning) GetState(rackid=%s) nil, try to get global.", rackid)
 			//没有为该货架单独配置，返回global配置
-			eapB, err = stateCache.getState_Ex(stub, t.getGlobalRackAllocRateKey())
+			eapB, err = stateCache.GetState_Ex(stub, t.getGlobalRackAllocRateKey())
 			if err != nil {
 				return nil, kdlogger.Errorf("Invoke(allocEarning) GetState(global, rackid=%s) failed. err=%s", rackid, err)
 			}
@@ -812,7 +812,7 @@ func (t *KD) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
 			stateKey = t.getRackFinancCfgKey(rackid)
 		}
 
-		err = stateCache.putState_Ex(stub, stateKey, rfcJson)
+		err = stateCache.PutState_Ex(stub, stateKey, rfcJson)
 		if err != nil {
 			return nil, kdlogger.Errorf("IInvoke(setFinanceCfg) PutState_Ex(rfc) error, err=%s.", err)
 		}
@@ -1319,7 +1319,7 @@ func (t *KD) setAllocEarnTx(stub shim.ChaincodeStubInterface, rackid, allocKey s
 	kdlogger.Debug("setAllocEarnTx return %s.", string(eatJson))
 
 	var txKey = t.getAllocTxKey(stub, rackid, seq)
-	err = stateCache.putState_Ex(stub, txKey, eatJson)
+	err = stateCache.PutState_Ex(stub, txKey, eatJson)
 	if err != nil {
 		return nil, kdlogger.Errorf("setAllocEarnTx  PutState_Ex failed.err=%s", err)
 	}
@@ -1382,7 +1382,7 @@ func (t *KD) getRackRolesAllocAmt(eap *EarningAllocRate, totalAmt int64) *RolesA
 func (t *KD) setOneAccAllocEarnTx(stub shim.ChaincodeStubInterface, accName, txKey string) error {
 	var accTxKey = t.getOneAccAllocTxKey(accName)
 
-	txsB, err := stateCache.getState_Ex(stub, accTxKey)
+	txsB, err := stateCache.GetState_Ex(stub, accTxKey)
 	if err != nil {
 		return kdlogger.Errorf("setOneAccAllocEarnTx: GetState err = %s", err)
 	}
@@ -1395,7 +1395,7 @@ func (t *KD) setOneAccAllocEarnTx(stub shim.ChaincodeStubInterface, accName, txK
 		newTxsB = append(newTxsB, MULTI_STRING_DELIM)
 	}
 
-	err = stateCache.putState_Ex(stub, accTxKey, newTxsB)
+	err = stateCache.PutState_Ex(stub, accTxKey, newTxsB)
 	if err != nil {
 		kdlogger.Error("setOneAccAllocEarnTx PutState failed.err=%s", err)
 		return err
@@ -1485,7 +1485,7 @@ func (t *KD) getAllocTxRecdByKey(stub shim.ChaincodeStubInterface, rackid, alloc
 
 	//先判断是否存在交易序列号了，如果不存在，说明还没有交易发生。 这里做这个判断是因为在 getTransSeq 里如果没有设置过序列号的key会自动设置一次，但是在query中无法执行PutStat，会报错
 	var seqKey = t.getAllocTxSeqKey(stub, rackid)
-	test, err := stateCache.getState_Ex(stub, seqKey)
+	test, err := stateCache.GetState_Ex(stub, seqKey)
 	if err != nil {
 		return nil, kdlogger.Errorf("getOneAllocRecd GetState(seqKey) failed. err=%s", err)
 	}
@@ -1505,7 +1505,7 @@ func (t *KD) getAllocTxRecdByKey(stub shim.ChaincodeStubInterface, rackid, alloc
 	//从最后往前找，因为查找最新的可能性比较大
 	for i := maxSeq; i > 0; i-- { //序列号生成器从1开始
 		txkey := t.getAllocTxKey(stub, rackid, i)
-		txB, err := stateCache.getState_Ex(stub, txkey)
+		txB, err := stateCache.GetState_Ex(stub, txkey)
 		if err != nil {
 			kdlogger.Errorf("getOneAllocRecd GetState(rackid=%s) failed. err=%s", rackid, err)
 			continue
@@ -1558,7 +1558,7 @@ func (t *KD) getAllocTxRecds(stub shim.ChaincodeStubInterface, rackid string, be
 
 	//先判断是否存在交易序列号了，如果不存在，说明还没有交易发生。 这里做这个判断是因为在 getTransSeq 里如果没有设置过序列号的key会自动设置一次，但是在query中无法执行PutStat，会报错
 	var seqKey = t.getAllocTxSeqKey(stub, rackid)
-	test, err := stateCache.getState_Ex(stub, seqKey)
+	test, err := stateCache.GetState_Ex(stub, seqKey)
 	if err != nil {
 		return nil, kdlogger.Errorf("getAllocTxRecds GetState(seqKey) failed. err=%s", err)
 	}
@@ -1592,7 +1592,7 @@ func (t *KD) getAllocTxRecds(stub shim.ChaincodeStubInterface, rackid string, be
 		}
 
 		txkey := t.getAllocTxKey(stub, rackid, loop)
-		txB, err := stateCache.getState_Ex(stub, txkey)
+		txB, err := stateCache.GetState_Ex(stub, txkey)
 		if err != nil {
 			kdlogger.Errorf("getAllocTxRecds GetState(rackid=%s) failed. err=%s", rackid, err)
 			continue
@@ -1647,7 +1647,7 @@ func (t *KD) getOneAccAllocTxRecds(stub shim.ChaincodeStubInterface, accName str
 		count = math.MaxInt64
 	}
 
-	txsB, err := stateCache.getState_Ex(stub, accTxKey)
+	txsB, err := stateCache.GetState_Ex(stub, accTxKey)
 	if err != nil {
 		return nil, kdlogger.Errorf("getOneAccAllocTxRecds: GetState(accName=%s) err = %s", accName, err)
 	}
@@ -1725,7 +1725,7 @@ func (t *KD) getOneAccAllocTx(stub shim.ChaincodeStubInterface, txKey, accName s
 }
 
 func (t *KD) getAllocTxRecdEntity(stub shim.ChaincodeStubInterface, txKey string) (*EarningAllocTx, error) {
-	txB, err := stateCache.getState_Ex(stub, txKey)
+	txB, err := stateCache.GetState_Ex(stub, txKey)
 	if err != nil {
 		return nil, kdlogger.Errorf("getAllocTxRecdEntity GetState(txKey=%s) failed. err=%s", txKey, err)
 	}
@@ -1747,7 +1747,7 @@ func (t *KD) getRackAllocCfg(stub shim.ChaincodeStubInterface, rackid string, pe
 	var err error
 
 	if rackid != "*" {
-		eapB, err = stateCache.getState_Ex(stub, t.getRackAllocRateKey(rackid))
+		eapB, err = stateCache.GetState_Ex(stub, t.getRackAllocRateKey(rackid))
 		if err != nil {
 			return nil, kdlogger.Errorf("getRackAllocCfg GetState(rackid=%s) failed. err=%s", rackid, err)
 		}
@@ -1756,7 +1756,7 @@ func (t *KD) getRackAllocCfg(stub shim.ChaincodeStubInterface, rackid string, pe
 	if eapB == nil {
 		kdlogger.Warn("getRackAllocCfg GetState(rackid=%s) nil, try to get global.", rackid)
 		//没有为该货架单独配置，返回global配置
-		eapB, err = stateCache.getState_Ex(stub, t.getGlobalRackAllocRateKey())
+		eapB, err = stateCache.GetState_Ex(stub, t.getGlobalRackAllocRateKey())
 		if err != nil {
 			return nil, kdlogger.Errorf("getRackAllocCfg GetState(global, rackid=%s) failed. err=%s", rackid, err)
 		}
@@ -1866,7 +1866,7 @@ func (t *KD) setRackEncourageScoreCfg(stub shim.ChaincodeStubInterface, rackid, 
 		stateKey = t.getRackEncourageScoreCfgKey(rackid)
 	}
 
-	err = stateCache.putState_Ex(stub, stateKey, sepcJson)
+	err = stateCache.PutState_Ex(stub, stateKey, sepcJson)
 	if err != nil {
 		return nil, kdlogger.Errorf("setRackEncourageScoreCfg PutState_Ex failed. err=%s", err)
 	}
@@ -1880,7 +1880,7 @@ func (t *KD) getRackEncourageScoreCfg(stub shim.ChaincodeStubInterface, rackid s
 	var err error
 
 	if rackid != "*" {
-		sepcB, err = stateCache.getState_Ex(stub, t.getRackEncourageScoreCfgKey(rackid))
+		sepcB, err = stateCache.GetState_Ex(stub, t.getRackEncourageScoreCfgKey(rackid))
 		if err != nil {
 			return nil, kdlogger.Errorf("getRackEncourageScoreCfg GetState failed.rackid=%s err=%s", rackid, err)
 		}
@@ -1888,7 +1888,7 @@ func (t *KD) getRackEncourageScoreCfg(stub shim.ChaincodeStubInterface, rackid s
 
 	if sepcB == nil {
 		kdlogger.Warn("getRackEncourageScoreCfg: can not find cfg for %s, will use golobal.", rackid)
-		sepcB, err = stateCache.getState_Ex(stub, t.getGlobalRackEncourageScoreCfgKey())
+		sepcB, err = stateCache.GetState_Ex(stub, t.getGlobalRackEncourageScoreCfgKey())
 		if err != nil {
 			return nil, kdlogger.Errorf("getRackEncourageScoreCfg GetState(global cfg) failed.rackid=%s err=%s", rackid, err)
 		}
@@ -2176,7 +2176,7 @@ func (t *KD) getRackFinancCfg(stub shim.ChaincodeStubInterface, rackid string, p
 	var err error
 
 	if rackid != "*" { // "*"表示查询全局配置
-		rfcB, err = stateCache.getState_Ex(stub, t.getRackFinancCfgKey(rackid))
+		rfcB, err = stateCache.GetState_Ex(stub, t.getRackFinancCfgKey(rackid))
 		if err != nil {
 			return nil, kdlogger.Errorf("getRackFinancCfg GetState failed.rackid=%s err=%s", rackid, err)
 		}
@@ -2184,7 +2184,7 @@ func (t *KD) getRackFinancCfg(stub shim.ChaincodeStubInterface, rackid string, p
 
 	if rfcB == nil {
 		kdlogger.Warn("getRackFinancCfg: can not find cfg for %s, will use golobal.", rackid)
-		rfcB, err = stateCache.getState_Ex(stub, t.getGlobalRackFinancCfgKey())
+		rfcB, err = stateCache.GetState_Ex(stub, t.getGlobalRackFinancCfgKey())
 		if err != nil {
 			return nil, kdlogger.Errorf("getRackFinancCfg GetState(global cfg) failed.rackid=%s err=%s", rackid, err)
 		}
@@ -2216,7 +2216,7 @@ func (t *KD) getRackFinacInfoKey(rackId, finacId string) string {
 //用户购买理财，包括自动续期
 func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, fid, payee, transType, desc string, amount, invokeTime int64, sameEntSaveTx, isRenewal bool) ([]byte, error) {
 	var fiacInfoKey = t.getFinacInfoKey(fid)
-	fiB, err := stateCache.getState_Ex(stub, fiacInfoKey)
+	fiB, err := stateCache.GetState_Ex(stub, fiacInfoKey)
 	if err != nil {
 		return nil, kdlogger.Errorf("userBuyFinance:  GetState(%s) failed. err=%s.", fiacInfoKey, err)
 	}
@@ -2236,7 +2236,7 @@ func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, f
 	}
 
 	var rackInfoKey = t.getRackInfoKey(rackid)
-	riB, err := stateCache.getState_Ex(stub, rackInfoKey)
+	riB, err := stateCache.GetState_Ex(stub, rackInfoKey)
 	if err != nil {
 		return nil, kdlogger.Errorf("userBuyFinance:  GetState(%s) failed. err=%s.", rackInfoKey, err)
 	}
@@ -2257,7 +2257,7 @@ func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, f
 
 	//写入货架融资信息
 	rackFinacInfoKey := t.getRackFinacInfoKey(rackid, fid)
-	rfiB, err := stateCache.getState_Ex(stub, rackFinacInfoKey)
+	rfiB, err := stateCache.GetState_Ex(stub, rackFinacInfoKey)
 	if err != nil {
 		return nil, kdlogger.Errorf("userBuyFinance:  GetState(%s) failed. err=%s.", rackFinacInfoKey, err)
 	}
@@ -2416,17 +2416,17 @@ func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, f
 		return nil, kdlogger.Errorf("userBuyFinance:  Marshal failed. err=%s.", err)
 	}
 
-	err = stateCache.putState_Ex(stub, rackFinacInfoKey, rfiJson)
+	err = stateCache.PutState_Ex(stub, rackFinacInfoKey, rfiJson)
 	if err != nil {
 		return nil, kdlogger.Errorf("userBuyFinance:  PutState failed. err=%s.", err)
 	}
 
-	err = stateCache.putState_Ex(stub, rackInfoKey, riJson)
+	err = stateCache.PutState_Ex(stub, rackInfoKey, riJson)
 	if err != nil {
 		return nil, kdlogger.Errorf("userBuyFinance:  PutState failed. err=%s.", err)
 	}
 
-	err = stateCache.putState_Ex(stub, fiacInfoKey, fiJson)
+	err = stateCache.PutState_Ex(stub, fiacInfoKey, fiJson)
 	if err != nil {
 		return nil, kdlogger.Errorf("userBuyFinance:  PutState failed. err=%s.", err)
 	}
@@ -2497,7 +2497,7 @@ func (t *KD) financeBonus(stub shim.ChaincodeStubInterface, fid, rackales string
 func (t *KD) financeBonus4OneRack(stub shim.ChaincodeStubInterface, rackid, fid string, sales, invokeTime int64) error {
 	var rackFinacInfoKey = t.getRackFinacInfoKey(rackid, fid)
 
-	rfiB, err := stateCache.getState_Ex(stub, rackFinacInfoKey)
+	rfiB, err := stateCache.GetState_Ex(stub, rackFinacInfoKey)
 	if err != nil {
 		return kdlogger.Errorf("financeBonus4OneRack:  GetState(%s) failed. err=%s.", rackFinacInfoKey, err)
 	}
@@ -2558,7 +2558,7 @@ func (t *KD) financeBonus4OneRack(stub shim.ChaincodeStubInterface, rackid, fid 
 		return kdlogger.Errorf("financeBonus4OneRack:  Marshal failed. err=%s.", err)
 	}
 
-	err = stateCache.putState_Ex(stub, rackFinacInfoKey, rfiJson)
+	err = stateCache.PutState_Ex(stub, rackFinacInfoKey, rfiJson)
 	if err != nil {
 		return kdlogger.Errorf("financeBonus4OneRack:  PutState failed. err=%s.", err)
 	}
@@ -2576,7 +2576,7 @@ func (t *KD) setCurrentFid(stub shim.ChaincodeStubInterface, currentFid string) 
 		return nil
 	}
 
-	hisB, err := stateCache.getState_Ex(stub, RACKFINACHISTORY_KEY)
+	hisB, err := stateCache.GetState_Ex(stub, RACKFINACHISTORY_KEY)
 	if err != nil {
 		return kdlogger.Errorf("setCurrentFid: GetState failed. err=%s.", err)
 	}
@@ -2605,7 +2605,7 @@ func (t *KD) setCurrentFid(stub shim.ChaincodeStubInterface, currentFid string) 
 		return kdlogger.Errorf("setCurrentFid: Marshal failed. err=%s.", err)
 	}
 
-	err = stateCache.putState_Ex(stub, RACKFINACHISTORY_KEY, hisB)
+	err = stateCache.PutState_Ex(stub, RACKFINACHISTORY_KEY, hisB)
 	if err != nil {
 		return kdlogger.Errorf("setCurrentFid: PutState_Ex failed. err=%s.", err)
 	}
@@ -2616,7 +2616,7 @@ func (t *KD) setCurrentFid(stub shim.ChaincodeStubInterface, currentFid string) 
 }
 
 func (t *KD) getPrevAndCurrFids(stub shim.ChaincodeStubInterface) (*RackFinancHistory, error) {
-	hisB, err := stateCache.getState_Ex(stub, RACKFINACHISTORY_KEY)
+	hisB, err := stateCache.GetState_Ex(stub, RACKFINACHISTORY_KEY)
 	if err != nil {
 		return nil, kdlogger.Errorf("getPrevAndCurrFids: GetState failed. err=%s.", err)
 	}
@@ -2681,7 +2681,7 @@ func (t *KD) getUserInvestAmount(stub shim.ChaincodeStubInterface, accName, rack
 		return 0, nil
 	}
 
-	rfiB, err := stateCache.getState_Ex(stub, t.getRackFinacInfoKey(rackid, fid))
+	rfiB, err := stateCache.GetState_Ex(stub, t.getRackFinacInfoKey(rackid, fid))
 	if err != nil {
 		return 0, kdlogger.Errorf("getUserHistoryFinance:  GetState failed. err=%s.", err)
 	}
@@ -2712,7 +2712,7 @@ func (t *KD) getRackFinanceAmount(stub shim.ChaincodeStubInterface, rackid, fid 
 	   }
 	*/
 
-	rfiB, err := stateCache.getState_Ex(stub, t.getRackFinacInfoKey(rackid, fid))
+	rfiB, err := stateCache.GetState_Ex(stub, t.getRackFinacInfoKey(rackid, fid))
 	if err != nil {
 		return 0, kdlogger.Errorf("getRackHistoryFinance:  GetState failed. err=%s.", err)
 	}
@@ -2737,12 +2737,12 @@ func (t *KD) getRackFinanceAmount(stub shim.ChaincodeStubInterface, rackid, fid 
 
 func (t *KD) financeIssueFinishAfter(stub shim.ChaincodeStubInterface, currentFid string, invokeTime int64) error {
 	//看是否已经处理过
-	finishIdB, err := stateCache.getState_Ex(stub, RACKFINACISSUEFINISHID_KEY)
+	finishIdB, err := stateCache.GetState_Ex(stub, RACKFINACISSUEFINISHID_KEY)
 	if err != nil {
 		return kdlogger.Errorf("financeIssueFinishAfter: GetState(finishId) failed. err=%s.", err)
 	}
 	if finishIdB == nil {
-		err = stateCache.putState_Ex(stub, RACKFINACISSUEFINISHID_KEY, []byte(currentFid))
+		err = stateCache.PutState_Ex(stub, RACKFINACISSUEFINISHID_KEY, []byte(currentFid))
 		if err != nil {
 			return kdlogger.Errorf("financeIssueFinishAfter: PutState_Ex(finishId) failed. err=%s.", err)
 		}
@@ -2755,7 +2755,7 @@ func (t *KD) financeIssueFinishAfter(stub shim.ChaincodeStubInterface, currentFi
 	}
 
 	//给本期理财设置为"发行完毕"
-	fiB, err := stateCache.getState_Ex(stub, t.getFinacInfoKey(currentFid))
+	fiB, err := stateCache.GetState_Ex(stub, t.getFinacInfoKey(currentFid))
 	if err != nil {
 		return kdlogger.Errorf("financeIssueFinishAfter: GetState(fi=%s) failed. err=%s.", currentFid, err)
 	}
@@ -2769,7 +2769,7 @@ func (t *KD) financeIssueFinishAfter(stub shim.ChaincodeStubInterface, currentFi
 
 		for _, rackid := range fi.RackList {
 			var rfiKey = t.getRackFinacInfoKey(rackid, currentFid)
-			rfiB, err := stateCache.getState_Ex(stub, rfiKey)
+			rfiB, err := stateCache.GetState_Ex(stub, rfiKey)
 			if err != nil {
 				return kdlogger.Errorf("financeIssueFinishAfter: GetState(rfi=%s,%s) failed. err=%s.", rackid, currentFid, err)
 			}
@@ -2796,7 +2796,7 @@ func (t *KD) financeIssueFinishAfter(stub shim.ChaincodeStubInterface, currentFi
 				return kdlogger.Errorf("financeIssueFinishAfter: Marshal(rfi=%s,%s) failed. err=%s.", rackid, currentFid, err)
 			}
 
-			err = stateCache.putState_Ex(stub, rfiKey, rfiB)
+			err = stateCache.PutState_Ex(stub, rfiKey, rfiB)
 			if err != nil {
 				return kdlogger.Errorf("financeIssueFinishAfter: PutState_Ex(rfi=%s,%s) failed. err=%s.", rackid, currentFid, err)
 			}
@@ -2827,7 +2827,7 @@ func (t *KD) financeRenewalPreviousFinance(stub shim.ChaincodeStubInterface, cur
 		return kdlogger.Errorf("financeRenewal: preFid == currentFid, error.")
 	}
 
-	fiB, err := stateCache.getState_Ex(stub, t.getFinacInfoKey(preFid))
+	fiB, err := stateCache.GetState_Ex(stub, t.getFinacInfoKey(preFid))
 	if err != nil {
 		return kdlogger.Errorf("financeRenewal: GetState(fi=%s) failed. err=%s.", preFid, err)
 	}
@@ -2846,7 +2846,7 @@ func (t *KD) financeRenewalPreviousFinance(stub shim.ChaincodeStubInterface, cur
 
 	for _, rackid := range fi.RackList {
 		var rfiKey = t.getRackFinacInfoKey(rackid, preFid)
-		rfiB, err := stateCache.getState_Ex(stub, rfiKey)
+		rfiB, err := stateCache.GetState_Ex(stub, rfiKey)
 		if err != nil {
 			return kdlogger.Errorf("financeRenewal: GetState(rfi=%s,%s) failed. err=%s.", rackid, preFid, err)
 		}
@@ -2914,7 +2914,7 @@ func (t *KD) payUserFinance(stub shim.ChaincodeStubInterface, accName, reacc, ra
 		}
 
 		var rfiKey = t.getRackFinacInfoKey(rackid, f)
-		rfiB, err := stateCache.getState_Ex(stub, rfiKey)
+		rfiB, err := stateCache.GetState_Ex(stub, rfiKey)
 		if err != nil {
 			return kdlogger.Errorf("payUserFinance:  GetState(%s,%s) failed. err=%s.", rackid, f, err)
 		}
@@ -2944,7 +2944,7 @@ func (t *KD) payUserFinance(stub shim.ChaincodeStubInterface, accName, reacc, ra
 			return kdlogger.Errorf("payUserFinance:  Marshal(%s,%s) failed. err=%s.", rackid, f, err)
 		}
 
-		err = stateCache.putState_Ex(stub, rfiKey, rfiB)
+		err = stateCache.PutState_Ex(stub, rfiKey, rfiB)
 		if err != nil {
 			return kdlogger.Errorf("payUserFinance:  PutState_Ex(%s,%s) failed. err=%s.", rackid, f, err)
 		}
@@ -3019,7 +3019,7 @@ func (t *KD) getUserFinanceProfit(stub shim.ChaincodeStubInterface, accName, rac
 		}
 
 		var rfiKey = t.getRackFinacInfoKey(rackid, f)
-		rfiB, err := stateCache.getState_Ex(stub, rfiKey)
+		rfiB, err := stateCache.GetState_Ex(stub, rfiKey)
 		if err != nil {
 			return profit, kdlogger.Errorf("getUserFinanceProfit:  GetState(%s,%s) failed. err=%s.", rackid, f, err)
 		}
@@ -3119,7 +3119,7 @@ func (t *KD) _getAccRackFinanceTx(stub shim.ChaincodeStubInterface, accName, rac
 		}
 
 		var rfiKey = t.getRackFinacInfoKey(rackid, f)
-		rfiB, err := stateCache.getState_Ex(stub, rfiKey)
+		rfiB, err := stateCache.GetState_Ex(stub, rfiKey)
 		if err != nil {
 			return mylog.Errorf("payUserFinance:  GetState(%s,%s) failed. err=%s.", rackid, f, err)
 		}
@@ -3258,7 +3258,7 @@ func (t *KD) getAccountRackInvestInfoKey(accName string) string {
 }
 
 func (t *KD) getAccountRackInvestInfo(stub shim.ChaincodeStubInterface, accName string) (*AccRackInvest, error) {
-	arfiB, err := stateCache.getState_Ex(stub, t.getAccountRackInvestInfoKey(accName))
+	arfiB, err := stateCache.GetState_Ex(stub, t.getAccountRackInvestInfoKey(accName))
 	if err != nil {
 		return nil, kdlogger.Errorf("getAccountRackInvestInfo: GetState failed.err=%s, acc=%s", err, accName)
 	}
@@ -3286,7 +3286,7 @@ func (t *KD) setAccountRackInvestInfo(stub shim.ChaincodeStubInterface, accRackI
 		return kdlogger.Errorf("setAccountRackInvestInfo: Marshal failed.err=%s, acc=%s", err, accName)
 	}
 
-	err = stateCache.putState_Ex(stub, t.getAccountRackInvestInfoKey(accName), ariB)
+	err = stateCache.PutState_Ex(stub, t.getAccountRackInvestInfoKey(accName), ariB)
 	if err != nil {
 		return kdlogger.Errorf("setAccountRackInvestInfo: putState_Ex failed.err=%s, acc=%s", err, accName)
 	}
@@ -3306,7 +3306,7 @@ func (t *KD) setAccountPasswd(stub shim.ChaincodeStubInterface, accName, pwd str
 		return kdlogger.Errorf("setAccountPasswd: GenCipher failed.err=%s, acc=%s", err, accName)
 	}
 
-	err = stateCache.putState_Ex(stub, t.getUserCipherKey(accName), hash)
+	err = stateCache.PutState_Ex(stub, t.getUserCipherKey(accName), hash)
 	if err != nil {
 		return kdlogger.Errorf("setAccountPasswd: putState_Ex failed.err=%s, acc=%s", err, accName)
 	}
@@ -3316,7 +3316,7 @@ func (t *KD) setAccountPasswd(stub shim.ChaincodeStubInterface, accName, pwd str
 func (t *KD) authAccountPasswd(stub shim.ChaincodeStubInterface, accName, pwd string) (bool, error) {
 	var err error
 
-	cipher, err := stateCache.getState_Ex(stub, t.getUserCipherKey(accName))
+	cipher, err := stateCache.GetState_Ex(stub, t.getUserCipherKey(accName))
 	if err != nil {
 		return false, kdlogger.Errorf("AuthAccountPasswd: GetState failed.err=%s, acc=%s", err, accName)
 	}
@@ -3339,7 +3339,7 @@ func (t *KD) authAccountPasswd(stub shim.ChaincodeStubInterface, accName, pwd st
 
 func (t *KD) isSetAccountPasswd(stub shim.ChaincodeStubInterface, accName string) (bool, error) {
 
-	cipher, err := stateCache.getState_Ex(stub, t.getUserCipherKey(accName))
+	cipher, err := stateCache.GetState_Ex(stub, t.getUserCipherKey(accName))
 	if err != nil {
 		return false, kdlogger.Errorf("isSetAccountPasswd: GetState failed.err=%s, acc=%s", err, accName)
 	}
@@ -3442,7 +3442,7 @@ func (t *KD) dateConvertWhenLoad(stub shim.ChaincodeStubInterface, srcCcid, key 
 					newEnt.Owner = oldEnt.Owner
 				}
 
-				err = stateCache.putState_Ex(stub, t.getUserCipherKey(oldEnt.EntID), oldEnt.Cipher)
+				err = stateCache.PutState_Ex(stub, t.getUserCipherKey(oldEnt.EntID), oldEnt.Cipher)
 				if err != nil {
 					return "", nil, kdlogger.Errorf("dateConvertWhenLoad: putState_Ex(newEnt) failed, err=%s", err)
 				}
@@ -3484,7 +3484,7 @@ func (t *KD) isAdmin(stub shim.ChaincodeStubInterface, accName string) bool {
 
 func (t *KD) transferCoin(stub shim.ChaincodeStubInterface, from, to, transType, description string, amount, transeTime int64, sameEntSaveTrans bool) ([]byte, error) {
 
-	appidB, err := stateCache.getState_Ex(stub, APPID_KEY)
+	appidB, err := stateCache.GetState_Ex(stub, APPID_KEY)
 	if err != nil {
 		return nil, kdlogger.Errorf("transferCoin: get appid failed, err=%s.", err)
 	}
@@ -3515,13 +3515,13 @@ func (t *KD) getUserCipherKey(accName string) string {
 }
 
 func (t *KD) getTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string) (int64, error) {
-	seqB, err := stateCache.getState_Ex(stub, transSeqKey)
+	seqB, err := stateCache.GetState_Ex(stub, transSeqKey)
 	if err != nil {
 		return -1, kdlogger.Errorf("getTransSeq GetState failed.err=%s", err)
 	}
 	//如果不存在则创建
 	if seqB == nil {
-		err = stateCache.putState_Ex(stub, transSeqKey, []byte("0"))
+		err = stateCache.PutState_Ex(stub, transSeqKey, []byte("0"))
 		if err != nil {
 			return -1, kdlogger.Errorf("initTransSeq PutState failed.err=%s", err)
 		}
@@ -3536,7 +3536,7 @@ func (t *KD) getTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string) (
 	return seq, nil
 }
 func (t *KD) setTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string, seq int64) error {
-	err := stateCache.putState_Ex(stub, transSeqKey, []byte(strconv.FormatInt(seq, 10)))
+	err := stateCache.PutState_Ex(stub, transSeqKey, []byte(strconv.FormatInt(seq, 10)))
 	if err != nil {
 		return kdlogger.Errorf("setTransSeq PutState failed.err=%s", err)
 	}

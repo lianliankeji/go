@@ -309,9 +309,9 @@ func (t *MG) __Init(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	//init函数属于非常规操作，记录日志
 	mglogger.Info("func =%s, args = %+v", function, args)
 
-	stateCache.create(stub)
+	stateCache.Create(stub)
 	defer func() {
-		stateCache.destroy(stub)
+		stateCache.Destroy(stub)
 	}()
 
 	/*
@@ -410,9 +410,9 @@ func (t *MG) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	function, args := stub.GetFunctionAndParameters()
 	mglogger.Debug("func =%s, args = %+v", function, args)
 
-	stateCache.create(stub)
+	stateCache.Create(stub)
 	defer func() {
-		stateCache.destroy(stub)
+		stateCache.Destroy(stub)
 	}()
 
 	var err error
@@ -449,7 +449,7 @@ func (t *MG) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
 		var appid = args[fixedArgCount]
 		mglogger.Errorf("saveAppid: appid=%s", appid)
 
-		err = stateCache.putState_Ex(stub, APPID_KEY, []byte(appid))
+		err = stateCache.PutState_Ex(stub, APPID_KEY, []byte(appid))
 		if err != nil {
 			return nil, mglogger.Errorf("Invoke(saveAppid) save appid failed, err=%s.", err)
 		}
@@ -554,7 +554,7 @@ func (t *MG) setAllocEarnTx(stub shim.ChaincodeStubInterface, rackid, allocKey s
 	mglogger.Debug("setAllocEarnTx return %s.", string(eatJson))
 
 	var txKey = t.getAllocTxKey(stub, rackid, seq)
-	err = stateCache.putState_Ex(stub, txKey, eatJson)
+	err = stateCache.PutState_Ex(stub, txKey, eatJson)
 	if err != nil {
 		return nil, mglogger.Errorf("setAllocEarnTx  PutState_Ex failed.err=%s", err)
 	}
@@ -617,7 +617,7 @@ func (t *MG) getRackRolesAllocAmt(eap *EarningAllocRate, totalAmt int64) *RolesA
 func (t *MG) setOneAccAllocEarnTx(stub shim.ChaincodeStubInterface, accName, txKey string) error {
 	var accTxKey = t.getOneAccAllocTxKey(accName)
 
-	txsB, err := stateCache.getState_Ex(stub, accTxKey)
+	txsB, err := stateCache.GetState_Ex(stub, accTxKey)
 	if err != nil {
 		return mglogger.Errorf("setOneAccAllocEarnTx: GetState err = %s", err)
 	}
@@ -630,7 +630,7 @@ func (t *MG) setOneAccAllocEarnTx(stub shim.ChaincodeStubInterface, accName, txK
 		newTxsB = append(newTxsB, MULTI_STRING_DELIM)
 	}
 
-	err = stateCache.putState_Ex(stub, accTxKey, newTxsB)
+	err = stateCache.PutState_Ex(stub, accTxKey, newTxsB)
 	if err != nil {
 		mglogger.Error("setOneAccAllocEarnTx PutState failed.err=%s", err)
 		return err
@@ -720,7 +720,7 @@ func (t *MG) getAllocTxRecdByKey(stub shim.ChaincodeStubInterface, rackid, alloc
 
 	//先判断是否存在交易序列号了，如果不存在，说明还没有交易发生。 这里做这个判断是因为在 getTransSeq 里如果没有设置过序列号的key会自动设置一次，但是在query中无法执行PutStat，会报错
 	var seqKey = t.getAllocTxSeqKey(stub, rackid)
-	test, err := stateCache.getState_Ex(stub, seqKey)
+	test, err := stateCache.GetState_Ex(stub, seqKey)
 	if err != nil {
 		return nil, mglogger.Errorf("getOneAllocRecd GetState(seqKey) failed. err=%s", err)
 	}
@@ -740,7 +740,7 @@ func (t *MG) getAllocTxRecdByKey(stub shim.ChaincodeStubInterface, rackid, alloc
 	//从最后往前找，因为查找最新的可能性比较大
 	for i := maxSeq; i > 0; i-- { //序列号生成器从1开始
 		txkey := t.getAllocTxKey(stub, rackid, i)
-		txB, err := stateCache.getState_Ex(stub, txkey)
+		txB, err := stateCache.GetState_Ex(stub, txkey)
 		if err != nil {
 			mglogger.Errorf("getOneAllocRecd GetState(rackid=%s) failed. err=%s", rackid, err)
 			continue
@@ -793,7 +793,7 @@ func (t *MG) getAllocTxRecds(stub shim.ChaincodeStubInterface, rackid string, be
 
 	//先判断是否存在交易序列号了，如果不存在，说明还没有交易发生。 这里做这个判断是因为在 getTransSeq 里如果没有设置过序列号的key会自动设置一次，但是在query中无法执行PutStat，会报错
 	var seqKey = t.getAllocTxSeqKey(stub, rackid)
-	test, err := stateCache.getState_Ex(stub, seqKey)
+	test, err := stateCache.GetState_Ex(stub, seqKey)
 	if err != nil {
 		return nil, mglogger.Errorf("getAllocTxRecds GetState(seqKey) failed. err=%s", err)
 	}
@@ -827,7 +827,7 @@ func (t *MG) getAllocTxRecds(stub shim.ChaincodeStubInterface, rackid string, be
 		}
 
 		txkey := t.getAllocTxKey(stub, rackid, loop)
-		txB, err := stateCache.getState_Ex(stub, txkey)
+		txB, err := stateCache.GetState_Ex(stub, txkey)
 		if err != nil {
 			mglogger.Errorf("getAllocTxRecds GetState(rackid=%s) failed. err=%s", rackid, err)
 			continue
@@ -882,7 +882,7 @@ func (t *MG) getOneAccAllocTxRecds(stub shim.ChaincodeStubInterface, accName str
 		count = math.MaxInt64
 	}
 
-	txsB, err := stateCache.getState_Ex(stub, accTxKey)
+	txsB, err := stateCache.GetState_Ex(stub, accTxKey)
 	if err != nil {
 		return nil, mglogger.Errorf("getOneAccAllocTxRecds: GetState(accName=%s) err = %s", accName, err)
 	}
@@ -960,7 +960,7 @@ func (t *MG) getOneAccAllocTx(stub shim.ChaincodeStubInterface, txKey, accName s
 }
 
 func (t *MG) getAllocTxRecdEntity(stub shim.ChaincodeStubInterface, txKey string) (*EarningAllocTx, error) {
-	txB, err := stateCache.getState_Ex(stub, txKey)
+	txB, err := stateCache.GetState_Ex(stub, txKey)
 	if err != nil {
 		return nil, mglogger.Errorf("getAllocTxRecdEntity GetState(txKey=%s) failed. err=%s", txKey, err)
 	}
@@ -982,7 +982,7 @@ func (t *MG) getRackAllocCfg(stub shim.ChaincodeStubInterface, rackid string, pe
 	var err error
 
 	if rackid != "*" {
-		eapB, err = stateCache.getState_Ex(stub, t.getRackAllocRateKey(rackid))
+		eapB, err = stateCache.GetState_Ex(stub, t.getRackAllocRateKey(rackid))
 		if err != nil {
 			return nil, mglogger.Errorf("getRackAllocCfg GetState(rackid=%s) failed. err=%s", rackid, err)
 		}
@@ -991,7 +991,7 @@ func (t *MG) getRackAllocCfg(stub shim.ChaincodeStubInterface, rackid string, pe
 	if eapB == nil {
 		mglogger.Warn("getRackAllocCfg GetState(rackid=%s) nil, try to get global.", rackid)
 		//没有为该货架单独配置，返回global配置
-		eapB, err = stateCache.getState_Ex(stub, t.getGlobalRackAllocRateKey())
+		eapB, err = stateCache.GetState_Ex(stub, t.getGlobalRackAllocRateKey())
 		if err != nil {
 			return nil, mglogger.Errorf("getRackAllocCfg GetState(global, rackid=%s) failed. err=%s", rackid, err)
 		}
@@ -1101,7 +1101,7 @@ func (t *MG) setRackEncourageScoreCfg(stub shim.ChaincodeStubInterface, rackid, 
 		stateKey = t.getRackEncourageScoreCfgKey(rackid)
 	}
 
-	err = stateCache.putState_Ex(stub, stateKey, sepcJson)
+	err = stateCache.PutState_Ex(stub, stateKey, sepcJson)
 	if err != nil {
 		return nil, mglogger.Errorf("setRackEncourageScoreCfg PutState_Ex failed. err=%s", err)
 	}
@@ -1115,7 +1115,7 @@ func (t *MG) getRackEncourageScoreCfg(stub shim.ChaincodeStubInterface, rackid s
 	var err error
 
 	if rackid != "*" {
-		sepcB, err = stateCache.getState_Ex(stub, t.getRackEncourageScoreCfgKey(rackid))
+		sepcB, err = stateCache.GetState_Ex(stub, t.getRackEncourageScoreCfgKey(rackid))
 		if err != nil {
 			return nil, mglogger.Errorf("getRackEncourageScoreCfg GetState failed.rackid=%s err=%s", rackid, err)
 		}
@@ -1123,7 +1123,7 @@ func (t *MG) getRackEncourageScoreCfg(stub shim.ChaincodeStubInterface, rackid s
 
 	if sepcB == nil {
 		mglogger.Warn("getRackEncourageScoreCfg: can not find cfg for %s, will use golobal.", rackid)
-		sepcB, err = stateCache.getState_Ex(stub, t.getGlobalRackEncourageScoreCfgKey())
+		sepcB, err = stateCache.GetState_Ex(stub, t.getGlobalRackEncourageScoreCfgKey())
 		if err != nil {
 			return nil, mglogger.Errorf("getRackEncourageScoreCfg GetState(global cfg) failed.rackid=%s err=%s", rackid, err)
 		}
@@ -1411,7 +1411,7 @@ func (t *MG) getRackFinancCfg(stub shim.ChaincodeStubInterface, rackid string, p
 	var err error
 
 	if rackid != "*" { // "*"表示查询全局配置
-		rfcB, err = stateCache.getState_Ex(stub, t.getRackFinancCfgKey(rackid))
+		rfcB, err = stateCache.GetState_Ex(stub, t.getRackFinancCfgKey(rackid))
 		if err != nil {
 			return nil, mglogger.Errorf("getRackFinancCfg GetState failed.rackid=%s err=%s", rackid, err)
 		}
@@ -1419,7 +1419,7 @@ func (t *MG) getRackFinancCfg(stub shim.ChaincodeStubInterface, rackid string, p
 
 	if rfcB == nil {
 		mglogger.Warn("getRackFinancCfg: can not find cfg for %s, will use golobal.", rackid)
-		rfcB, err = stateCache.getState_Ex(stub, t.getGlobalRackFinancCfgKey())
+		rfcB, err = stateCache.GetState_Ex(stub, t.getGlobalRackFinancCfgKey())
 		if err != nil {
 			return nil, mglogger.Errorf("getRackFinancCfg GetState(global cfg) failed.rackid=%s err=%s", rackid, err)
 		}
@@ -1451,7 +1451,7 @@ func (t *MG) getRackFinacInfoKey(rackId, finacId string) string {
 //用户购买理财，包括自动续期
 func (t *MG) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, fid, payee, transType, desc string, amount, invokeTime int64, sameEntSaveTx, isRenewal bool) ([]byte, error) {
 	var fiacInfoKey = t.getFinacInfoKey(fid)
-	fiB, err := stateCache.getState_Ex(stub, fiacInfoKey)
+	fiB, err := stateCache.GetState_Ex(stub, fiacInfoKey)
 	if err != nil {
 		return nil, mglogger.Errorf("userBuyFinance:  GetState(%s) failed. err=%s.", fiacInfoKey, err)
 	}
@@ -1471,7 +1471,7 @@ func (t *MG) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, f
 	}
 
 	var rackInfoKey = t.getRackInfoKey(rackid)
-	riB, err := stateCache.getState_Ex(stub, rackInfoKey)
+	riB, err := stateCache.GetState_Ex(stub, rackInfoKey)
 	if err != nil {
 		return nil, mglogger.Errorf("userBuyFinance:  GetState(%s) failed. err=%s.", rackInfoKey, err)
 	}
@@ -1492,7 +1492,7 @@ func (t *MG) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, f
 
 	//写入货架融资信息
 	rackFinacInfoKey := t.getRackFinacInfoKey(rackid, fid)
-	rfiB, err := stateCache.getState_Ex(stub, rackFinacInfoKey)
+	rfiB, err := stateCache.GetState_Ex(stub, rackFinacInfoKey)
 	if err != nil {
 		return nil, mglogger.Errorf("userBuyFinance:  GetState(%s) failed. err=%s.", rackFinacInfoKey, err)
 	}
@@ -1651,17 +1651,17 @@ func (t *MG) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, f
 		return nil, mglogger.Errorf("userBuyFinance:  Marshal failed. err=%s.", err)
 	}
 
-	err = stateCache.putState_Ex(stub, rackFinacInfoKey, rfiJson)
+	err = stateCache.PutState_Ex(stub, rackFinacInfoKey, rfiJson)
 	if err != nil {
 		return nil, mglogger.Errorf("userBuyFinance:  PutState failed. err=%s.", err)
 	}
 
-	err = stateCache.putState_Ex(stub, rackInfoKey, riJson)
+	err = stateCache.PutState_Ex(stub, rackInfoKey, riJson)
 	if err != nil {
 		return nil, mglogger.Errorf("userBuyFinance:  PutState failed. err=%s.", err)
 	}
 
-	err = stateCache.putState_Ex(stub, fiacInfoKey, fiJson)
+	err = stateCache.PutState_Ex(stub, fiacInfoKey, fiJson)
 	if err != nil {
 		return nil, mglogger.Errorf("userBuyFinance:  PutState failed. err=%s.", err)
 	}
@@ -1732,7 +1732,7 @@ func (t *MG) financeBonus(stub shim.ChaincodeStubInterface, fid, rackales string
 func (t *MG) financeBonus4OneRack(stub shim.ChaincodeStubInterface, rackid, fid string, sales, invokeTime int64) error {
 	var rackFinacInfoKey = t.getRackFinacInfoKey(rackid, fid)
 
-	rfiB, err := stateCache.getState_Ex(stub, rackFinacInfoKey)
+	rfiB, err := stateCache.GetState_Ex(stub, rackFinacInfoKey)
 	if err != nil {
 		return mglogger.Errorf("financeBonus4OneRack:  GetState(%s) failed. err=%s.", rackFinacInfoKey, err)
 	}
@@ -1793,7 +1793,7 @@ func (t *MG) financeBonus4OneRack(stub shim.ChaincodeStubInterface, rackid, fid 
 		return mglogger.Errorf("financeBonus4OneRack:  Marshal failed. err=%s.", err)
 	}
 
-	err = stateCache.putState_Ex(stub, rackFinacInfoKey, rfiJson)
+	err = stateCache.PutState_Ex(stub, rackFinacInfoKey, rfiJson)
 	if err != nil {
 		return mglogger.Errorf("financeBonus4OneRack:  PutState failed. err=%s.", err)
 	}
@@ -1811,7 +1811,7 @@ func (t *MG) setCurrentFid(stub shim.ChaincodeStubInterface, currentFid string) 
 		return nil
 	}
 
-	hisB, err := stateCache.getState_Ex(stub, RACKFINACHISTORY_KEY)
+	hisB, err := stateCache.GetState_Ex(stub, RACKFINACHISTORY_KEY)
 	if err != nil {
 		return mglogger.Errorf("setCurrentFid: GetState failed. err=%s.", err)
 	}
@@ -1840,7 +1840,7 @@ func (t *MG) setCurrentFid(stub shim.ChaincodeStubInterface, currentFid string) 
 		return mglogger.Errorf("setCurrentFid: Marshal failed. err=%s.", err)
 	}
 
-	err = stateCache.putState_Ex(stub, RACKFINACHISTORY_KEY, hisB)
+	err = stateCache.PutState_Ex(stub, RACKFINACHISTORY_KEY, hisB)
 	if err != nil {
 		return mglogger.Errorf("setCurrentFid: PutState_Ex failed. err=%s.", err)
 	}
@@ -1851,7 +1851,7 @@ func (t *MG) setCurrentFid(stub shim.ChaincodeStubInterface, currentFid string) 
 }
 
 func (t *MG) getPrevAndCurrFids(stub shim.ChaincodeStubInterface) (*RackFinancHistory, error) {
-	hisB, err := stateCache.getState_Ex(stub, RACKFINACHISTORY_KEY)
+	hisB, err := stateCache.GetState_Ex(stub, RACKFINACHISTORY_KEY)
 	if err != nil {
 		return nil, mglogger.Errorf("getPrevAndCurrFids: GetState failed. err=%s.", err)
 	}
@@ -1916,7 +1916,7 @@ func (t *MG) getUserInvestAmount(stub shim.ChaincodeStubInterface, accName, rack
 		return 0, nil
 	}
 
-	rfiB, err := stateCache.getState_Ex(stub, t.getRackFinacInfoKey(rackid, fid))
+	rfiB, err := stateCache.GetState_Ex(stub, t.getRackFinacInfoKey(rackid, fid))
 	if err != nil {
 		return 0, mglogger.Errorf("getUserHistoryFinance:  GetState failed. err=%s.", err)
 	}
@@ -1947,7 +1947,7 @@ func (t *MG) getRackFinanceAmount(stub shim.ChaincodeStubInterface, rackid, fid 
 	   }
 	*/
 
-	rfiB, err := stateCache.getState_Ex(stub, t.getRackFinacInfoKey(rackid, fid))
+	rfiB, err := stateCache.GetState_Ex(stub, t.getRackFinacInfoKey(rackid, fid))
 	if err != nil {
 		return 0, mglogger.Errorf("getRackHistoryFinance:  GetState failed. err=%s.", err)
 	}
@@ -1972,12 +1972,12 @@ func (t *MG) getRackFinanceAmount(stub shim.ChaincodeStubInterface, rackid, fid 
 
 func (t *MG) financeIssueFinishAfter(stub shim.ChaincodeStubInterface, currentFid string, invokeTime int64) error {
 	//看是否已经处理过
-	finishIdB, err := stateCache.getState_Ex(stub, RACKFINACISSUEFINISHID_KEY)
+	finishIdB, err := stateCache.GetState_Ex(stub, RACKFINACISSUEFINISHID_KEY)
 	if err != nil {
 		return mglogger.Errorf("financeIssueFinishAfter: GetState(finishId) failed. err=%s.", err)
 	}
 	if finishIdB == nil {
-		err = stateCache.putState_Ex(stub, RACKFINACISSUEFINISHID_KEY, []byte(currentFid))
+		err = stateCache.PutState_Ex(stub, RACKFINACISSUEFINISHID_KEY, []byte(currentFid))
 		if err != nil {
 			return mglogger.Errorf("financeIssueFinishAfter: PutState_Ex(finishId) failed. err=%s.", err)
 		}
@@ -1990,7 +1990,7 @@ func (t *MG) financeIssueFinishAfter(stub shim.ChaincodeStubInterface, currentFi
 	}
 
 	//给本期理财设置为"发行完毕"
-	fiB, err := stateCache.getState_Ex(stub, t.getFinacInfoKey(currentFid))
+	fiB, err := stateCache.GetState_Ex(stub, t.getFinacInfoKey(currentFid))
 	if err != nil {
 		return mglogger.Errorf("financeIssueFinishAfter: GetState(fi=%s) failed. err=%s.", currentFid, err)
 	}
@@ -2004,7 +2004,7 @@ func (t *MG) financeIssueFinishAfter(stub shim.ChaincodeStubInterface, currentFi
 
 		for _, rackid := range fi.RackList {
 			var rfiKey = t.getRackFinacInfoKey(rackid, currentFid)
-			rfiB, err := stateCache.getState_Ex(stub, rfiKey)
+			rfiB, err := stateCache.GetState_Ex(stub, rfiKey)
 			if err != nil {
 				return mglogger.Errorf("financeIssueFinishAfter: GetState(rfi=%s,%s) failed. err=%s.", rackid, currentFid, err)
 			}
@@ -2031,7 +2031,7 @@ func (t *MG) financeIssueFinishAfter(stub shim.ChaincodeStubInterface, currentFi
 				return mglogger.Errorf("financeIssueFinishAfter: Marshal(rfi=%s,%s) failed. err=%s.", rackid, currentFid, err)
 			}
 
-			err = stateCache.putState_Ex(stub, rfiKey, rfiB)
+			err = stateCache.PutState_Ex(stub, rfiKey, rfiB)
 			if err != nil {
 				return mglogger.Errorf("financeIssueFinishAfter: PutState_Ex(rfi=%s,%s) failed. err=%s.", rackid, currentFid, err)
 			}
@@ -2062,7 +2062,7 @@ func (t *MG) financeRenewalPreviousFinance(stub shim.ChaincodeStubInterface, cur
 		return mglogger.Errorf("financeRenewal: preFid == currentFid, error.")
 	}
 
-	fiB, err := stateCache.getState_Ex(stub, t.getFinacInfoKey(preFid))
+	fiB, err := stateCache.GetState_Ex(stub, t.getFinacInfoKey(preFid))
 	if err != nil {
 		return mglogger.Errorf("financeRenewal: GetState(fi=%s) failed. err=%s.", preFid, err)
 	}
@@ -2081,7 +2081,7 @@ func (t *MG) financeRenewalPreviousFinance(stub shim.ChaincodeStubInterface, cur
 
 	for _, rackid := range fi.RackList {
 		var rfiKey = t.getRackFinacInfoKey(rackid, preFid)
-		rfiB, err := stateCache.getState_Ex(stub, rfiKey)
+		rfiB, err := stateCache.GetState_Ex(stub, rfiKey)
 		if err != nil {
 			return mglogger.Errorf("financeRenewal: GetState(rfi=%s,%s) failed. err=%s.", rackid, preFid, err)
 		}
@@ -2149,7 +2149,7 @@ func (t *MG) payUserFinance(stub shim.ChaincodeStubInterface, accName, reacc, ra
 		}
 
 		var rfiKey = t.getRackFinacInfoKey(rackid, f)
-		rfiB, err := stateCache.getState_Ex(stub, rfiKey)
+		rfiB, err := stateCache.GetState_Ex(stub, rfiKey)
 		if err != nil {
 			return mglogger.Errorf("payUserFinance:  GetState(%s,%s) failed. err=%s.", rackid, f, err)
 		}
@@ -2179,7 +2179,7 @@ func (t *MG) payUserFinance(stub shim.ChaincodeStubInterface, accName, reacc, ra
 			return mglogger.Errorf("payUserFinance:  Marshal(%s,%s) failed. err=%s.", rackid, f, err)
 		}
 
-		err = stateCache.putState_Ex(stub, rfiKey, rfiB)
+		err = stateCache.PutState_Ex(stub, rfiKey, rfiB)
 		if err != nil {
 			return mglogger.Errorf("payUserFinance:  PutState_Ex(%s,%s) failed. err=%s.", rackid, f, err)
 		}
@@ -2254,7 +2254,7 @@ func (t *MG) getUserFinanceProfit(stub shim.ChaincodeStubInterface, accName, rac
 		}
 
 		var rfiKey = t.getRackFinacInfoKey(rackid, f)
-		rfiB, err := stateCache.getState_Ex(stub, rfiKey)
+		rfiB, err := stateCache.GetState_Ex(stub, rfiKey)
 		if err != nil {
 			return profit, mglogger.Errorf("getUserFinanceProfit:  GetState(%s,%s) failed. err=%s.", rackid, f, err)
 		}
@@ -2493,7 +2493,7 @@ func (t *MG) getAccountRackInvestInfoKey(accName string) string {
 }
 
 func (t *MG) getAccountRackInvestInfo(stub shim.ChaincodeStubInterface, accName string) (*AccRackInvest, error) {
-	arfiB, err := stateCache.getState_Ex(stub, t.getAccountRackInvestInfoKey(accName))
+	arfiB, err := stateCache.GetState_Ex(stub, t.getAccountRackInvestInfoKey(accName))
 	if err != nil {
 		return nil, mglogger.Errorf("getAccountRackInvestInfo: GetState failed.err=%s, acc=%s", err, accName)
 	}
@@ -2521,7 +2521,7 @@ func (t *MG) setAccountRackInvestInfo(stub shim.ChaincodeStubInterface, accRackI
 		return mglogger.Errorf("setAccountRackInvestInfo: Marshal failed.err=%s, acc=%s", err, accName)
 	}
 
-	err = stateCache.putState_Ex(stub, t.getAccountRackInvestInfoKey(accName), ariB)
+	err = stateCache.PutState_Ex(stub, t.getAccountRackInvestInfoKey(accName), ariB)
 	if err != nil {
 		return mglogger.Errorf("setAccountRackInvestInfo: putState_Ex failed.err=%s, acc=%s", err, accName)
 	}
@@ -2541,7 +2541,7 @@ func (t *MG) setAccountPasswd(stub shim.ChaincodeStubInterface, accName, pwd str
 		return mglogger.Errorf("setAccountPasswd: GenCipher failed.err=%s, acc=%s", err, accName)
 	}
 
-	err = stateCache.putState_Ex(stub, t.getUserCipherKey(accName), hash)
+	err = stateCache.PutState_Ex(stub, t.getUserCipherKey(accName), hash)
 	if err != nil {
 		return mglogger.Errorf("setAccountPasswd: putState_Ex failed.err=%s, acc=%s", err, accName)
 	}
@@ -2551,7 +2551,7 @@ func (t *MG) setAccountPasswd(stub shim.ChaincodeStubInterface, accName, pwd str
 func (t *MG) authAccountPasswd(stub shim.ChaincodeStubInterface, accName, pwd string) (bool, error) {
 	var err error
 
-	cipher, err := stateCache.getState_Ex(stub, t.getUserCipherKey(accName))
+	cipher, err := stateCache.GetState_Ex(stub, t.getUserCipherKey(accName))
 	if err != nil {
 		return false, mglogger.Errorf("AuthAccountPasswd: GetState failed.err=%s, acc=%s", err, accName)
 	}
@@ -2574,7 +2574,7 @@ func (t *MG) authAccountPasswd(stub shim.ChaincodeStubInterface, accName, pwd st
 
 func (t *MG) isSetAccountPasswd(stub shim.ChaincodeStubInterface, accName string) (bool, error) {
 
-	cipher, err := stateCache.getState_Ex(stub, t.getUserCipherKey(accName))
+	cipher, err := stateCache.GetState_Ex(stub, t.getUserCipherKey(accName))
 	if err != nil {
 		return false, mglogger.Errorf("isSetAccountPasswd: GetState failed.err=%s, acc=%s", err, accName)
 	}
@@ -2704,7 +2704,7 @@ func (t *MG) isAdmin(stub shim.ChaincodeStubInterface, accName string) bool {
 
 func (t *MG) transferCoin(stub shim.ChaincodeStubInterface, from, to, transType, description string, amount, transeTime int64, sameEntSaveTrans bool) ([]byte, error) {
 
-	appidB, err := stateCache.getState_Ex(stub, APPID_KEY)
+	appidB, err := stateCache.GetState_Ex(stub, APPID_KEY)
 	if err != nil {
 		return nil, mglogger.Errorf("transferCoin: get appid failed, err=%s.", err)
 	}
@@ -2735,13 +2735,13 @@ func (t *MG) getUserCipherKey(accName string) string {
 }
 
 func (t *MG) getTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string) (int64, error) {
-	seqB, err := stateCache.getState_Ex(stub, transSeqKey)
+	seqB, err := stateCache.GetState_Ex(stub, transSeqKey)
 	if err != nil {
 		return -1, mglogger.Errorf("getTransSeq GetState failed.err=%s", err)
 	}
 	//如果不存在则创建
 	if seqB == nil {
-		err = stateCache.putState_Ex(stub, transSeqKey, []byte("0"))
+		err = stateCache.PutState_Ex(stub, transSeqKey, []byte("0"))
 		if err != nil {
 			return -1, mglogger.Errorf("initTransSeq PutState failed.err=%s", err)
 		}
@@ -2756,7 +2756,7 @@ func (t *MG) getTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string) (
 	return seq, nil
 }
 func (t *MG) setTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string, seq int64) error {
-	err := stateCache.putState_Ex(stub, transSeqKey, []byte(strconv.FormatInt(seq, 10)))
+	err := stateCache.PutState_Ex(stub, transSeqKey, []byte(strconv.FormatInt(seq, 10)))
 	if err != nil {
 		return mglogger.Errorf("setTransSeq PutState failed.err=%s", err)
 	}

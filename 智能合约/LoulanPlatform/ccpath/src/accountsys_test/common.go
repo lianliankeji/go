@@ -296,7 +296,7 @@ type StateWorldCache struct {
 	lock       sync.RWMutex //这里的map类似于全局变量，访问需要加锁
 }
 
-func (t *StateWorldCache) create(stub shim.ChaincodeStubInterface) {
+func (t *StateWorldCache) Create(stub shim.ChaincodeStubInterface) {
 	t.lock.Lock()
 
 	if t.stateCache == nil {
@@ -307,13 +307,13 @@ func (t *StateWorldCache) create(stub shim.ChaincodeStubInterface) {
 	t.lock.Unlock()
 }
 
-func (t *StateWorldCache) destroy(stub shim.ChaincodeStubInterface) {
+func (t *StateWorldCache) Destroy(stub shim.ChaincodeStubInterface) {
 	t.lock.Lock()
 	delete(t.stateCache, stub.GetTxID())
 	t.lock.Unlock()
 }
 
-func (t *StateWorldCache) getState_Ex(stub shim.ChaincodeStubInterface, key string) ([]byte, error) {
+func (t *StateWorldCache) GetState_Ex(stub shim.ChaincodeStubInterface, key string) ([]byte, error) {
 	t.lock.RLock() //读锁
 	if len(t.stateCache[stub.GetTxID()]) > 0 {
 		if value, ok := t.stateCache[stub.GetTxID()][key]; ok {
@@ -333,7 +333,7 @@ func (t *StateWorldCache) getState_Ex(stub shim.ChaincodeStubInterface, key stri
 	return value, err
 }
 
-func (t *StateWorldCache) putState_Ex(stub shim.ChaincodeStubInterface, key string, value []byte) error {
+func (t *StateWorldCache) PutState_Ex(stub shim.ChaincodeStubInterface, key string, value []byte) error {
 
 	err := stub.PutState(key, value)
 	if err == nil {

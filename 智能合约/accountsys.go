@@ -243,9 +243,9 @@ func (b *BASE) Init(stub shim.ChaincodeStubInterface) (pbResponse pb.Response) {
 
 	baselogger.Info("func =%s, args = %+v", function, args)
 
-	stateCache.create(stub)
+	stateCache.Create(stub)
 	defer func() {
-		stateCache.destroy(stub)
+		stateCache.Destroy(stub)
 	}()
 
 	/*
@@ -322,9 +322,9 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 	baselogger.Debug("Enter Invoke")
 	baselogger.Debug("func =%s, args = %+v", function, args)
 
-	stateCache.create(stub)
+	stateCache.Create(stub)
 	defer func() {
-		stateCache.destroy(stub)
+		stateCache.Destroy(stub)
 	}()
 
 	var err error
@@ -1105,7 +1105,7 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs, fun
 
 		key := args[fixedArgCount]
 
-		retValue, err := stateCache.getState_Ex(stub, key)
+		retValue, err := stateCache.GetState_Ex(stub, key)
 		if err != nil {
 			return nil, baselogger.Errorf("queryState GetState failed. err=%s", err)
 		}
@@ -1337,7 +1337,7 @@ func (b *BASE) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64
 
 	//先判断是否存在交易序列号了，如果不存在，说明还没有交易发生。 这里做这个判断是因为在 getTransSeq 里如果没有设置过序列号的key会自动设置一次，但是在query中无法执行PutStat，会报错
 	var seqKey = b.getGlobalTransSeqKey(stub)
-	test, err := stateCache.getState_Ex(stub, seqKey)
+	test, err := stateCache.GetState_Ex(stub, seqKey)
 	if err != nil {
 		return nil, baselogger.Errorf("queryTransInfos GetState failed. err=%s", err)
 	}
@@ -1374,7 +1374,7 @@ func (b *BASE) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64
 		   for i := begIdx; i <= endIdx; i++ {
 		       key, _ := b.getTransInfoKey(stub, i)
 
-		       tmpState, err := stateCache.getState_Ex(stub,key)
+		       tmpState, err := stateCache.GetState_Ex(stub,key)
 		       if err != nil {
 		           base_logger.Error("getTransInfo GetState(idx=%d) failed.err=%s", i, err)
 		           //return nil, err
@@ -1483,7 +1483,7 @@ func (b *BASE) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName stri
 
 	//先判断是否存在交易序列号了，如果不存在，说明还没有交易发生。 这里做这个判断是因为在 getTransSeq 里如果没有设置过序列号的key会自动设置一次，但是在query中无法执行PutStat，会报错
 	var seqKey = b.getAccTransSeqKey(accName)
-	test, err := stateCache.getState_Ex(stub, seqKey)
+	test, err := stateCache.GetState_Ex(stub, seqKey)
 	if err != nil {
 		return nil, baselogger.Errorf("queryAccTransInfos GetState failed. err=%s", err)
 	}
@@ -1511,7 +1511,7 @@ func (b *BASE) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName stri
 		count = maxSeq - begIdx + 1
 	}
 	/*
-	   infoB, err := stateCache.getState_Ex(stub,t.getOneAccTransKey(accName))
+	   infoB, err := stateCache.GetState_Ex(stub,t.getOneAccTransKey(accName))
 	   if err != nil {
 	       return nil, base_logger.Errorf("queryAccTransInfos(%s) GetState failed.err=%s", accName, err)
 	   }
@@ -1570,7 +1570,7 @@ func (b *BASE) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName stri
 				break
 			}
 
-			globTxKeyB, err = stateCache.getState_Ex(stub, b.getOneAccTransInfoKey(accName, loop))
+			globTxKeyB, err = stateCache.GetState_Ex(stub, b.getOneAccTransInfoKey(accName, loop))
 			if err != nil {
 				baselogger.Errorf("queryAccTransInfos GetState(globTxKeyB,acc=%s,idx=%d) failed.err=%s", accName, loop, err)
 				continue
@@ -1608,7 +1608,7 @@ func (b *BASE) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName stri
 				break
 			}
 
-			globTxKeyB, err = stateCache.getState_Ex(stub, b.getOneAccTransInfoKey(accName, loop))
+			globTxKeyB, err = stateCache.GetState_Ex(stub, b.getOneAccTransInfoKey(accName, loop))
 			if err != nil {
 				baselogger.Errorf("queryAccTransInfos GetState(globTxKeyB,acc=%s,idx=%d) failed.err=%s", accName, loop, err)
 				continue
@@ -1654,7 +1654,7 @@ func (b *BASE) getAllAccAmt(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	qb.AccSumAmount = 0
 	qb.AccCount = 0
 
-	accsB, err := stateCache.getState_Ex(stub, ALL_ACC_INFO_KEY)
+	accsB, err := stateCache.GetState_Ex(stub, ALL_ACC_INFO_KEY)
 	if err != nil {
 		return nil, baselogger.Errorf("getAllAccAmt GetState failed. err=%s", err)
 	}
@@ -1730,7 +1730,7 @@ func (b *BASE) getSysStatisticInfo(stub shim.ChaincodeStubInterface, circulateAm
 	qwi.IssueAmount = issueEntity.TotalAmount - issueEntity.RestAmount
 
 	var asi AccountStatisticInfo
-	asiB, err := stateCache.getState_Ex(stub, ACC_STATIC_INFO_KEY)
+	asiB, err := stateCache.GetState_Ex(stub, ACC_STATIC_INFO_KEY)
 	if err != nil {
 		return nil, baselogger.Errorf("getInfo4Web: GetState failed. err=%s", err)
 	}
@@ -1926,7 +1926,7 @@ func (b *BASE) getAccountEntity(stub shim.ChaincodeStubInterface, entName string
 	var cb AccountEntity
 	var err error
 
-	entB, err = stateCache.getState_Ex(stub, b.getAccountEntityKey(entName))
+	entB, err = stateCache.GetState_Ex(stub, b.getAccountEntityKey(entName))
 	if err != nil {
 		return nil, err
 	}
@@ -1946,7 +1946,7 @@ func (b *BASE) getAccountLockedAmount(stub shim.ChaincodeStubInterface, accName 
 	var acli AccountCoinLockInfo
 
 	var lockinfoKey = b.getAccountLockInfoKey(accName)
-	acliB, err := stateCache.getState_Ex(stub, lockinfoKey)
+	acliB, err := stateCache.GetState_Ex(stub, lockinfoKey)
 	if err != nil {
 		return math.MaxInt64, nil, baselogger.Errorf("getAccountLockedAmount: GetState  failed. err=%s", err)
 	}
@@ -1978,7 +1978,7 @@ func (b *BASE) isAccEntityExists(stub shim.ChaincodeStubInterface, entName strin
 	var entB []byte
 	var err error
 
-	entB, err = stateCache.getState_Ex(stub, b.getAccountEntityKey(entName))
+	entB, err = stateCache.GetState_Ex(stub, b.getAccountEntityKey(entName))
 	if err != nil {
 		return false, err
 	}
@@ -1999,7 +1999,7 @@ func (b *BASE) setAccountEntity(stub shim.ChaincodeStubInterface, cb *AccountEnt
 		return baselogger.Errorf("marshal cb failed. err=%s", err)
 	}
 
-	err = stateCache.putState_Ex(stub, b.getAccountEntityKey(cb.EntID), jsons)
+	err = stateCache.PutState_Ex(stub, b.getAccountEntityKey(cb.EntID), jsons)
 
 	if err != nil {
 		return baselogger.Errorf("PutState cb failed. err=%s", err)
@@ -2223,7 +2223,7 @@ func (b *BASE) checkAccountName(accName string) error {
 }
 
 func (b *BASE) saveAccountName(stub shim.ChaincodeStubInterface, accName string) error {
-	accB, err := stateCache.getState_Ex(stub, ALL_ACC_INFO_KEY)
+	accB, err := stateCache.GetState_Ex(stub, ALL_ACC_INFO_KEY)
 	if err != nil {
 		return baselogger.Errorf("saveAccountName GetState failed.err=%s", err)
 	}
@@ -2236,13 +2236,13 @@ func (b *BASE) saveAccountName(stub shim.ChaincodeStubInterface, accName string)
 		accs = append(accs, MULTI_STRING_DELIM)
 	}
 
-	err = stateCache.putState_Ex(stub, ALL_ACC_INFO_KEY, accs)
+	err = stateCache.PutState_Ex(stub, ALL_ACC_INFO_KEY, accs)
 	if err != nil {
 		return baselogger.Errorf("saveAccountName PutState(accs) failed.err=%s", err)
 	}
 
 	var asi AccountStatisticInfo
-	asiB, err := stateCache.getState_Ex(stub, ACC_STATIC_INFO_KEY)
+	asiB, err := stateCache.GetState_Ex(stub, ACC_STATIC_INFO_KEY)
 	if asiB == nil {
 		asi.AccountCount = 1
 	} else {
@@ -2258,7 +2258,7 @@ func (b *BASE) saveAccountName(stub shim.ChaincodeStubInterface, accName string)
 		return baselogger.Errorf("saveAccountName Marshal failed.err=%s", err)
 	}
 
-	err = stateCache.putState_Ex(stub, ACC_STATIC_INFO_KEY, asiB)
+	err = stateCache.PutState_Ex(stub, ACC_STATIC_INFO_KEY, asiB)
 	if err != nil {
 		return baselogger.Errorf("saveAccountName PutState(asiB) failed.err=%s", err)
 	}
@@ -2363,7 +2363,7 @@ func (b *BASE) newAccount(stub shim.ChaincodeStubInterface, accName string, accT
 var centerBankAccCache []byte = nil
 
 func (b *BASE) setCenterBankAcc(stub shim.ChaincodeStubInterface, acc string) error {
-	err := stateCache.putState_Ex(stub, CENTERBANK_ACC_KEY, []byte(acc))
+	err := stateCache.PutState_Ex(stub, CENTERBANK_ACC_KEY, []byte(acc))
 	if err != nil {
 		baselogger.Error("setCenterBankAcc PutState failed.err=%s", err)
 		return err
@@ -2378,7 +2378,7 @@ func (b *BASE) getCenterBankAcc(stub shim.ChaincodeStubInterface) ([]byte, error
 		return centerBankAccCache, nil
 	}
 
-	bankB, err := stateCache.getState_Ex(stub, CENTERBANK_ACC_KEY)
+	bankB, err := stateCache.GetState_Ex(stub, CENTERBANK_ACC_KEY)
 	if err != nil {
 		baselogger.Error("getCenterBankAcc GetState failed.err=%s", err)
 		return nil, err
@@ -2390,14 +2390,14 @@ func (b *BASE) getCenterBankAcc(stub shim.ChaincodeStubInterface) ([]byte, error
 }
 
 func (b *BASE) getTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string) (int64, error) {
-	seqB, err := stateCache.getState_Ex(stub, transSeqKey)
+	seqB, err := stateCache.GetState_Ex(stub, transSeqKey)
 	if err != nil {
 		baselogger.Error("getTransSeq GetState failed.err=%s", err)
 		return -1, err
 	}
 	//如果不存在则创建
 	if seqB == nil {
-		err = stateCache.putState_Ex(stub, transSeqKey, []byte("0"))
+		err = stateCache.PutState_Ex(stub, transSeqKey, []byte("0"))
 		if err != nil {
 			baselogger.Error("initTransSeq PutState failed.err=%s", err)
 			return -1, err
@@ -2414,7 +2414,7 @@ func (b *BASE) getTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string)
 	return seq, nil
 }
 func (b *BASE) setTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string, seq int64) error {
-	err := stateCache.putState_Ex(stub, transSeqKey, []byte(strconv.FormatInt(seq, 10)))
+	err := stateCache.PutState_Ex(stub, transSeqKey, []byte(strconv.FormatInt(seq, 10)))
 	if err != nil {
 		baselogger.Error("setTransSeq PutState failed.err=%s", err)
 		return err
@@ -2465,7 +2465,7 @@ func (b *BASE) setTransInfo(stub shim.ChaincodeStubInterface, info *Transaction)
 	}
 
 	putKey := b.getTransInfoKey(stub, seqGlob)
-	err = stateCache.putState_Ex(stub, putKey, transJson)
+	err = stateCache.PutState_Ex(stub, putKey, transJson)
 	if err != nil {
 		return baselogger.Errorf("setTransInfo PutState failed. err=%s", err)
 	}
@@ -2518,7 +2518,7 @@ func (b *BASE) setOneAccTransInfo(stub shim.ChaincodeStubInterface, accName, Glo
 	seq++
 
 	var key = b.getOneAccTransInfoKey(accName, seq)
-	err = stateCache.putState_Ex(stub, key, []byte(GlobalTransKey))
+	err = stateCache.PutState_Ex(stub, key, []byte(GlobalTransKey))
 	if err != nil {
 		return baselogger.Errorf("setOneAccTransInfo PutState failed. err=%s", err)
 	}
@@ -2538,7 +2538,7 @@ func (b *BASE) getOnceTransInfo(stub shim.ChaincodeStubInterface, key string) (*
 	var err error
 	var trans Transaction
 
-	tmpState, err := stateCache.getState_Ex(stub, key)
+	tmpState, err := stateCache.GetState_Ex(stub, key)
 	if err != nil {
 		baselogger.Error("getTransInfo GetState failed.err=%s", err)
 		return nil, err
@@ -2560,7 +2560,7 @@ func (b *BASE) getQueryTransInfo(stub shim.ChaincodeStubInterface, key string) (
 	var err error
 	var trans QueryTransRecd
 
-	tmpState, err := stateCache.getState_Ex(stub, key)
+	tmpState, err := stateCache.GetState_Ex(stub, key)
 	if err != nil {
 		baselogger.Error("getQueryTransInfo GetState failed.err=%s", err)
 		return nil, err
@@ -2737,7 +2737,7 @@ func (b *BASE) loadWorldState(stub shim.ChaincodeStubInterface, fileName string,
 		var value = oneRecd[1]
 
 		if !sameKeyOverwrite {
-			testB, err := stateCache.getState_Ex(stub, key)
+			testB, err := stateCache.GetState_Ex(stub, key)
 			if err != nil {
 				return nil, baselogger.Errorf("setWorldState: GetState failed. key=%s err=%s", key, err)
 			}
@@ -2779,7 +2779,7 @@ func (b *BASE) loadWorldState(stub shim.ChaincodeStubInterface, fileName string,
 			return nil, baselogger.Errorf("setWorldState: dateConvertWhenUpdate failed.  err=%s", err)
 		}
 
-		err = stateCache.putState_Ex(stub, newKey, newValB)
+		err = stateCache.PutState_Ex(stub, newKey, newValB)
 		if err != nil {
 			return nil, baselogger.Errorf("setWorldState: PutState_Ex failed. key=%s err=%s", key, err)
 		}
@@ -2871,7 +2871,7 @@ func (b *BASE) setAccountLockAmountCfg(stub shim.ChaincodeStubInterface, accName
 	if overwriteOld {
 		acli.AccName = accName
 	} else {
-		acliB, err := stateCache.getState_Ex(stub, lockinfoKey)
+		acliB, err := stateCache.GetState_Ex(stub, lockinfoKey)
 		if err != nil {
 			return 0, 0, baselogger.Errorf("setAccountLockAmountCfg: GetState  failed. err=%s", err)
 		}
@@ -2895,7 +2895,7 @@ func (b *BASE) setAccountLockAmountCfg(stub shim.ChaincodeStubInterface, accName
 	if err != nil {
 		return 0, 0, baselogger.Errorf("setAccountLockAmountCfg: Marshal  failed. err=%s", err)
 	}
-	err = stateCache.putState_Ex(stub, lockinfoKey, acliB)
+	err = stateCache.PutState_Ex(stub, lockinfoKey, acliB)
 	if err != nil {
 		return 0, 0, baselogger.Errorf("setAccountLockAmountCfg: putState_Ex  failed. err=%s", err)
 	}
@@ -2914,7 +2914,7 @@ func (b *BASE) getUserEntity(stub shim.ChaincodeStubInterface, userName string) 
 	var ue UserEntity
 	var err error
 
-	entB, err = stateCache.getState_Ex(stub, b.getUserEntityKey(userName))
+	entB, err = stateCache.GetState_Ex(stub, b.getUserEntityKey(userName))
 	if err != nil {
 		return nil, baselogger.Errorf("getUserEntity GetState failed. err=%s", err)
 	}
@@ -2937,7 +2937,7 @@ func (b *BASE) setUserEntity(stub shim.ChaincodeStubInterface, ue *UserEntity) e
 		return baselogger.Errorf("setUserEntity: Marshal failed. err=%s", err)
 	}
 
-	err = stateCache.putState_Ex(stub, b.getUserEntityKey(ue.EntID), jsons)
+	err = stateCache.PutState_Ex(stub, b.getUserEntityKey(ue.EntID), jsons)
 
 	if err != nil {
 		return baselogger.Errorf("setUserEntity: PutState cb failed. err=%s", err)
@@ -2977,7 +2977,7 @@ func (b *BASE) setAppInfo(stub shim.ChaincodeStubInterface, app *AppInfo) error 
 		return baselogger.Errorf("Marshal failed. err=%s", err)
 	}
 
-	err = stateCache.putState_Ex(stub, b.getAppRecdKey(app.AppID), appB)
+	err = stateCache.PutState_Ex(stub, b.getAppRecdKey(app.AppID), appB)
 	if err != nil {
 		return baselogger.Errorf("PutState failed. err=%s", err)
 	}
@@ -2986,7 +2986,7 @@ func (b *BASE) setAppInfo(stub shim.ChaincodeStubInterface, app *AppInfo) error 
 }
 
 func (b *BASE) getAppInfo(stub shim.ChaincodeStubInterface, appid string) (*AppInfo, error) {
-	appB, err := stateCache.getState_Ex(stub, b.getAppRecdKey(appid))
+	appB, err := stateCache.GetState_Ex(stub, b.getAppRecdKey(appid))
 	if err != nil {
 		return nil, baselogger.Errorf("GetState failed. err=%s", err)
 	}
@@ -3012,7 +3012,7 @@ func (b *BASE) getCrossChaincodeName(flag string) string {
 }
 
 func (b *BASE) isAppExists(stub shim.ChaincodeStubInterface, appid string) (bool, error) {
-	appB, err := stateCache.getState_Ex(stub, b.getAppRecdKey(appid))
+	appB, err := stateCache.GetState_Ex(stub, b.getAppRecdKey(appid))
 	if err != nil {
 		return false, baselogger.Errorf("GetState failed. err=%s", err)
 	}
@@ -3110,7 +3110,7 @@ func (b *BASE) getAccoutAmountRankingOrTopN(stub shim.ChaincodeStubInterface, us
 		}
 	}
 
-	accsB, err := stateCache.getState_Ex(stub, ALL_ACC_INFO_KEY)
+	accsB, err := stateCache.GetState_Ex(stub, ALL_ACC_INFO_KEY)
 	if err != nil {
 		return nil, baselogger.Errorf("GetState failed. err=%s", err)
 	}
@@ -3191,7 +3191,7 @@ func (b *BASE) setUserInfo(stub shim.ChaincodeStubInterface, user *UserInfo) err
 		return baselogger.Errorf("Marshal failed. err=%s", err)
 	}
 
-	err = stateCache.putState_Ex(stub, b.getUserInfoKey(user.EntID), userB)
+	err = stateCache.PutState_Ex(stub, b.getUserInfoKey(user.EntID), userB)
 	if err != nil {
 		return baselogger.Errorf("PutState failed. err=%s", err)
 	}
@@ -3200,7 +3200,7 @@ func (b *BASE) setUserInfo(stub shim.ChaincodeStubInterface, user *UserInfo) err
 }
 
 func (b *BASE) getUserInfo(stub shim.ChaincodeStubInterface, userName string) (*UserInfo, error) {
-	userB, err := stateCache.getState_Ex(stub, b.getUserInfoKey(userName))
+	userB, err := stateCache.GetState_Ex(stub, b.getUserInfoKey(userName))
 	if err != nil {
 		return nil, baselogger.Errorf("GetState failed. err=%s", err)
 	}
