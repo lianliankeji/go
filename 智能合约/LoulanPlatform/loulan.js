@@ -646,8 +646,11 @@ function __execInvoke(params, req, outputQReslt, serialno) {
             
             logger.debug('args  : ', inputArgs);
 
+            var newUserWhenNil = false //当用户未注册时时自动注册用户
+            if (fcn == "account")
+                newUserWhenNil = true
 
-            return hfc_wrap.invokeChaincode(peers, channelName, chaincodeName, fcn, inputArgs, username, orgname, true)
+            return hfc_wrap.invokeChaincode(peers, channelName, chaincodeName, fcn, inputArgs, username, orgname, newUserWhenNil, true)
             .then((response)=>{
                     logger.debug('invoke success, response=', response)
                     body.msg = util.format("Invoke(%s) OK.", fcn)
@@ -916,6 +919,15 @@ function handle_query(params, res, req, serialno) {
             })
     })
     .catch((err)=>{
+            //用户不存在时，做特殊处理
+            if (err == hfc_wrap.ErrorUserNotExists) {
+                if (fcn == "isAccExists") {
+                    body.result = "0"
+                    res.send(body);
+                    return
+                }
+            }
+            
             //logger.error('query failed, err=%s', err)
             body.code = retCode.ERROR
             if (err instanceof Object && err.code && err.msg) {
