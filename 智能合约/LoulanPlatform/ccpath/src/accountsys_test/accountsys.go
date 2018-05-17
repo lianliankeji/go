@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -56,7 +55,6 @@ const (
 	MULTI_STRING_DELIM        = ':' //多个string的分隔符
 	INVALID_MD5_VALUE         = "-"
 	INVALID_PUBKEY_HASH_VALUE = "-"
-	INVALID_SIGN_VALUE        = "-"
 
 	ACC_INVALID_CHAR_SET = ",;:/\\"                  //账户中不能包含的字符
 	COIN_ISSUE_ACC_ENTID = "issueCoinVirtualAccount" //发行货币的账户id
@@ -65,17 +63,6 @@ const (
 	CONTROL_CC_GETPARA_FUNC_NAME = "getParameter"
 
 	CROSSCCCALL_PREFIX = "^_^~"
-)
-
-//这里定义的错误码会返回给前端，所以不要修改已有的错误码，如果要修改，请和前端一起修改
-const (
-	ERRCODE_BEGIN                           = iota + 10000
-	ERRCODE_TRANS_PAY_ACCOUNT_NOT_EXIST     //付款账号不存在
-	ERRCODE_TRANS_PAYEE_ACCOUNT_NOT_EXIST   //收款账号不存在
-	ERRCODE_TRANS_BALANCE_NOT_ENOUGH        //账号余额不足d
-	ERRCODE_TRANS_PASSWD_INVALID            //密码错误
-	ERRCODE_TRANS_AMOUNT_INVALID            //转账金额不合法
-	ERRCODE_TRANS_BALANCE_NOT_ENOUGH_BYLOCK //锁定部分余额导致余额不足
 )
 
 type UserEntity struct {
@@ -207,16 +194,16 @@ type BaseInvokeArgs struct {
 }
 
 //扩展包的回调函数
-var InitHook func(shim.ChaincodeStubInterface, *BaseInitArgs) ([]byte, error)
-var InvokeHook func(shim.ChaincodeStubInterface, *BaseInvokeArgs) ([]byte, error)
-var DateConvertWhenLoadHook func(stub shim.ChaincodeStubInterface, srcCcid, key string, valueB []byte) (string, []byte, error)
-var DateUpdateAfterLoadHook func(stub shim.ChaincodeStubInterface, srcCcid string) error
+var InitHook func(shim.ChaincodeStubInterface, *BaseInitArgs) ([]byte, *ErrorCodeMsg)
+var InvokeHook func(shim.ChaincodeStubInterface, *BaseInvokeArgs) ([]byte, *ErrorCodeMsg)
+var DateConvertWhenLoadHook func(stub shim.ChaincodeStubInterface, srcCcid, key string, valueB []byte) (string, []byte, *ErrorCodeMsg)
+var DateUpdateAfterLoadHook func(stub shim.ChaincodeStubInterface, srcCcid string) *ErrorCodeMsg
 
 var baselogger = NewMylogger(EXTEND_MODULE_NAME + "base")
 var baseCrypto = MyCryptoNew()
 
-var ErrNilEntity = errors.New("nil entity.")
-var ErrUnregistedFun = errors.New("unregisted function.")
+var ErrcmNilEntity = NewErrorCodeMsg(ERRCODE_COMMON_INNER_ERROR, "nil entity.")
+var ErrcmUnregistedFun = NewErrorCodeMsg(ERRCODE_COMMON_INNER_ERROR, "unregisted function.")
 
 var stateCache StateWorldCache
 
@@ -231,7 +218,7 @@ func init() {
 }
 
 func (b *BASE) Init(stub shim.ChaincodeStubInterface) (pbResponse pb.Response) {
-	function, args := stub.GetFunctionAndParameters()
+	function, _ := stub.GetFunctionAndParameters()
 	defer func() {
 		if excption := recover(); excption != nil {
 			pbResponse = shim.Error(baselogger.SError("Init(%s) got an unexpect error:%s", function, excption))
@@ -239,8 +226,17 @@ func (b *BASE) Init(stub shim.ChaincodeStubInterface) (pbResponse pb.Response) {
 		}
 	}()
 
-	baselogger.Debug("Enter Init")
+	payload, errcm := b.__Init(stub)
+	if errcm != nil {
+		return shim.Error(errcm.toJson())
+	}
 
+	return shim.Success(payload)
+}
+
+func (b *BASE) __Init(stub shim.ChaincodeStubInterface) ([]byte, *ErrorCodeMsg) {
+	baselogger.Debug("Enter Init")
+	function, args := stub.GetFunctionAndParameters()
 	baselogger.Info("func =%s, args = %+v", function, args)
 
 	stateCache.Create(stub)
@@ -248,21 +244,18 @@ func (b *BASE) Init(stub shim.ChaincodeStubInterface) (pbResponse pb.Response) {
 		stateCache.Destroy(stub)
 	}()
 
+	LogCtrlParameter(baselogger)
+
 	/*
 		//base中这里目前只用一个参数，扩展模块中如果需要更多参数，请自行检查
 		var fixedArgCount = 1
 		if len(args) < fixedArgCount {
 			return shim.Error(baselogger.SError("Init miss arg, got %d, at least need %d(initTime).", len(args), fixedArgCount))
 		}
-
-		initTime, err := strconv.ParseInt(args[0], 0, 64)
-		if err != nil {
-			return shim.Error(baselogger.SError("Init convert initTime(%s) failed. err=%s", args[0], err))
-		}
 	*/
 	timestamp, err := stub.GetTxTimestamp()
 	if err != nil {
-		return shim.Error(fmt.Sprintf("Init: GetTxTimestamp failed, err=%s", err))
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Init: GetTxTimestamp failed, error=(%s)", err)
 	}
 
 	var initTime = timestamp.Seconds*1000 + int64(timestamp.Nanos/1000000) //精确到毫秒
@@ -276,13 +269,13 @@ func (b *BASE) Init(stub shim.ChaincodeStubInterface) (pbResponse pb.Response) {
 		//do someting
 
 		//虚拟一个超级账户，设置货币发行总额，给央行发行货币。
-		err = b.setIssueAmountTotal(stub, 10000000000, initTime)
-		if err != nil {
-			return shim.Error(baselogger.SError("Init setIssueAmountTotal error, err=%s.", err))
+		errcm := b.setIssueAmountTotal(stub, 10000000000, initTime)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "Init setIssueAmountTotal error, error=(%s).", errcm)
 		}
 
 		if InitHook == nil {
-			return shim.Success(nil)
+			return nil, nil
 		}
 
 	} else if function == "upgrade" { //升级时默认会执行upgrade函数，除非在调用合约升级接口时指定了其它的函数
@@ -290,34 +283,45 @@ func (b *BASE) Init(stub shim.ChaincodeStubInterface) (pbResponse pb.Response) {
 		//do someting
 
 		if InitHook == nil {
-			return shim.Success(nil)
+			return nil, nil
 		}
 	}
 
 	//这个判断不能放在上面的else分支， 因为执行了base的init，还需要执行InitHook里的init
 	if InitHook != nil {
-		retBytes, err := InitHook(stub, &initFixArgs)
-		if err != nil {
-			return shim.Error(baselogger.SError("InitHook failed, err=%s.", err))
+		retBytes, errcm := InitHook(stub, &initFixArgs)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "InitHook failed, error=(%s).", errcm)
 		}
-		return shim.Success(retBytes)
+		return retBytes, nil
 	}
 
-	return shim.Success(nil)
+	return nil, nil
 }
 
-var sysFunc = []string{"account", "transefer", "transefer3", "registerApp", "updateUserInfo",
+var sysFunc = []string{"account", "transefer", "transefer3", "registerApp", "updateUserInfo", "recharge",
 	"getBalance", "getBalanceAndLocked", "getTransInfo", "isAccExists", "getAppInfo", "getStatisticInfo", "getRankingAndTopN", "getUserInfo"}
 
 // Transaction makes payment of X units from A to B
 func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response) {
-	function, args := stub.GetFunctionAndParameters()
+	function, _ := stub.GetFunctionAndParameters()
 	defer func() {
 		if excption := recover(); excption != nil {
 			pbResponse = shim.Error(baselogger.SError("Invoke(%s) got an unexpect error:%s", function, excption))
 			baselogger.Critical("Invoke got exception, stack:\n%s", string(debug.Stack()))
 		}
 	}()
+
+	payload, errcm := b.__Invoke(stub)
+	if errcm != nil {
+		return shim.Error(errcm.toJson())
+	}
+
+	return shim.Success(payload)
+}
+
+func (b *BASE) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, *ErrorCodeMsg) {
+	function, args := stub.GetFunctionAndParameters()
 
 	baselogger.Debug("Enter Invoke")
 	baselogger.Debug("func =%s, args = %+v", function, args)
@@ -328,6 +332,7 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 	}()
 
 	var err error
+	var errcm *ErrorCodeMsg
 
 	var crossCallChaincodeName = ""
 	var crossCallFlag = args[len(args)-1]
@@ -341,14 +346,14 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 	var fixedArgCount = 2
 	//最后一个参数为签名，所以参数必须大于fixedArgCount个
 	if len(args) < fixedArgCount {
-		return shim.Error(baselogger.SError("Invoke miss arg, got %d, at least need %d(use, acc).", len(args), fixedArgCount))
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Invoke miss arg, got %d, at least need %d(use, acc).", len(args), fixedArgCount)
 	}
 
 	var userName = args[0]
 	var accName = args[1]
 	timestamp, err := stub.GetTxTimestamp()
 	if err != nil {
-		return shim.Error(fmt.Sprintf("Init: GetTxTimestamp failed, err=%s", err))
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Init: GetTxTimestamp failed, error=(%s)", err)
 	}
 
 	var invokeTime = timestamp.Seconds*1000 + int64(timestamp.Nanos/1000000) //精确到毫秒
@@ -366,30 +371,30 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 	//开户时验证在客户函数中做
 	if function != "account" && function != "accountCB" {
 
-		accountEnt, err = b.getAccountEntity(stub, accName)
-		if err != nil {
+		accountEnt, errcm = b.getAccountEntity(stub, accName)
+		if errcm != nil {
 			//查询函数和invoke函数走的一个入口， 所以查询接口的几个特殊处理放在这里
-			if err == ErrNilEntity {
+			if errcm == ErrcmNilEntity {
 				if function == "isAccExists" { //如果是查询账户是否存在，如果是空，返回不存在
-					return shim.Success([]byte("0"))
+					return []byte("0"), nil
 				} else if function == "getBalance" { //如果是查询余额，如果账户不存，返回0
-					return shim.Success([]byte("0"))
+					return []byte("0"), nil
 				} else if function == "transPreCheck" { //如果是转账预检查，返回付款账户不存在
-					return shim.Success([]byte(strconv.FormatInt(ERRCODE_TRANS_PAY_ACCOUNT_NOT_EXIST, 10)))
+					return []byte(strconv.FormatInt(ERRCODE_TRANS_PAY_ACCOUNT_NOT_EXIST, 10)), nil
 				}
 			}
-			return shim.Error(baselogger.SError("Invoke getAccountEntity(%s) failed. err=%s", accName, err))
+			return nil, baselogger.ErrorECM(errcm.Code, "Invoke getAccountEntity(%s) failed. error=(%s)", accName, errcm)
 		}
 
 		//非account时签名为最后一个参数
-		sign, signMsg, err = b.getSignAndMsg(function, args, len(args)-1)
-		if err != nil {
-			return shim.Error(baselogger.SError("Invoke: getSignAndMsg(%s) failed, err=%s.", accName, err))
+		sign, signMsg, errcm = b.getSignAndMsg(function, args, len(args)-1)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "Invoke: getSignAndMsg(%s) failed, error=(%s).", accName, errcm)
 		}
 
 		//校验修改Entity的用户身份，只有Entity的所有者才能修改自己的Entity
-		if err = b.verifyIdentity(stub, userName, sign, signMsg, accountEnt, "", ""); err != nil {
-			return shim.Error(baselogger.SError("Invoke: verifyIdentity(%s) failed.", accName))
+		if errcm = b.verifyIdentity(stub, userName, sign, signMsg, accountEnt, "", ""); errcm != nil {
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_IDENTITY_VERIFY_FAILED, "Invoke: verifyIdentity(%s) failed.", accName)
 		}
 
 		//去除签名参数
@@ -401,13 +406,13 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 	if len(crossCallChaincodeName) > 0 && !b.isAccountSysFunc(function) {
 		var calledArgs = stub.GetArgs()
 		//这里获取的是原始参数，所以要去掉后两个参数，最后一个参数是自动添加用来区分是不是跨合约调用的，倒数第二个为签名
-		payload, err := b.corssChaincodeCall(stub, calledArgs[:len(calledArgs)-2], crossCallChaincodeName, userName, accName, sign, signMsg)
-		if err != nil {
-			baselogger.Error("Invoke: invoke chaincode '%s' failed, err=%s", crossCallChaincodeName, err)
-			return shim.Error(err.Error()) //直接返回被调用者的错误信息
+		payload, errcm := b.corssChaincodeCall(stub, calledArgs[:len(calledArgs)-2], crossCallChaincodeName, userName, accName, sign, signMsg)
+		if errcm != nil {
+			baselogger.Error("Invoke: invoke chaincode '%s' failed, error=(%s)", crossCallChaincodeName, errcm)
+			return nil, errcm //直接返回被调用者的错误信息
 		}
 
-		return shim.Success(payload)
+		return payload, nil
 	}
 
 	if function == "account" {
@@ -419,16 +424,16 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 
 		var argCount = fixedArgCount + 3
 		if len(args) < argCount {
-			return shim.Error(fmt.Sprintf("Invoke(account) miss arg, got %d, at least need %d.", len(args), argCount))
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(account) miss arg, got %d, at least need %d.", len(args), argCount)
 		}
 
 		//先取出固定参数 signature 和 userIdentity，因为这两个参数是平台自动加入args中的，所以一定有
 		var userIdHash = args[len(args)-1] //base64
 
 		//签名为倒数第二个参数
-		sig, msg, err := b.getSignAndMsg(function, args, len(args)-2)
-		if err != nil {
-			return shim.Error(baselogger.SError("Invoke(account): getSignAndMsg(%s) failed, err=%s.", accName, err))
+		sig, msg, errcm := b.getSignAndMsg(function, args, len(args)-2)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "Invoke(account): getSignAndMsg(%s) failed, error=(%s).", accName, errcm)
 		}
 
 		//然后去掉最后两个参数 signature 和 userIdentity ， 方便后续的可选参数处理
@@ -438,13 +443,13 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 		var userPubKeyHash = args[fixedArgCount] //base64
 
 		//校验修改Entity的用户身份，只有Entity的所有者才能修改自己的Entity
-		if err = b.verifyIdentity(stub, userName, sig, msg, nil, userPubKeyHash, userIdHash); err != nil {
-			return shim.Error(baselogger.SError("Invoke(account) verifyIdentity(%s) failed.", accName))
+		if errcm = b.verifyIdentity(stub, userName, sig, msg, nil, userPubKeyHash, userIdHash); errcm != nil {
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_IDENTITY_VERIFY_FAILED, "Invoke(account) verifyIdentity(%s) failed.", accName)
 		}
 
-		_, err = b.newAccount(stub, accName, usrType, userName, userIdHash, userPubKeyHash, invokeTime, false)
-		if err != nil {
-			return shim.Error(baselogger.SError("Invoke(account) newAccount failed. err=%s", err))
+		_, errcm = b.newAccount(stub, accName, usrType, userName, userIdHash, userPubKeyHash, invokeTime, false)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "Invoke(account) newAccount failed. error=(%s)", errcm)
 		}
 
 		//可选参数
@@ -458,13 +463,13 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 		}
 
 		if len(userPicture) > 0 || len(userNickname) > 0 {
-			err = b.updateUserInfo(stub, userName, userPicture, userNickname)
-			if err != nil {
-				return shim.Error(baselogger.SError("Invoke(updateUserInfo) updateUserInfo failed, err=%s.", err))
+			errcm = b.updateUserInfo(stub, userName, userPicture, userNickname)
+			if errcm != nil {
+				return nil, baselogger.ErrorECM(errcm.Code, "Invoke(updateUserInfo) updateUserInfo failed, error=(%s).", errcm)
 			}
 		}
 
-		return shim.Success(nil)
+		return nil, nil
 
 	} else if function == "accountCB" {
 		baselogger.Debug("Enter accountCB")
@@ -475,83 +480,83 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 
 		var argCount = fixedArgCount + 3
 		if len(args) < argCount {
-			return shim.Error(fmt.Sprintf("Invoke(account) miss arg, got %d, at least need %d.", len(args), argCount))
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(account) miss arg, got %d, at least need %d.", len(args), argCount)
 		}
 
 		var userPubKeyHash = args[fixedArgCount] //base64
 		var userIdHash = args[len(args)-1]       //base64
 
 		//签名为倒数第二个参数
-		sig, msg, err := b.getSignAndMsg(function, args, len(args)-2)
-		if err != nil {
-			return shim.Error(baselogger.SError("Invoke(account): getSignAndMsg(%s) failed, err=%s.", accName, err))
+		sig, msg, errcm := b.getSignAndMsg(function, args, len(args)-2)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "Invoke(account): getSignAndMsg(%s) failed, error=(%s).", accName, errcm)
 		}
 
 		//校验修改Entity的用户身份，只有Entity的所有者才能修改自己的Entity
-		if err = b.verifyIdentity(stub, userName, sig, msg, nil, userPubKeyHash, userIdHash); err != nil {
-			return shim.Error(baselogger.SError("Invoke(accountCB) verifyIdentity(%s) failed.", accName))
+		if errcm = b.verifyIdentity(stub, userName, sig, msg, nil, userPubKeyHash, userIdHash); errcm != nil {
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_IDENTITY_VERIFY_FAILED, "Invoke(accountCB) verifyIdentity(%s) failed.", accName)
 		}
 
-		tmpByte, err := b.getCenterBankAcc(stub)
-		if err != nil {
-			return shim.Error(baselogger.SError("Invoke(accountCB) getCenterBankAcc failed. err=%s", err))
+		tmpByte, errcm := b.getCenterBankAcc(stub)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "Invoke(accountCB) getCenterBankAcc failed. error=(%s)", errcm)
 		}
 
 		//如果央行账户已存在，报错
 		if tmpByte != nil {
-			return shim.Error(baselogger.SError("Invoke(accountCB) CBaccount(%s) exists.", string(tmpByte)))
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "Invoke(accountCB) CBaccount(%s) exists.", string(tmpByte))
 		}
 
-		_, err = b.newAccount(stub, accName, usrType, userName, userIdHash, userPubKeyHash, invokeTime, true)
-		if err != nil {
-			return shim.Error(baselogger.SError("Invoke(accountCB) openAccount failed. err=%s", err))
+		_, errcm = b.newAccount(stub, accName, usrType, userName, userIdHash, userPubKeyHash, invokeTime, true)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "Invoke(accountCB) openAccount failed. error=(%s)", errcm)
 		}
 
-		err = b.setCenterBankAcc(stub, accName)
-		if err != nil {
-			return shim.Error(baselogger.SError("Invoke(accountCB) setCenterBankAcc failed. err=%s", err))
+		errcm = b.setCenterBankAcc(stub, accName)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "Invoke(accountCB) setCenterBankAcc failed. error=(%s)", errcm)
 		}
 
-		return shim.Success(nil)
+		return nil, nil
 
 	} else if function == "issue" {
 		baselogger.Debug("Enter issue")
 
 		var argCount = fixedArgCount + 1
 		if len(args) < argCount {
-			return shim.Error(baselogger.SError("Invoke(issue) miss arg, got %d, at least need %d.", len(args), argCount))
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(issue) miss arg, got %d, at least need %d.", len(args), argCount)
 		}
 
 		var issueAmount int64
 		issueAmount, err = strconv.ParseInt(args[fixedArgCount], 0, 64)
 		if err != nil {
-			return shim.Error(baselogger.SError("Invoke(issue) convert issueAmount(%s) failed. err=%s", args[fixedArgCount], err))
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Invoke(issue) convert issueAmount(%s) failed. error=(%s)", args[fixedArgCount], err)
 		}
 		baselogger.Debug("issueAmount= %+v", issueAmount)
 
-		tmpByte, err := b.getCenterBankAcc(stub)
-		if err != nil {
-			return shim.Error(baselogger.SError("Invoke(issue) getCenterBankAcc failed. err=%s", err))
+		tmpByte, errcm := b.getCenterBankAcc(stub)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "Invoke(issue) getCenterBankAcc failed. error=(%s)", errcm)
 		}
 		//如果没有央行账户，报错。否则校验账户是否一致。
 		if tmpByte == nil {
-			return shim.Error(baselogger.SError("Invoke(issue) getCenterBankAcc nil."))
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "Invoke(issue) getCenterBankAcc nil.")
 		} else {
 			if accName != string(tmpByte) {
-				return shim.Error(baselogger.SError("Invoke(issue) centerBank account is %s, can't issue to %s.", string(tmpByte), accName))
+				return nil, baselogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "Invoke(issue) centerBank account is %s, can't issue to %s.", string(tmpByte), accName)
 			}
 		}
 
-		_, err = b.issueCoin(stub, accName, issueAmount, invokeTime)
-		if err != nil {
-			return shim.Error(baselogger.SError("Invoke(issue) issueCoin failed. err=%s", err))
+		_, errcm = b.issueCoin(stub, accName, issueAmount, invokeTime)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "Invoke(issue) issueCoin failed. error=(%s)", errcm)
 		}
-		return shim.Success(nil)
+		return nil, nil
 
 	} else if function == "transefer" {
 		var argCount = fixedArgCount + 3
 		if len(args) < argCount {
-			return shim.Error(baselogger.SError("Invoke(transefer) miss arg, got %d, at least need %d.", len(args), argCount))
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(transefer) miss arg, got %d, at least need %d.", len(args), argCount)
 		}
 
 		var toAcc = args[fixedArgCount]
@@ -559,7 +564,7 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 		var transAmount int64
 		transAmount, err = strconv.ParseInt(args[fixedArgCount+1], 0, 64)
 		if err != nil {
-			return shim.Error(baselogger.SError("Invoke(transefer): convert issueAmount(%s) failed. err=%s", args[fixedArgCount+1], err))
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Invoke(transefer): convert issueAmount(%s) failed. error=(%s)", args[fixedArgCount+1], err)
 		}
 		baselogger.Debug("transAmount= %+v", transAmount)
 
@@ -583,24 +588,27 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 			}
 		}
 
-		idExist, err := b.isAppExists(stub, appid)
-		if err != nil {
-			return shim.Error(baselogger.SError("Invoke(transefer) failed, err=%s.", err))
-		}
-		if !idExist {
-			return shim.Error(baselogger.SError("Invoke(transefer) appid(%s) not exist, please register it first.", appid))
+		//测试链不检查 appid 是否存在
+		if !Ctrl_isTestChain {
+			idExist, errcm := b.isAppExists(stub, appid)
+			if errcm != nil {
+				return nil, baselogger.ErrorECM(errcm.Code, "Invoke(transefer) failed, error=(%s).", errcm)
+			}
+			if !idExist {
+				return nil, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(transefer) appid(%s) not exist, please register it first.", appid)
+			}
 		}
 
-		_, err = b.transferCoin(stub, accName, toAcc, transType, description, transAmount, invokeTime, sameEntSaveTransFlag, appid)
-		if err != nil {
-			return shim.Error(baselogger.SError("Invoke(transefer) transferCoin failed. err=%s", err))
+		_, errcm = b.transferCoin(stub, accName, toAcc, transType, description, transAmount, invokeTime, sameEntSaveTransFlag, appid)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "Invoke(transefer) transferCoin failed. error=(%s)", errcm)
 		}
-		return shim.Success(nil)
+		return nil, nil
 
 	} else if function == "transefer3" { //带锁定期功能
 		var argCount = fixedArgCount + 4
 		if len(args) < argCount {
-			return shim.Error(baselogger.SError("Invoke(transeferLockAmt) miss arg, got %d, at least need %d.", len(args), argCount))
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(transeferLockAmt) miss arg, got %d, at least need %d.", len(args), argCount)
 		}
 
 		var toAcc = args[fixedArgCount]
@@ -608,7 +616,7 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 		var transAmount int64
 		transAmount, err = strconv.ParseInt(args[fixedArgCount+1], 0, 64)
 		if err != nil {
-			return shim.Error(baselogger.SError("Invoke(transeferLockAmt): convert issueAmount(%s) failed. err=%s", args[fixedArgCount+1], err))
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Invoke(transeferLockAmt): convert issueAmount(%s) failed. error=(%s)", args[fixedArgCount+1], err)
 		}
 
 		var lockCfgs = args[fixedArgCount+2]
@@ -633,38 +641,41 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 		}
 
 		var lockedThistime int64 = 0
-		lockedThistime, _, err = b.setAccountLockAmountCfg(stub, toAcc, lockCfgs, false)
-		if err != nil {
-			return shim.Error(baselogger.SError("Invoke(transeferLockAmt): setAccountLockAmountCfg failed. err=%s", err))
+		lockedThistime, _, errcm = b.setAccountLockAmountCfg(stub, toAcc, lockCfgs, false)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "Invoke(transeferLockAmt): setAccountLockAmountCfg failed. error=(%s)", errcm)
 		}
 
 		if lockedThistime > transAmount {
-			return shim.Error(baselogger.SError("Invoke(transeferLockAmt): lockAmt(%d) > transAmount(%d).", lockedThistime, transAmount))
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "Invoke(transeferLockAmt): lockAmt(%d) > transAmount(%d).", lockedThistime, transAmount)
 		}
 
-		idExist, err := b.isAppExists(stub, appid)
-		if err != nil {
-			return shim.Error(baselogger.SError("Invoke(transeferLockAmt) failed, err=%s.", err))
-		}
-		if !idExist {
-			return shim.Error(baselogger.SError("Invoke(transeferLockAmt) appid(%s) not exist, please register it first.", appid))
+		//测试链不检查 appid 是否存在
+		if !Ctrl_isTestChain {
+			idExist, errcm := b.isAppExists(stub, appid)
+			if errcm != nil {
+				return nil, baselogger.ErrorECM(errcm.Code, "Invoke(transeferLockAmt) failed, error=(%s).", errcm)
+			}
+			if !idExist {
+				return nil, baselogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "Invoke(transeferLockAmt) appid(%s) not exist, please register it first.", appid)
+			}
 		}
 
-		_, err = b.transferCoin(stub, accName, toAcc, transType, description, transAmount, invokeTime, sameEntSaveTransFlag, appid)
-		if err != nil {
-			return shim.Error(baselogger.SError("Invoke(transeferLockAmt) transferCoin3 failed. err=%s", err))
+		_, errcm = b.transferCoin(stub, accName, toAcc, transType, description, transAmount, invokeTime, sameEntSaveTransFlag, appid)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "Invoke(transeferLockAmt) transferCoin3 failed. error=(%s)", errcm)
 		}
-		return shim.Success(nil)
+		return nil, nil
 
 	} else if function == "updateEnv" {
 		//更新环境变量
 		if !b.isAdmin(stub, accName) {
-			return shim.Error(baselogger.SError("Invoke(updateEnv) can't exec updateEnv by %s.", accName))
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "Invoke(updateEnv) can't exec updateEnv by %s.", accName)
 		}
 
 		var argCount = fixedArgCount + 2
 		if len(args) < argCount {
-			return shim.Error(baselogger.SError("Invoke(updateEnv) miss arg, got %d, at least need %d.", len(args), argCount))
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(updateEnv) miss arg, got %d, at least need %d.", len(args), argCount)
 		}
 		key := args[fixedArgCount]
 		value := args[fixedArgCount+1]
@@ -680,16 +691,16 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 			baselogger.Info("set logLevel to %d.", lvl)
 		}
 
-		return shim.Success(nil)
+		return nil, nil
 
 	} else if function == "updateState" {
 		if !b.isAdmin(stub, accName) {
-			return shim.Error(baselogger.SError("Invoke(setWorldState) can't exec by %s.", accName))
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "Invoke(setWorldState) can't exec by %s.", accName)
 		}
 
 		var argCount = fixedArgCount + 4
 		if len(args) < argCount {
-			return shim.Error(baselogger.SError("setWorldState miss arg, got %d, need %d.", len(args), argCount))
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "setWorldState miss arg, got %d, need %d.", len(args), argCount)
 		}
 
 		var fileName = args[fixedArgCount]
@@ -704,20 +715,20 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 
 		var srcCcid = args[fixedArgCount+3]
 
-		_, err = b.loadWorldState(stub, fileName, needHash, sameKeyOverwrite, srcCcid)
-		if err != nil {
-			return shim.Error(baselogger.SError("Invoke(setWorldState) setWorldState failed. err=%s", err))
+		_, errcm = b.loadWorldState(stub, fileName, needHash, sameKeyOverwrite, srcCcid)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "Invoke(setWorldState) setWorldState failed. error=(%s)", errcm)
 		}
-		return shim.Success(nil)
+		return nil, nil
 
 	} else if function == "lockAccAmt" {
 		if !b.isAdmin(stub, accName) {
-			return shim.Error(baselogger.SError("Invoke(lockAccAmt) can't exec by %s.", accName))
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "Invoke(lockAccAmt) can't exec by %s.", accName)
 		}
 
 		var argCount = fixedArgCount + 4
 		if len(args) < argCount {
-			return shim.Error(baselogger.SError("Invoke(lockAccAmt) miss arg, got %d, need %d.", len(args), argCount))
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(lockAccAmt) miss arg, got %d, need %d.", len(args), argCount)
 		}
 
 		var lockedAccName = args[fixedArgCount]
@@ -733,26 +744,26 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 			canLockMoreThanRest = true
 		}
 
-		lockEnt, err := b.getAccountEntity(stub, lockedAccName)
-		if err != nil {
-			return shim.Error(baselogger.SError("Invoke(lockAccAmt): getAccountEntity failed. err=%s", err))
+		lockEnt, errcm := b.getAccountEntity(stub, lockedAccName)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "Invoke(lockAccAmt): getAccountEntity failed. error=(%s)", errcm)
 		}
 
-		_, lockedTotal, err := b.setAccountLockAmountCfg(stub, lockedAccName, lockCfgs, overwriteOld)
-		if err != nil {
-			return shim.Error(baselogger.SError("Invoke(lockAccAmt): setAccountLockAmountCfg failed. err=%s", err))
+		_, lockedTotal, errcm := b.setAccountLockAmountCfg(stub, lockedAccName, lockCfgs, overwriteOld)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "Invoke(lockAccAmt): setAccountLockAmountCfg failed. error=(%s)", errcm)
 		}
 
 		if !canLockMoreThanRest && lockedTotal > lockEnt.RestAmount {
-			return shim.Error(baselogger.SError("Invoke(lockAccAmt): lock amount > account rest(%d,%d).", lockedTotal, lockEnt.RestAmount))
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "Invoke(lockAccAmt): lock amount > account rest(%d,%d).", lockedTotal, lockEnt.RestAmount)
 		}
 
-		return shim.Success(nil)
+		return nil, nil
 
 	} else if function == "registerApp" {
 		var argCount = fixedArgCount + 3
 		if len(args) < argCount {
-			return shim.Error(baselogger.SError("Invoke(RegisterApp) miss arg, got %d, need %d.", len(args), argCount))
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(RegisterApp) miss arg, got %d, need %d.", len(args), argCount)
 		}
 
 		var ai AppInfo
@@ -762,54 +773,54 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 		ai.Creater = accName
 
 		if len(strings.TrimSpace(ai.AppID)) == 0 {
-			return shim.Error(baselogger.SError("Invoke(RegisterApp) appid is empty."))
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(RegisterApp) appid is empty.")
 		}
 
-		ok, err := b.isAppExists(stub, ai.AppID)
-		if err != nil {
-			return shim.Error(baselogger.SError("Invoke(RegisterApp) isAppExists err: %s.", err))
+		ok, errcm := b.isAppExists(stub, ai.AppID)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "Invoke(RegisterApp) isAppExists error=(%s).", errcm)
 		}
 		if ok {
-			return shim.Error(baselogger.SError("Invoke(RegisterApp) appid(%s) exists.", ai.AppID))
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "Invoke(RegisterApp) appid(%s) exists.", ai.AppID)
 		}
 
-		err = b.setAppInfo(stub, &ai)
-		if err != nil {
-			return shim.Error(baselogger.SError("Invoke(RegisterApp) setAppInfo err: %s.", err))
+		errcm = b.setAppInfo(stub, &ai)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "Invoke(RegisterApp) setAppInfo error=(%s).", errcm)
 		}
 
-		return shim.Success(nil)
+		return nil, nil
 
 	} else if function == "recharge" { //测试链才有
 		if Ctrl_isTestChain {
 			var argCount = fixedArgCount + 1
 			if len(args) < argCount {
-				return shim.Error(baselogger.SError("Invoke(lockAccAmt) miss arg, got %d, need %d.", len(args), argCount))
+				return nil, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(lockAccAmt) miss arg, got %d, need %d.", len(args), argCount)
 			}
 
 			var rechargeAmount int64
 			rechargeAmount, err = strconv.ParseInt(args[fixedArgCount], 0, 64)
 			if err != nil {
-				return shim.Error(baselogger.SError("Invoke(recharge): convert rechargeAmount(%s) failed. err=%s", args[fixedArgCount], err))
+				return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Invoke(recharge): convert rechargeAmount(%s) failed. error=(%s)", args[fixedArgCount], err)
 			}
 
 			accountEnt.TotalAmount = rechargeAmount
 			accountEnt.RestAmount = rechargeAmount
 
-			err = b.setAccountEntity(stub, accountEnt)
-			if err != nil {
-				return shim.Error(baselogger.SError("Invoke(recharge): save account failed. err=%s", err))
+			errcm = b.setAccountEntity(stub, accountEnt)
+			if errcm != nil {
+				return nil, baselogger.ErrorECM(errcm.Code, "Invoke(recharge): save account failed. error=(%s)", errcm)
 			}
 
-			return shim.Success(nil)
+			return nil, nil
 		} else {
-			return shim.Error(baselogger.SError("Invoke(recharge): can not run this function."))
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "Invoke(recharge): can not run this function.")
 		}
 
 	} else if function == "authAccountManager" { //授权本账户的其它管理者， 即多个用户可以操作同一个账户
 		var argCount = fixedArgCount + 2
 		if len(args) < argCount {
-			return shim.Error(baselogger.SError("Invoke(authAccountManager) miss arg, got %d, at least need %d.", len(args), argCount))
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(authAccountManager) miss arg, got %d, at least need %d.", len(args), argCount)
 		}
 
 		var manager = args[fixedArgCount+0]
@@ -819,26 +830,26 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 		if operate == "add" {
 			addFlag = true
 		} else if operate != "delete" {
-			return shim.Error(baselogger.SError("Invoke(authAccountManager) operate must be 'add' or 'delete'."))
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(authAccountManager) operate must be 'add' or 'delete'.")
 		}
 
 		//manager获取失败，报错
-		managerEnt, err := b.getUserEntity(stub, manager)
-		if err != nil && err != ErrNilEntity {
-			return shim.Error(baselogger.SError("Invoke(authAccountManager) getUserEntity failed. err=%s, entname=%s", err, manager))
+		managerEnt, errcm := b.getUserEntity(stub, manager)
+		if errcm != nil && errcm != ErrcmNilEntity {
+			return nil, baselogger.ErrorECM(errcm.Code, "Invoke(authAccountManager) getUserEntity failed. error=(%s), entname=%s", errcm, manager)
 		}
 
 		if addFlag {
 			//添加时，manager 必存在
 			if managerEnt == nil {
-				return shim.Error(baselogger.SError("Invoke(authAccountManager) manager(%s) not exists. ", manager))
+				return nil, baselogger.ErrorECM(errcm.Code, "Invoke(authAccountManager) manager(%s) not exists. ", manager)
 			}
 
 			//获取manager 的hash值 （从账户中取）
 			var mngAccName = managerEnt.AccList[0]
-			mngAccEnt, err := b.getAccountEntity(stub, mngAccName)
-			if err != nil {
-				return shim.Error(baselogger.SError("Invoke(authAccountManager) getAccountEntity failed. err=%s, entname=%s", err, mngAccName))
+			mngAccEnt, errcm := b.getAccountEntity(stub, mngAccName)
+			if errcm != nil {
+				return nil, baselogger.ErrorECM(errcm.Code, "Invoke(authAccountManager) getAccountEntity failed. error=(%s), entname=%s", errcm, mngAccName)
 			}
 
 			//在当前账户中加入新的用户
@@ -864,71 +875,114 @@ func (b *BASE) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response)
 
 		baselogger.Debug("Invoke(authAccountManager) AccountEntity before =%+v.", *accountEnt)
 
-		err = b.setAccountEntity(stub, accountEnt)
-		if err != nil {
-			return shim.Error(baselogger.SError("Invoke(authAccountManager) setAccountEntity failed. err=%s, entname=%s", err, accountEnt.EntID))
+		errcm = b.setAccountEntity(stub, accountEnt)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "Invoke(authAccountManager) setAccountEntity failed. error=(%s), entname=%s", errcm, accountEnt.EntID)
 		}
 
 		baselogger.Debug("Invoke(authAccountManager) AccountEntity  after =%+v.", *accountEnt)
 
 		baselogger.Debug("Invoke(authAccountManager):  UserEntity before %+v", *managerEnt)
 
-		err = b.setUserEntity(stub, managerEnt)
-		if err != nil {
-			return shim.Error(baselogger.SError("Invoke(authAccountManager) setUserEntity failed. err=%s, entname=%s", err, accountEnt.EntID))
+		errcm = b.setUserEntity(stub, managerEnt)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "Invoke(authAccountManager) setUserEntity failed. error=(%s), entname=%s", errcm, accountEnt.EntID)
 		}
 		baselogger.Debug("Invoke(authAccountManager):  UserEntity after %+v", *managerEnt)
 
-		return shim.Success(nil)
+		return nil, nil
 	} else if function == "updateUserInfo" {
 		var argCount = fixedArgCount + 2
 		if len(args) < argCount {
-			return shim.Error(baselogger.SError("Invoke(updateUserInfo) miss arg, got %d, at least need %d.", len(args), argCount))
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(updateUserInfo) miss arg, got %d, at least need %d.", len(args), argCount)
 		}
 
 		var picture = args[fixedArgCount+0]
 		var nickname = args[fixedArgCount+1]
 
-		err = b.updateUserInfo(stub, userName, picture, nickname)
-		if err != nil {
-			return shim.Error(baselogger.SError("Invoke(updateUserInfo) updateUserInfo failed, err=%s.", err))
+		errcm = b.updateUserInfo(stub, userName, picture, nickname)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "Invoke(updateUserInfo) updateUserInfo failed, error=(%s).", errcm)
 		}
 
-		return shim.Success(nil)
-	} else {
-
-		retValue, err := b.Query(stub, &invokeFixArgs, function, args)
-
-		if err != nil {
-			//如果是因为没找到处理函数，尝试在扩展模块中查找
-			if err == ErrUnregistedFun {
-				//如果没有扩展处理模块，直接返回错误
-				if InvokeHook == nil {
-					return shim.Error(baselogger.SError("unknown function:%s.", function))
-				}
-
-				retBytes, err := InvokeHook(stub, &invokeFixArgs)
-				if err != nil {
-					return shim.Error(err.Error())
-				}
-
-				return shim.Success(retBytes)
+		return nil, nil
+	} else if function == "deleteState" {
+		if Ctrl_isTestChain {
+			var argCount = fixedArgCount + 1
+			if len(args) < argCount {
+				return nil, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(deleteState) miss arg, got %d, at least need %d.", len(args), argCount)
 			}
 
-			return shim.Error(err.Error())
+			var key = args[fixedArgCount]
+
+			var keyType string //可选参数
+			if len(args) > argCount {
+				keyType = args[argCount]
+			}
+
+			if key == "*" {
+				keysIter, err := stub.GetStateByRange("", "")
+				if err != nil {
+					return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Invoke(deleteState): keys operation failed. Error accessing state: %s", err)
+				}
+				defer keysIter.Close()
+
+				for keysIter.HasNext() {
+					kv, iterErr := keysIter.Next()
+					if iterErr != nil {
+						baselogger.Error("Invoke(deleteState): getNext failed, %s", iterErr)
+						continue
+					}
+					stub.DelState(kv.GetKey())
+				}
+			} else {
+				if keyType == "account" {
+					key = b.getAccountEntityKey(key)
+				}
+				err = stub.DelState(key)
+				if err != nil {
+					return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Invoke(deleteState) DelState failed, error=(%s).", err)
+				}
+			}
+		} else {
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "Invoke(deleteState) can not run deleteState here.")
 		}
 
-		return shim.Success(retValue)
-	}
+		return nil, nil
+	} else {
 
+		retValue, errcm := b.__Query(stub, &invokeFixArgs, function, args)
+
+		if errcm != nil {
+			//如果是因为没找到处理函数，尝试在扩展模块中查找
+			if errcm == ErrcmUnregistedFun {
+				//如果没有扩展处理模块，直接返回错误
+				if InvokeHook == nil {
+					return nil, baselogger.ErrorECM(errcm.Code, "unknown function:%s.", function)
+				}
+
+				retBytes, errcm := InvokeHook(stub, &invokeFixArgs)
+				if errcm != nil {
+					return nil, errcm
+				}
+
+				return retBytes, nil
+			}
+
+			return nil, errcm
+		}
+
+		return retValue, nil
+	}
 }
 
 // Query callback representing the query of a chaincode
-func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs, function string, args []string) ([]byte, error) {
+func (b *BASE) __Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs, function string, args []string) ([]byte, *ErrorCodeMsg) {
 	baselogger.Debug("Enter Query")
 	baselogger.Debug("func =%s, args = %+v", function, args)
 
 	var err error
+	var errcm *ErrorCodeMsg
 
 	var fixedArgCount = ifas.FixedArgCount
 	var userName = ifas.UserName
@@ -938,9 +992,9 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs, fun
 	var accountEnt = ifas.AccountEnt
 
 	if accountEnt == nil {
-		accountEnt, err = b.getAccountEntity(stub, accName)
-		if err != nil {
-			return nil, baselogger.Errorf("Query getAccountEntity failed. err=%s", err)
+		accountEnt, errcm = b.getAccountEntity(stub, accName)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "Query getAccountEntity failed. error=(%s)", errcm)
 		}
 
 		ifas.AccountEnt = accountEnt
@@ -948,7 +1002,7 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs, fun
 
 	//校验用户身份
 	//if ok, _ := b.verifyIdentity(stub, userName, accountEnt); !ok {
-	//	return nil, baselogger.Errorf("Query user and account check failed."))
+	//	return nil, baselogger.ErrorECM(ERRCODE_COMMON_IDENTITY_VERIFY_FAILED,"Query user and account check failed."))
 	//}
 
 	if function == "getBalance" { //查询余额
@@ -969,9 +1023,9 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs, fun
 
 		qbal.Balance = queryEntity.RestAmount
 
-		qbal.LockedAmount, qbal.LockCfg, err = b.getAccountLockedAmount(stub, accName, queryTime)
-		if err != nil {
-			return nil, baselogger.Errorf("getBalanceAndLocked: getAccountLockedAmount(id=%s) failed. err=%s", accName, err)
+		qbal.LockedAmount, qbal.LockCfg, errcm = b.getAccountLockedAmount(stub, accName, queryTime)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "getBalanceAndLocked: getAccountLockedAmount(id=%s) failed. error=(%s)", accName, errcm)
 		}
 
 		if qbal.LockCfg == nil {
@@ -980,7 +1034,7 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs, fun
 
 		qbalB, err := json.Marshal(qbal)
 		if err != nil {
-			return nil, baselogger.Errorf("getBalanceAndLocked: Marshal(id=%s) failed. err=%s", accName, err)
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getBalanceAndLocked: Marshal(id=%s) failed. error=(%s)", accName, err)
 		}
 
 		return (qbalB), nil
@@ -988,7 +1042,7 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs, fun
 	} else if function == "getTransInfo" { //查询交易记录
 		var argCount = fixedArgCount + 3
 		if len(args) < argCount {
-			return nil, baselogger.Errorf("queryTx miss arg, got %d, need %d.", len(args), argCount)
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "queryTx miss arg, got %d, need %d.", len(args), argCount)
 		}
 
 		var appid string
@@ -997,11 +1051,11 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs, fun
 
 		begSeq, err = strconv.ParseInt(args[fixedArgCount], 0, 64)
 		if err != nil {
-			return nil, baselogger.Errorf("queryTx ParseInt for begSeq(%s) failed. err=%s", args[fixedArgCount], err)
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "queryTx ParseInt for begSeq(%s) failed. error=(%s)", args[fixedArgCount], err)
 		}
 		txCount, err = strconv.ParseInt(args[fixedArgCount+1], 0, 64)
 		if err != nil {
-			return nil, baselogger.Errorf("queryTx ParseInt for endSeq(%s) failed. err=%s", args[fixedArgCount+1], err)
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "queryTx ParseInt for endSeq(%s) failed. error=(%s)", args[fixedArgCount+1], err)
 		}
 
 		appid = args[fixedArgCount+2]
@@ -1022,20 +1076,20 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs, fun
 		if len(args) > argCount+1 {
 			transLvl, err = strconv.ParseUint(args[argCount+1], 0, 64)
 			if err != nil {
-				return nil, baselogger.Errorf("queryTx ParseInt for transLvl(%s) failed. err=%s", args[argCount+1], err)
+				return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "queryTx ParseInt for transLvl(%s) failed. error=(%s)", args[argCount+1], err)
 			}
 		}
 
 		if len(args) > argCount+2 {
 			begTime, err = strconv.ParseInt(args[argCount+2], 0, 64)
 			if err != nil {
-				return nil, baselogger.Errorf("queryTx ParseInt for begTime(%s) failed. err=%s", args[argCount+2], err)
+				return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "queryTx ParseInt for begTime(%s) failed. error=(%s)", args[argCount+2], err)
 			}
 		}
 		if len(args) > argCount+3 {
 			endTime, err = strconv.ParseInt(args[argCount+3], 0, 64)
 			if err != nil {
-				return nil, baselogger.Errorf("queryTx ParseInt for endTime(%s) failed. err=%s", args[argCount+3], err)
+				return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "queryTx ParseInt for endTime(%s) failed. error=(%s)", args[argCount+3], err)
 			}
 		}
 		if len(args) > argCount+4 {
@@ -1044,7 +1098,7 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs, fun
 		if len(args) > argCount+5 {
 			queryMaxSeq, err = strconv.ParseInt(args[argCount+5], 0, 64)
 			if err != nil {
-				return nil, baselogger.Errorf("queryTx ParseInt for queryMaxSeq(%s) failed. err=%s", args[argCount+5], err)
+				return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "queryTx ParseInt for queryMaxSeq(%s) failed. error=(%s)", args[argCount+5], err)
 			}
 		}
 
@@ -1057,23 +1111,23 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs, fun
 			//管理员账户时，如果不传入txAcc，则查询所有交易记录；否则查询指定账户交易记录
 			//transLvl 只能管理员有权设置
 			if len(txAcc) == 0 {
-				retValue, err := b.queryTransInfos(stub, transLvl, begSeq, txCount, begTime, endTime, queryMaxSeq, isAsc, appid)
-				if err != nil {
-					return nil, baselogger.Errorf("queryTx queryTransInfos failed. err=%s", err)
+				retValue, errcm := b.queryTransInfos(stub, transLvl, begSeq, txCount, begTime, endTime, queryMaxSeq, isAsc, appid)
+				if errcm != nil {
+					return nil, baselogger.ErrorECM(errcm.Code, "queryTx queryTransInfos failed. error=(%s)", errcm)
 				}
 				return (retValue), nil
 			} else {
-				retValue, err := b.queryAccTransInfos(stub, txAcc, begSeq, txCount, begTime, endTime, queryMaxSeq, isAsc, appid)
-				if err != nil {
-					return nil, baselogger.Errorf("queryTx queryAccTransInfos failed. err=%s", err)
+				retValue, errcm := b.queryAccTransInfos(stub, txAcc, begSeq, txCount, begTime, endTime, queryMaxSeq, isAsc, appid)
+				if errcm != nil {
+					return nil, baselogger.ErrorECM(errcm.Code, "queryTx queryAccTransInfos failed. error=(%s)", errcm)
 				}
 				return (retValue), nil
 			}
 		} else {
 			//非管理员账户，只能查询自己的交易记录，忽略txAcc参数
-			retValue, err := b.queryAccTransInfos(stub, accName, begSeq, txCount, begTime, endTime, queryMaxSeq, isAsc, appid)
-			if err != nil {
-				return nil, baselogger.Errorf("queryTx queryAccTransInfos2 failed. err=%s", err)
+			retValue, errcm := b.queryAccTransInfos(stub, accName, begSeq, txCount, begTime, endTime, queryMaxSeq, isAsc, appid)
+			if errcm != nil {
+				return nil, baselogger.ErrorECM(errcm.Code, "queryTx queryAccTransInfos2 failed. error=(%s)", errcm)
 			}
 			return (retValue), nil
 		}
@@ -1083,39 +1137,39 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs, fun
 	} else if function == "getAllAccAmt" { //所有账户中钱是否正确
 		//是否是管理员帐户，管理员用户才可以查
 		if !b.isAdmin(stub, accName) {
-			return nil, baselogger.Errorf("%s can't query balance.", accName)
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "%s can't query balance.", accName)
 		}
 
-		retValue, err := b.getAllAccAmt(stub)
-		if err != nil {
-			return nil, baselogger.Errorf("getAllAccAmt failed. err=%s", err)
+		retValue, errcm := b.getAllAccAmt(stub)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "getAllAccAmt failed. error=(%s)", errcm)
 		}
 		return (retValue), nil
 
 	} else if function == "queryState" { //某个state的值
 		//是否是管理员帐户，管理员用户才可以查
 		if !b.isAdmin(stub, accName) {
-			return nil, baselogger.Errorf("%s can't query state.", accName)
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "%s can't query state.", accName)
 		}
 
 		var argCount = fixedArgCount + 1
 		if len(args) < argCount {
-			return nil, baselogger.Errorf("queryState miss arg, got %d, need %d.", len(args), argCount)
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "queryState miss arg, got %d, need %d.", len(args), argCount)
 		}
 
 		key := args[fixedArgCount]
 
 		retValue, err := stateCache.GetState_Ex(stub, key)
 		if err != nil {
-			return nil, baselogger.Errorf("queryState GetState failed. err=%s", err)
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "queryState GetState failed. error=(%s)", err)
 		}
 
 		return (retValue), nil
 
 	} else if function == "isAccExists" { //账户是否存在
-		accExist, err := b.isAccEntityExists(stub, accName)
-		if err != nil {
-			return nil, baselogger.Errorf("accExists: isEntityExists (id=%s) failed. err=%s", accName, err)
+		accExist, errcm := b.isAccEntityExists(stub, accName)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "accExists: isEntityExists (id=%s) failed. error=(%s)", accName, errcm)
 		}
 
 		var retValue []byte
@@ -1129,12 +1183,12 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs, fun
 
 	} else if function == "getDataState" {
 		if !b.isAdmin(stub, accName) {
-			return nil, baselogger.Errorf("getWorldState: %s can't query.", accName)
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "getWorldState: %s can't query.", accName)
 		}
 
 		var argCount = fixedArgCount + 3
 		if len(args) < argCount {
-			return nil, baselogger.Errorf("getWorldState miss arg, got %d, need %d.", len(args), argCount)
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "getWorldState miss arg, got %d, need %d.", len(args), argCount)
 		}
 
 		var needHash = false
@@ -1145,7 +1199,7 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs, fun
 		var flushLimit int
 		flushLimit, err = strconv.Atoi(args[fixedArgCount+1])
 		if err != nil {
-			return nil, baselogger.Errorf("getWorldState: convert flushLimit(%s) failed. err=%s", args[fixedArgCount+1], err)
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getWorldState: convert flushLimit(%s) failed. error=(%s)", args[fixedArgCount+1], err)
 		}
 		if flushLimit < 0 {
 			flushLimit = 4096
@@ -1153,43 +1207,43 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs, fun
 
 		var currCcid = args[fixedArgCount+2]
 
-		retValue, err := b.dumpWorldState(stub, queryTime, flushLimit, needHash, currCcid)
-		if err != nil {
-			return nil, baselogger.Errorf("getWorldState: getWorldState failed. err=%s", err)
+		retValue, errcm := b.dumpWorldState(stub, queryTime, flushLimit, needHash, currCcid)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "getWorldState: getWorldState failed. error=(%s)", errcm)
 		}
 		return (retValue), nil
 
 	} else if function == "getStatisticInfo" {
 		//是否是管理员帐户，管理员用户才可以查
 		if !b.isAdmin(stub, accName) {
-			return nil, baselogger.Errorf("%s can't query InfoForWeb.", accName)
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "%s can't query InfoForWeb.", accName)
 		}
 
 		var argCount = fixedArgCount + 1
 		if len(args) < argCount {
-			return nil, baselogger.Errorf("getStatisticInfo miss arg, got %d, need %d.", len(args), argCount)
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "getStatisticInfo miss arg, got %d, need %d.", len(args), argCount)
 		}
 
 		//计算货币流通量的账户
 		var circulateAmtAccName = args[fixedArgCount]
 
-		retValue, err := b.getSysStatisticInfo(stub, circulateAmtAccName)
-		if err != nil {
-			return nil, baselogger.Errorf("getStatisticInfo: getInfo4Web failed. err=%s", err)
+		retValue, errcm := b.getSysStatisticInfo(stub, circulateAmtAccName)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "getStatisticInfo: getInfo4Web failed. error=(%s)", errcm)
 		}
 		return (retValue), nil
 
 	} else if function == "transPreCheck" {
 		var argCount = fixedArgCount + 3
 		if len(args) < argCount {
-			return nil, baselogger.Errorf("transPreCheck miss arg, got %d, need %d.", len(args), argCount)
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "transPreCheck miss arg, got %d, need %d.", len(args), argCount)
 		}
 
 		toAcc := args[fixedArgCount]
 		//pwd := args[fixedArgCount+1]
 		transAmount, err := strconv.ParseInt(args[fixedArgCount+2], 0, 64)
 		if err != nil {
-			return nil, baselogger.Errorf("transPreCheck: convert transAmount(%s) failed. err=%s", args[fixedArgCount+2], err)
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "transPreCheck: convert transAmount(%s) failed. error=(%s)", args[fixedArgCount+2], err)
 		}
 
 		baselogger.Debug("transPreCheck: accountEnt=%+v", accountEnt)
@@ -1199,9 +1253,9 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs, fun
 			return []byte(strconv.FormatInt(ERRCODE_TRANS_AMOUNT_INVALID, 10)), nil
 		}
 		//看是否有锁定金额
-		lockAmt, _, err := Base.getAccountLockedAmount(stub, accName, queryTime)
-		if err != nil {
-			return nil, baselogger.Errorf("transPreCheck: getAccountLockedAmount(id=%s) failed. err=%s", accName, err)
+		lockAmt, _, errcm := Base.getAccountLockedAmount(stub, accName, queryTime)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "transPreCheck: getAccountLockedAmount(id=%s) failed. error=(%s)", accName, errcm)
 		}
 
 		if transAmount > accountEnt.RestAmount {
@@ -1213,9 +1267,9 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs, fun
 		}
 
 		//收款账户是否存在  这个检查放到最后执行
-		exists, err := Base.isAccEntityExists(stub, toAcc)
-		if err != nil {
-			return nil, baselogger.Errorf("transPreCheck: isEntityExists(%s) failed. err=%s", toAcc, err)
+		exists, errcm := Base.isAccEntityExists(stub, toAcc)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "transPreCheck: isEntityExists(%s) failed. error=(%s)", toAcc, errcm)
 		}
 		if !exists {
 			return []byte(strconv.FormatInt(ERRCODE_TRANS_PAYEE_ACCOUNT_NOT_EXIST, 10)), nil
@@ -1228,7 +1282,7 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs, fun
 
 		var argCount = fixedArgCount + 1
 		if len(args) < argCount {
-			return nil, baselogger.Errorf("getAppInfo miss arg, got %d, need %d.", len(args), argCount)
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "getAppInfo miss arg, got %d, need %d.", len(args), argCount)
 		}
 
 		var appList []AppInfo = []AppInfo{}
@@ -1237,9 +1291,9 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs, fun
 
 		//appid为空，则查询所有的，后续再实现
 		if len(appid) != 0 {
-			app, err := b.getAppInfo(stub, appid)
-			if err != nil {
-				return nil, baselogger.Errorf("getAppInfo: getAppInfo(%s) failed. err=%s", appid, err)
+			app, errcm := b.getAppInfo(stub, appid)
+			if errcm != nil {
+				return nil, baselogger.ErrorECM(errcm.Code, "getAppInfo: getAppInfo(%s) failed. error=(%s)", appid, errcm)
 			}
 
 			appList = append(appList, *app)
@@ -1247,7 +1301,7 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs, fun
 
 		returnValue, err := json.Marshal(appList)
 		if err != nil {
-			return nil, baselogger.Errorf("getAppInfo: Marshal failed. err=%s", err)
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getAppInfo: Marshal failed. error=(%s)", err)
 		}
 
 		return returnValue, nil
@@ -1256,13 +1310,13 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs, fun
 
 		var argCount = fixedArgCount + 3
 		if len(args) < argCount {
-			return nil, baselogger.Errorf("getRankingAndTopN miss arg, got %d, need %d.", len(args), argCount)
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "getRankingAndTopN miss arg, got %d, need %d.", len(args), argCount)
 		}
 
 		var topN int
 		topN, err = strconv.Atoi(args[fixedArgCount])
 		if err != nil {
-			return nil, baselogger.Errorf("convert topN(%s) failed. err=%s", args[fixedArgCount], err)
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "convert topN(%s) failed. error=(%s)", args[fixedArgCount], err)
 		}
 
 		var excludeAccStr = args[fixedArgCount+1]
@@ -1270,22 +1324,22 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs, fun
 
 		var appid = args[fixedArgCount+2]
 
-		rankAndTopN, err := b.getAccoutAmountRankingOrTopN(stub, userName, accName, topN, excludeAcc, appid)
-		if err != nil {
-			return nil, baselogger.Errorf("get ranking or topN failed. err=%s", err)
+		rankAndTopN, errcm := b.getAccoutAmountRankingOrTopN(stub, userName, accName, topN, excludeAcc, appid)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "get ranking or topN failed. error=(%s)", errcm)
 		}
 
 		returnValue, err := json.Marshal(*rankAndTopN)
 		if err != nil {
-			return nil, baselogger.Errorf("Marshal failed. err=%s", err)
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Marshal failed. error=(%s)", err)
 		}
 
 		return returnValue, nil
 
 	} else if function == "getUserInfo" {
-		pUser, err := b.getUserInfo(stub, userName)
-		if err != nil && err != ErrNilEntity {
-			return nil, baselogger.Errorf("getUserInfo failed. err=%s", err)
+		pUser, errcm := b.getUserInfo(stub, userName)
+		if errcm != nil && errcm != ErrcmNilEntity {
+			return nil, baselogger.ErrorECM(errcm.Code, "getUserInfo failed. error=(%s)", errcm)
 		}
 
 		var userInfo UserInfo = UserInfo{}
@@ -1295,20 +1349,21 @@ func (b *BASE) Query(stub shim.ChaincodeStubInterface, ifas *BaseInvokeArgs, fun
 
 		returnValue, err := json.Marshal(userInfo)
 		if err != nil {
-			return nil, baselogger.Errorf("Marshal failed. err=%s", err)
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Marshal failed. error=(%s)", err)
 		}
 
 		return returnValue, nil
 
 	} else {
 		//如果没有匹配到处理函数，一定要返回ErrUnregistedFun
-		return nil, ErrUnregistedFun
+		return nil, ErrcmUnregistedFun
 	}
 }
 
-func (b *BASE) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64, begIdx, count, begTime, endTime, queryMaxSeq int64, isAsc bool, appid string) ([]byte, error) {
+func (b *BASE) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64, begIdx, count, begTime, endTime, queryMaxSeq int64, isAsc bool, appid string) ([]byte, *ErrorCodeMsg) {
 	var maxSeq int64
 	var err error
+	var errcm *ErrorCodeMsg
 
 	var retTransInfo []byte
 	var queryResult QueryTransResult
@@ -1318,7 +1373,7 @@ func (b *BASE) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64
 
 	retTransInfo, err = json.Marshal(queryResult)
 	if err != nil {
-		return nil, baselogger.Errorf("queryTransInfos Marshal failed.err=%s", err)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "queryTransInfos Marshal failed.error=(%s)", err)
 	}
 
 	//begIdx从1开始， 因为保存交易时，从1开始编号
@@ -1339,7 +1394,7 @@ func (b *BASE) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64
 	var seqKey = b.getGlobalTransSeqKey(stub)
 	test, err := stateCache.GetState_Ex(stub, seqKey)
 	if err != nil {
-		return nil, baselogger.Errorf("queryTransInfos GetState failed. err=%s", err)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "queryTransInfos GetState failed. error=(%s)", err)
 	}
 	if test == nil {
 		baselogger.Info("no trans saved.")
@@ -1350,9 +1405,9 @@ func (b *BASE) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64
 	if queryMaxSeq != -1 {
 		maxSeq = queryMaxSeq
 	} else {
-		maxSeq, err = b.getTransSeq(stub, seqKey)
-		if err != nil {
-			return nil, baselogger.Errorf("queryTransInfos getTransSeq failed. err=%s", err)
+		maxSeq, errcm = b.getTransSeq(stub, seqKey)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "queryTransInfos getTransSeq failed. error=(%s)", errcm)
 		}
 	}
 
@@ -1376,7 +1431,7 @@ func (b *BASE) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64
 
 		       tmpState, err := stateCache.GetState_Ex(stub,key)
 		       if err != nil {
-		           base_logger.Error("getTransInfo GetState(idx=%d) failed.err=%s", i, err)
+		           base_logger.Error("getTransInfo GetState(idx=%d) failed.error=(%s)", i, err)
 		           //return nil, err
 		           continue
 		       }
@@ -1397,9 +1452,9 @@ func (b *BASE) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64
 				break
 			}
 
-			trans, err = b.getOnceTransInfo(stub, b.getTransInfoKey(stub, loop))
-			if err != nil {
-				baselogger.Error("getTransInfo getQueryTransInfo(idx=%d) failed.err=%s", loop, err)
+			trans, errcm = b.getOnceTransInfo(stub, b.getTransInfoKey(stub, loop))
+			if errcm != nil {
+				baselogger.Error("getTransInfo getQueryTransInfo(idx=%d) failed.error=(%s)", loop, errcm)
 				continue
 			}
 			//取匹配的transLvl
@@ -1423,9 +1478,9 @@ func (b *BASE) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64
 				break
 			}
 
-			trans, err = b.getOnceTransInfo(stub, b.getTransInfoKey(stub, loop))
-			if err != nil {
-				baselogger.Error("getTransInfo getQueryTransInfo(idx=%d) failed.err=%s", loop, err)
+			trans, errcm = b.getOnceTransInfo(stub, b.getTransInfoKey(stub, loop))
+			if errcm != nil {
+				baselogger.Error("getTransInfo getQueryTransInfo(idx=%d) failed.error=(%s)", loop, errcm)
 				continue
 			}
 			//取匹配的transLvl
@@ -1446,15 +1501,16 @@ func (b *BASE) queryTransInfos(stub shim.ChaincodeStubInterface, transLvl uint64
 
 	retTransInfo, err = json.Marshal(queryResult)
 	if err != nil {
-		return nil, baselogger.Errorf("getTransInfo Marshal failed.err=%s", err)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getTransInfo Marshal failed.error=(%s)", err)
 	}
 
 	return retTransInfo, nil
 }
 
-func (b *BASE) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName string, begIdx, count, begTime, endTime, queryMaxSeq int64, isAsc bool, appid string) ([]byte, error) {
+func (b *BASE) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName string, begIdx, count, begTime, endTime, queryMaxSeq int64, isAsc bool, appid string) ([]byte, *ErrorCodeMsg) {
 	var maxSeq int64
 	var err error
+	var errcm *ErrorCodeMsg
 
 	var retTransInfo []byte
 	var queryResult QueryTransResult
@@ -1464,7 +1520,7 @@ func (b *BASE) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName stri
 
 	retTransInfo, err = json.Marshal(queryResult)
 	if err != nil {
-		return nil, baselogger.Errorf("queryAccTransInfos Marshal failed.err=%s", err)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "queryAccTransInfos Marshal failed.error=(%s)", err)
 	}
 
 	//begIdx统一从1开始，防止调用者有的以0开始，有的以1开始
@@ -1485,7 +1541,7 @@ func (b *BASE) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName stri
 	var seqKey = b.getAccTransSeqKey(accName)
 	test, err := stateCache.GetState_Ex(stub, seqKey)
 	if err != nil {
-		return nil, baselogger.Errorf("queryAccTransInfos GetState failed. err=%s", err)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "queryAccTransInfos GetState failed. error=(%s)", err)
 	}
 	if test == nil {
 		baselogger.Info("queryAccTransInfos no trans saved.")
@@ -1496,9 +1552,9 @@ func (b *BASE) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName stri
 	if queryMaxSeq != -1 {
 		maxSeq = queryMaxSeq
 	} else {
-		maxSeq, err = b.getTransSeq(stub, seqKey)
-		if err != nil {
-			return nil, baselogger.Errorf("queryAccTransInfos getTransSeq failed. err=%s", err)
+		maxSeq, errcm = b.getTransSeq(stub, seqKey)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "queryAccTransInfos getTransSeq failed. error=(%s)", errcm)
 		}
 	}
 
@@ -1513,7 +1569,7 @@ func (b *BASE) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName stri
 	/*
 	   infoB, err := stateCache.GetState_Ex(stub,t.getOneAccTransKey(accName))
 	   if err != nil {
-	       return nil, base_logger.Errorf("queryAccTransInfos(%s) GetState failed.err=%s", accName, err)
+	       return nil, base_logger.Errorf("queryAccTransInfos(%s) GetState failed.error=(%s)", accName, err)
 	   }
 	   if infoB == nil {
 	       return retTransInfo, nil
@@ -1536,7 +1592,7 @@ func (b *BASE) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName stri
 	               base_logger.Debug("queryAccTransInfos proc %d recds, end.", loop)
 	               break
 	           }
-	           return nil, base_logger.Errorf("queryAccTransInfos ReadBytes failed. last=%s, err=%s", string(oneStringB), err)
+	           return nil, base_logger.Errorf("queryAccTransInfos ReadBytes failed. last=%s, error=(%s)", string(oneStringB), err)
 	       }
 	       loop++
 	       if begIdx > loop {
@@ -1547,7 +1603,7 @@ func (b *BASE) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName stri
 
 	       trans, err = b.getQueryTransInfo(stub, oneString)
 	       if err != nil {
-	           base_logger.Error("queryAccTransInfos(%s) getQueryTransInfo failed, err=%s.", accName, err)
+	           base_logger.Error("queryAccTransInfos(%s) getQueryTransInfo failed, error=(%s).", accName, err)
 	           continue
 	       }
 	       var qTrans QueryTransRecd
@@ -1572,13 +1628,13 @@ func (b *BASE) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName stri
 
 			globTxKeyB, err = stateCache.GetState_Ex(stub, b.getOneAccTransInfoKey(accName, loop))
 			if err != nil {
-				baselogger.Errorf("queryAccTransInfos GetState(globTxKeyB,acc=%s,idx=%d) failed.err=%s", accName, loop, err)
+				baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "queryAccTransInfos GetState(globTxKeyB,acc=%s,idx=%d) failed.error=(%s)", accName, loop, err)
 				continue
 			}
 
-			trans, err = b.getOnceTransInfo(stub, string(globTxKeyB))
-			if err != nil {
-				baselogger.Error("queryAccTransInfos getQueryTransInfo(idx=%d) failed.err=%s", loop, err)
+			trans, errcm = b.getOnceTransInfo(stub, string(globTxKeyB))
+			if errcm != nil {
+				baselogger.Error("queryAccTransInfos getQueryTransInfo(idx=%d) failed.error=(%s)", loop, errcm)
 				continue
 			}
 
@@ -1610,13 +1666,13 @@ func (b *BASE) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName stri
 
 			globTxKeyB, err = stateCache.GetState_Ex(stub, b.getOneAccTransInfoKey(accName, loop))
 			if err != nil {
-				baselogger.Errorf("queryAccTransInfos GetState(globTxKeyB,acc=%s,idx=%d) failed.err=%s", accName, loop, err)
+				baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "queryAccTransInfos GetState(globTxKeyB,acc=%s,idx=%d) failed.error=(%s)", accName, loop, err)
 				continue
 			}
 
 			trans, err := b.getOnceTransInfo(stub, string(globTxKeyB))
 			if err != nil {
-				baselogger.Error("queryAccTransInfos getQueryTransInfo(idx=%d) failed.err=%s", loop, err)
+				baselogger.Error("queryAccTransInfos getQueryTransInfo(idx=%d) failed.error=(%s)", loop, err)
 				continue
 			}
 
@@ -1642,13 +1698,13 @@ func (b *BASE) queryAccTransInfos(stub shim.ChaincodeStubInterface, accName stri
 	}
 	retTransInfo, err = json.Marshal(queryResult)
 	if err != nil {
-		return nil, baselogger.Errorf("queryAccTransInfos Marshal failed.err=%s", err)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "queryAccTransInfos Marshal failed.error=(%s)", err)
 	}
 
 	return retTransInfo, nil
 }
 
-func (b *BASE) getAllAccAmt(stub shim.ChaincodeStubInterface) ([]byte, error) {
+func (b *BASE) getAllAccAmt(stub shim.ChaincodeStubInterface) ([]byte, *ErrorCodeMsg) {
 	var qb QueryBalance
 	qb.IssueAmount = 0
 	qb.AccSumAmount = 0
@@ -1656,19 +1712,19 @@ func (b *BASE) getAllAccAmt(stub shim.ChaincodeStubInterface) ([]byte, error) {
 
 	accsB, err := stateCache.GetState_Ex(stub, ALL_ACC_INFO_KEY)
 	if err != nil {
-		return nil, baselogger.Errorf("getAllAccAmt GetState failed. err=%s", err)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getAllAccAmt GetState failed. error=(%s)", err)
 	}
 	if accsB != nil {
-		cbAccB, err := b.getCenterBankAcc(stub)
-		if err != nil {
-			return nil, baselogger.Errorf("getAllAccAmt getCenterBankAcc failed. err=%s", err)
+		cbAccB, errcm := b.getCenterBankAcc(stub)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "getAllAccAmt getCenterBankAcc failed. error=(%s)", errcm)
 		}
 		if cbAccB == nil {
 			qb.Message += "none centerBank;"
 		} else {
-			cbEnt, err := b.getAccountEntity(stub, string(cbAccB))
-			if err != nil {
-				return nil, baselogger.Errorf("getAllAccAmt getCenterBankAcc failed. err=%s", err)
+			cbEnt, errcm := b.getAccountEntity(stub, string(cbAccB))
+			if errcm != nil {
+				return nil, baselogger.ErrorECM(errcm.Code, "getAllAccAmt getCenterBankAcc failed. error=(%s)", errcm)
 			}
 			qb.IssueAmount = cbEnt.TotalAmount - cbEnt.RestAmount
 		}
@@ -1682,16 +1738,16 @@ func (b *BASE) getAllAccAmt(stub shim.ChaincodeStubInterface) ([]byte, error) {
 				if err == io.EOF {
 					break
 				} else {
-					baselogger.Error("getAllAccAmt ReadBytes failed. err=%s", err)
+					baselogger.Error("getAllAccAmt ReadBytes failed. error=(%s)", err)
 					continue
 				}
 			}
 			qb.AccCount++
 			acc = acc[:len(acc)-1] //去掉末尾的分隔符
 
-			ent, err = b.getAccountEntity(stub, string(acc))
-			if err != nil {
-				baselogger.Error("getAllAccAmt getAccountEntity(%s) failed. err=%s", string(acc), err)
+			ent, errcm = b.getAccountEntity(stub, string(acc))
+			if errcm != nil {
+				baselogger.Error("getAllAccAmt getAccountEntity(%s) failed. error=(%s)", string(acc), errcm)
 				qb.Message += fmt.Sprintf("get account(%s) info failed;", string(acc))
 				continue
 			}
@@ -1701,13 +1757,13 @@ func (b *BASE) getAllAccAmt(stub shim.ChaincodeStubInterface) ([]byte, error) {
 
 	retValue, err := json.Marshal(qb)
 	if err != nil {
-		return nil, baselogger.Errorf("getAllAccAmt Marshal failed. err=%s", err)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getAllAccAmt Marshal failed. error=(%s)", err)
 	}
 
 	return retValue, nil
 }
 
-func (b *BASE) getSysStatisticInfo(stub shim.ChaincodeStubInterface, circulateAmtAccName string) ([]byte, error) {
+func (b *BASE) getSysStatisticInfo(stub shim.ChaincodeStubInterface, circulateAmtAccName string) ([]byte, *ErrorCodeMsg) {
 
 	type SysStatisticInfo struct {
 		AccountNum       int64 `json:"accountcount"`  //账户数量
@@ -1722,9 +1778,9 @@ func (b *BASE) getSysStatisticInfo(stub shim.ChaincodeStubInterface, circulateAm
 	qwi.IssueAmount = 0
 	qwi.CirculateAmount = 0
 
-	issueEntity, err := b.getAccountEntity(stub, COIN_ISSUE_ACC_ENTID)
-	if err != nil {
-		return nil, baselogger.Errorf("getInfo4Web: getIssueEntity failed. err=%s", err)
+	issueEntity, errcm := b.getAccountEntity(stub, COIN_ISSUE_ACC_ENTID)
+	if errcm != nil {
+		return nil, baselogger.ErrorECM(errcm.Code, "getInfo4Web: getIssueEntity failed. error=(%s)", errcm)
 	}
 	qwi.IssueTotalAmount = issueEntity.TotalAmount
 	qwi.IssueAmount = issueEntity.TotalAmount - issueEntity.RestAmount
@@ -1732,32 +1788,32 @@ func (b *BASE) getSysStatisticInfo(stub shim.ChaincodeStubInterface, circulateAm
 	var asi AccountStatisticInfo
 	asiB, err := stateCache.GetState_Ex(stub, ACC_STATIC_INFO_KEY)
 	if err != nil {
-		return nil, baselogger.Errorf("getInfo4Web: GetState failed. err=%s", err)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getInfo4Web: GetState failed. error=(%s)", err)
 	}
 	if asiB != nil {
 		err = json.Unmarshal(asiB, &asi)
 		if err != nil {
-			return nil, baselogger.Errorf("getInfo4Web: Unmarshal failed. err=%s", err)
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getInfo4Web: Unmarshal failed. error=(%s)", err)
 		}
 		qwi.AccountNum = asi.AccountCount
 	}
 
 	//如果传入了计算流通货币量的账户，用此账户；否则用央行账户
 	if len(circulateAmtAccName) > 0 {
-		ent, err := b.getAccountEntity(stub, circulateAmtAccName)
-		if err != nil {
-			return nil, baselogger.Errorf("getInfo4Web: getAccountEntity failed. err=%s", err)
+		ent, errcm := b.getAccountEntity(stub, circulateAmtAccName)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "getInfo4Web: getAccountEntity failed. error=(%s)", errcm)
 		}
 		qwi.CirculateAmount = ent.TotalAmount - ent.RestAmount
 	} else {
-		cbAccB, err := b.getCenterBankAcc(stub)
-		if err != nil {
-			return nil, baselogger.Errorf("getInfo4Web: getCenterBankAcc failed. err=%s", err)
+		cbAccB, errcm := b.getCenterBankAcc(stub)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "getInfo4Web: getCenterBankAcc failed. error=(%s)", errcm)
 		}
 		if cbAccB != nil {
-			cbEnt, err := b.getAccountEntity(stub, string(cbAccB))
-			if err != nil {
-				return nil, baselogger.Errorf("getInfo4Web getAccountEntity failed. err=%s", err)
+			cbEnt, errcm := b.getAccountEntity(stub, string(cbAccB))
+			if errcm != nil {
+				return nil, baselogger.ErrorECM(errcm.Code, "getInfo4Web getAccountEntity failed. error=(%s)", errcm)
 			}
 			qwi.CirculateAmount = cbEnt.TotalAmount - cbEnt.RestAmount
 		}
@@ -1765,7 +1821,7 @@ func (b *BASE) getSysStatisticInfo(stub shim.ChaincodeStubInterface, circulateAm
 
 	retValue, err := json.Marshal(qwi)
 	if err != nil {
-		return nil, baselogger.Errorf("getInfo4Web Marshal failed. err=%s", err)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getInfo4Web Marshal failed. error=(%s)", err)
 	}
 
 	return retValue, nil
@@ -1779,7 +1835,7 @@ func (b *BASE) needCheckSign(stub shim.ChaincodeStubInterface) bool {
 
 		response := stub.InvokeChaincode(CONTROL_CC_NAME, args, "")
 		if response.Status != shim.OK {
-			baselogger.Errorf("needCheckSign: InvokeChaincode failed, response=%+v.", response)
+			baselogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR,"needCheckSign: InvokeChaincode failed, response=%+v.", response)
 			return true
 		}
 
@@ -1795,7 +1851,7 @@ func (b *BASE) needCheckSign(stub shim.ChaincodeStubInterface) bool {
 
 var secp256k1 = NewSecp256k1()
 
-func (b *BASE) verifySign(stub shim.ChaincodeStubInterface, ownerPubKeyHash string, sign, signMsg []byte) error {
+func (b *BASE) verifySign(stub shim.ChaincodeStubInterface, ownerPubKeyHash string, sign, signMsg []byte) *ErrorCodeMsg {
 
 	//没有保存pubkey，不验证
 	if len(ownerPubKeyHash) == 0 {
@@ -1812,31 +1868,31 @@ func (b *BASE) verifySign(stub shim.ChaincodeStubInterface, ownerPubKeyHash stri
 	baselogger.Debug("verifySign: signMsg = %v", signMsg)
 
 	if code := secp256k1.VerifySignatureValidity(sign); code != 1 {
-		return baselogger.Errorf("verifySign: sign invalid, code=%v.", code)
+		return baselogger.ErrorECM(ERRCODE_COMMON_IDENTITY_VERIFY_FAILED, "verifySign: sign invalid, code=%v.", code)
 	}
 
 	pubKey, err := secp256k1.RecoverPubkey(signMsg, sign)
 	if err != nil {
-		return baselogger.Errorf("verifySign: RecoverPubkey failed,err=%s", err)
+		return baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "verifySign: RecoverPubkey failed,error=(%s)", err)
 	}
 	baselogger.Debug("verifySign: pubKey = %v", pubKey)
 
 	hash, err := RipemdHash160(pubKey)
 	if err != nil {
-		return baselogger.Errorf("verifySign: Hash160 error, err=%s.", err)
+		return baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "verifySign: Hash160 error, error=(%s).", err)
 	}
 	var userPubKeyHash = base64.StdEncoding.EncodeToString(hash)
 	baselogger.Debug("verifySign: userPubKeyHash = %s", userPubKeyHash)
 	baselogger.Debug("verifySign: OwnerPubKeyHash = %s", ownerPubKeyHash)
 
 	if userPubKeyHash != ownerPubKeyHash {
-		return baselogger.Errorf("verifySign: sign invalid.")
+		return baselogger.ErrorECM(ERRCODE_COMMON_IDENTITY_VERIFY_FAILED, "verifySign: sign invalid.")
 	}
 
 	return nil
 }
 
-func (b *BASE) verifyIdentity(stub shim.ChaincodeStubInterface, userName string, sign, signMsg []byte, accountEnt *AccountEntity, ownerPubKeyHash, ownerIdentityHash string) error {
+func (b *BASE) verifyIdentity(stub shim.ChaincodeStubInterface, userName string, sign, signMsg []byte, accountEnt *AccountEntity, ownerPubKeyHash, ownerIdentityHash string) *ErrorCodeMsg {
 
 	var comparedPubKeyHash = ownerPubKeyHash
 	var comparedIndentityHash = ownerIdentityHash
@@ -1851,11 +1907,11 @@ func (b *BASE) verifyIdentity(stub shim.ChaincodeStubInterface, userName string,
 	if Ctrl_needCheckIndentity {
 		if accountEnt != nil && accountEnt.Owner != userName {
 			if _, ok := accountEnt.AuthUserHashMap[userName]; !ok {
-				return baselogger.Errorf("verifyIdentity: username not match, user=%s", userName)
+				return baselogger.ErrorECM(ERRCODE_COMMON_IDENTITY_VERIFY_FAILED, "verifyIdentity: username not match, user=%s", userName)
 			}
 			var hashs = accountEnt.AuthUserHashMap[userName]
 			if len(hashs) < 2 {
-				return baselogger.Errorf("verifyIdentity: hash  illegal(%d).", len(hashs))
+				return baselogger.ErrorECM(ERRCODE_COMMON_IDENTITY_VERIFY_FAILED, "verifyIdentity: hash  illegal(%d).", len(hashs))
 			}
 			//第一个元素为身份hash，第二个为pubkey的hash
 			comparedIndentityHash = hashs[0]
@@ -1864,25 +1920,25 @@ func (b *BASE) verifyIdentity(stub shim.ChaincodeStubInterface, userName string,
 
 		creatorByte, err := stub.GetCreator()
 		if err != nil {
-			return baselogger.Errorf("verifyIdentity: GetCreator error, user=%s err=%s.", userName, err)
+			return baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "verifyIdentity: GetCreator error, user=%s error=(%s).", userName, err)
 		}
 		baselogger.Debug("verifyIdentity: creatorByte = %s", string(creatorByte))
 
 		certStart := bytes.IndexAny(creatorByte, "-----BEGIN")
 		if certStart == -1 {
-			return baselogger.Errorf("verifyIdentity: No certificate found, user=%s.", userName)
+			return baselogger.ErrorECM(ERRCODE_COMMON_IDENTITY_VERIFY_FAILED, "verifyIdentity: No certificate found, user=%s.", userName)
 		}
 		certText := creatorByte[certStart:]
 
 		block, _ := pem.Decode(certText)
 		if block == nil {
-			return baselogger.Errorf("verifyIdentity: Decode failed, user=%s.", userName)
+			return baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "verifyIdentity: Decode failed, user=%s.", userName)
 		}
 		baselogger.Debug("verifyIdentity: block = %+v", *block)
 
 		cert, err := x509.ParseCertificate(block.Bytes)
 		if err != nil {
-			return baselogger.Errorf("verifyIdentity: ParseCertificate failed, user=%s, err=%s.", userName, err)
+			return baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "verifyIdentity: ParseCertificate failed, user=%s, error=(%s).", userName, err)
 		}
 		baselogger.Debug("verifyIdentity: cert = %+v", *cert)
 
@@ -1891,13 +1947,13 @@ func (b *BASE) verifyIdentity(stub shim.ChaincodeStubInterface, userName string,
 
 		//传入的用户名是否是登录的用户
 		if userName != nameInCert {
-			return baselogger.Errorf("verifyIdentity: username not match the cert(%s.%s).", userName, nameInCert)
+			return baselogger.ErrorECM(ERRCODE_COMMON_IDENTITY_VERIFY_FAILED, "verifyIdentity: username not match the cert(%s.%s).", userName, nameInCert)
 		}
 
 		var userId = string(certText)
 		hash, err := RipemdHash160(certText)
 		if err != nil {
-			return baselogger.Errorf("verifyIdentity: Hash160 error, user=%s err=%s.", userName, err)
+			return baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "verifyIdentity: Hash160 error, user=%s error=(%s).", userName, err)
 		}
 		var userIdHash = base64.StdEncoding.EncodeToString(hash)
 
@@ -1906,7 +1962,7 @@ func (b *BASE) verifyIdentity(stub shim.ChaincodeStubInterface, userName string,
 		baselogger.Debug("verifyIdentity: entIdHash = %s", comparedIndentityHash)
 
 		if userIdHash != comparedIndentityHash {
-			return baselogger.Errorf("verifyIdentity: indentity invalid.")
+			return baselogger.ErrorECM(ERRCODE_COMMON_IDENTITY_VERIFY_FAILED, "verifyIdentity: indentity invalid.")
 		}
 	}
 
@@ -1921,34 +1977,34 @@ func (b *BASE) getAccountLockInfoKey(accName string) string {
 	return ACC_AMTLOCK_PREFIX + accName
 }
 
-func (b *BASE) getAccountEntity(stub shim.ChaincodeStubInterface, entName string) (*AccountEntity, error) {
+func (b *BASE) getAccountEntity(stub shim.ChaincodeStubInterface, entName string) (*AccountEntity, *ErrorCodeMsg) {
 	var entB []byte
 	var cb AccountEntity
 	var err error
 
 	entB, err = stateCache.GetState_Ex(stub, b.getAccountEntityKey(entName))
 	if err != nil {
-		return nil, err
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getAccountEntity: GetState_Ex failed, error=(%s).", err)
 	}
 
 	if entB == nil {
-		return nil, ErrNilEntity
+		return nil, ErrcmNilEntity
 	}
 
 	if err = json.Unmarshal(entB, &cb); err != nil {
-		return nil, baselogger.Errorf("getAccountEntity: Unmarshal failed, err=%s.", err)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getAccountEntity: Unmarshal failed, error=(%s).", err)
 	}
 
 	return &cb, nil
 }
 
-func (b *BASE) getAccountLockedAmount(stub shim.ChaincodeStubInterface, accName string, currTime int64) (int64, []CoinLockCfg, error) {
+func (b *BASE) getAccountLockedAmount(stub shim.ChaincodeStubInterface, accName string, currTime int64) (int64, []CoinLockCfg, *ErrorCodeMsg) {
 	var acli AccountCoinLockInfo
 
 	var lockinfoKey = b.getAccountLockInfoKey(accName)
 	acliB, err := stateCache.GetState_Ex(stub, lockinfoKey)
 	if err != nil {
-		return math.MaxInt64, nil, baselogger.Errorf("getAccountLockedAmount: GetState  failed. err=%s", err)
+		return math.MaxInt64, nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getAccountLockedAmount: GetState  failed. error=(%s)", err)
 	}
 
 	var lockAmt int64 = 0
@@ -1958,7 +2014,7 @@ func (b *BASE) getAccountLockedAmount(stub shim.ChaincodeStubInterface, accName 
 
 		err = json.Unmarshal(acliB, &acli)
 		if err != nil {
-			return math.MaxInt64, nil, baselogger.Errorf("getAccountLockedAmount: Unmarshal  failed. err=%s", err)
+			return math.MaxInt64, nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getAccountLockedAmount: Unmarshal  failed. error=(%s)", err)
 		}
 
 		for _, lockCfg := range acli.LockList {
@@ -1974,13 +2030,13 @@ func (b *BASE) getAccountLockedAmount(stub shim.ChaincodeStubInterface, accName 
 
 }
 
-func (b *BASE) isAccEntityExists(stub shim.ChaincodeStubInterface, entName string) (bool, error) {
+func (b *BASE) isAccEntityExists(stub shim.ChaincodeStubInterface, entName string) (bool, *ErrorCodeMsg) {
 	var entB []byte
 	var err error
 
 	entB, err = stateCache.GetState_Ex(stub, b.getAccountEntityKey(entName))
 	if err != nil {
-		return false, err
+		return false, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "marshal cb failed. error=(%s)", err)
 	}
 
 	if entB == nil {
@@ -1991,78 +2047,78 @@ func (b *BASE) isAccEntityExists(stub shim.ChaincodeStubInterface, entName strin
 }
 
 //央行数据写入
-func (b *BASE) setAccountEntity(stub shim.ChaincodeStubInterface, cb *AccountEntity) error {
+func (b *BASE) setAccountEntity(stub shim.ChaincodeStubInterface, cb *AccountEntity) *ErrorCodeMsg {
 
 	jsons, err := json.Marshal(cb)
 
 	if err != nil {
-		return baselogger.Errorf("marshal cb failed. err=%s", err)
+		return baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "marshal cb failed. error=(%s)", err)
 	}
 
 	err = stateCache.PutState_Ex(stub, b.getAccountEntityKey(cb.EntID), jsons)
 
 	if err != nil {
-		return baselogger.Errorf("PutState cb failed. err=%s", err)
+		return baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "PutState cb failed. error=(%s)", err)
 	}
 	return nil
 }
 
 //发行
-func (b *BASE) issueCoin(stub shim.ChaincodeStubInterface, cbID string, issueAmount, issueTime int64) ([]byte, error) {
+func (b *BASE) issueCoin(stub shim.ChaincodeStubInterface, cbID string, issueAmount, issueTime int64) ([]byte, *ErrorCodeMsg) {
 	baselogger.Debug("Enter issueCoin")
 
-	var err error
+	var errcm *ErrorCodeMsg
 
 	if issueAmount < 0 {
-		return nil, baselogger.Errorf("issueCoin issueAmount < 0.")
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "issueCoin issueAmount < 0.")
 	}
 	if issueAmount == 0 {
 		return nil, nil
 	}
 
 	var cb *AccountEntity
-	cb, err = b.getAccountEntity(stub, cbID)
-	if err != nil {
-		return nil, baselogger.Errorf("getCenterBank failed. err=%s", err)
+	cb, errcm = b.getAccountEntity(stub, cbID)
+	if errcm != nil {
+		return nil, baselogger.ErrorECM(errcm.Code, "getCenterBank failed. error=(%s)", errcm)
 	}
 
-	issueEntity, err := b.getAccountEntity(stub, COIN_ISSUE_ACC_ENTID)
-	if err != nil {
-		return nil, baselogger.Errorf("issue: getIssueEntity failed. err=%s", err)
+	issueEntity, errcm := b.getAccountEntity(stub, COIN_ISSUE_ACC_ENTID)
+	if errcm != nil {
+		return nil, baselogger.ErrorECM(errcm.Code, "issue: getIssueEntity failed. error=(%s)", errcm)
 	}
 
 	baselogger.Debug("issue before:cb=%+v, issue=%+v", cb, issueEntity)
 
 	if issueAmount > issueEntity.RestAmount {
-		return nil, baselogger.Errorf("issue amount not enougth(%v,%v), reject.", issueEntity.RestAmount, issueAmount)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "issue amount not enougth(%v,%v), reject.", issueEntity.RestAmount, issueAmount)
 	}
 
 	issueEntity.RestAmount -= issueAmount
 	cb.TotalAmount += issueAmount
 	cb.RestAmount += issueAmount
 
-	err = b.setAccountEntity(stub, cb)
-	if err != nil {
-		return nil, baselogger.Errorf("issue: setCenterBank failed. err=%s", err)
+	errcm = b.setAccountEntity(stub, cb)
+	if errcm != nil {
+		return nil, baselogger.ErrorECM(errcm.Code, "issue: setCenterBank failed. error=(%s)", errcm)
 	}
 
-	err = b.setAccountEntity(stub, issueEntity)
-	if err != nil {
-		return nil, baselogger.Errorf("issue: setIssueEntity failed. err=%s", err)
+	errcm = b.setAccountEntity(stub, issueEntity)
+	if errcm != nil {
+		return nil, baselogger.ErrorECM(errcm.Code, "issue: setIssueEntity failed. error=(%s)", errcm)
 	}
 
 	baselogger.Debug("issue after:cb=%+v, issue=%+v", cb, issueEntity)
 
 	//这里只记录一下央行的收入，不记录支出
-	err = b.recordTranse(stub, cb, issueEntity, TRANS_INCOME, "issue", "center bank issue coin.", issueAmount, issueTime, "")
-	if err != nil {
-		return nil, baselogger.Errorf("issue: recordTranse failed. err=%s", err)
+	errcm = b.recordTranse(stub, cb, issueEntity, TRANS_INCOME, "issue", "center bank issue coin.", issueAmount, issueTime, "")
+	if errcm != nil {
+		return nil, baselogger.ErrorECM(errcm.Code, "issue: recordTranse failed. error=(%s)", errcm)
 	}
 
 	return nil, nil
 }
 
-func (b *BASE) setIssueAmountTotal(stub shim.ChaincodeStubInterface, issueAmt, initTime int64) error {
+func (b *BASE) setIssueAmountTotal(stub shim.ChaincodeStubInterface, issueAmt, initTime int64) *ErrorCodeMsg {
 
 	//虚拟一个超级账户，设置货币发行总额，给央行发行货币。
 	var issueEntity AccountEntity
@@ -2073,22 +2129,22 @@ func (b *BASE) setIssueAmountTotal(stub shim.ChaincodeStubInterface, issueAmt, i
 	issueEntity.Time = initTime
 	issueEntity.Owner = "system"
 
-	err := b.setAccountEntity(stub, &issueEntity)
-	if err != nil {
-		return baselogger.Errorf("setIssueCoinTotal: setIssueEntity failed. err=%s", err)
+	errcm := b.setAccountEntity(stub, &issueEntity)
+	if errcm != nil {
+		return baselogger.ErrorECM(errcm.Code, "setIssueCoinTotal: setIssueEntity failed. error=(%s)", errcm)
 	}
 
 	return nil
 }
 
 //转账
-func (b *BASE) transferCoin(stub shim.ChaincodeStubInterface, from, to, transType, description string, amount, transeTime int64, sameEntSaveTrans bool, appid string) ([]byte, error) {
+func (b *BASE) transferCoin(stub shim.ChaincodeStubInterface, from, to, transType, description string, amount, transeTime int64, sameEntSaveTrans bool, appid string) ([]byte, *ErrorCodeMsg) {
 	baselogger.Debug("Enter transferCoin")
 
-	var err error
+	var errcm *ErrorCodeMsg
 
 	if amount < 0 {
-		return nil, baselogger.Errorf("transferCoin failed. invalid amount(%d)", amount)
+		return nil, baselogger.ErrorECM(ERRCODE_TRANS_AMOUNT_INVALID, "transferCoin failed. invalid amount(%d)", amount)
 	}
 
 	//有时前端后台调用这个接口时，可能会传0
@@ -2103,35 +2159,53 @@ func (b *BASE) transferCoin(stub shim.ChaincodeStubInterface, from, to, transTyp
 	}
 
 	var fromEntity, toEntity *AccountEntity
-	fromEntity, err = b.getAccountEntity(stub, from)
-	if err != nil {
-		return nil, baselogger.Errorf("transferCoin: getAccountEntity(id=%s) failed. err=%s", from, err)
+	fromEntity, errcm = b.getAccountEntity(stub, from)
+	if errcm != nil {
+		var errCode int32
+		if errcm == ErrcmNilEntity {
+			errCode = ERRCODE_TRANS_PAY_ACCOUNT_NOT_EXIST
+		} else {
+			errCode = errcm.Code
+		}
+		return nil, baselogger.ErrorECM(errCode, "transferCoin: getAccountEntity(id=%s) failed. error=(%s)", from, errcm)
 	}
-	toEntity, err = b.getAccountEntity(stub, to)
-	if err != nil {
-		return nil, baselogger.Errorf("transferCoin: getAccountEntity(id=%s) failed. err=%s", to, err)
+	toEntity, errcm = b.getAccountEntity(stub, to)
+	if errcm != nil {
+		var errCode int32
+		if errcm == ErrcmNilEntity {
+			errCode = ERRCODE_TRANS_PAYEE_ACCOUNT_NOT_EXIST
+		} else {
+			errCode = errcm.Code
+		}
+		return nil, baselogger.ErrorECM(errCode, "transferCoin: getAccountEntity(id=%s) failed. error=(%s)", to, errcm)
 	}
 
 	//判断是否有锁定金额
-	lockAmt, _, err := b.getAccountLockedAmount(stub, from, transeTime)
-	if err != nil {
-		return nil, baselogger.Errorf("transferCoin: getAccountLockedAmount(id=%s) failed. err=%s", from, err)
+	lockAmt, _, errcm := b.getAccountLockedAmount(stub, from, transeTime)
+	if errcm != nil {
+		return nil, baselogger.ErrorECM(errcm.Code, "transferCoin: getAccountLockedAmount(id=%s) failed. error=(%s)", from, errcm)
 	}
 
 	if fromEntity.RestAmount-lockAmt < amount {
-		return nil, baselogger.Errorf("transferCoin: fromEntity(id=%s) restAmount not enough(%d,%d,%d).", from, fromEntity.RestAmount, lockAmt, amount)
+		var errCode int32
+		if lockAmt > 0 {
+			errCode = ERRCODE_TRANS_BALANCE_NOT_ENOUGH_BYLOCK
+		} else {
+			errCode = ERRCODE_TRANS_BALANCE_NOT_ENOUGH
+		}
+		return nil, baselogger.ErrorECM(errCode, "transferCoin: fromEntity(id=%s) restAmount not enough(%d,%d,%d).", from, fromEntity.RestAmount, lockAmt, amount)
 	}
 
 	//如果账户相同，并且账户相同时需要记录交易，记录并返回
 	if from == to && sameEntSaveTrans {
-		err = b.recordTranse(stub, fromEntity, toEntity, TRANS_PAY, transType, description, amount, transeTime, appid)
-		if err != nil {
-			return nil, baselogger.Errorf("transferCoin: setAccountEntity recordTranse fromEntity(id=%s) failed. err=%s", from, err)
+		errcm = b.recordTranse(stub, fromEntity, toEntity, TRANS_PAY, transType, description, amount, transeTime, appid)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "transferCoin: setAccountEntity recordTranse fromEntity(id=%s) failed. error=(%s)", from, errcm)
 		}
 
-		err = b.recordTranse(stub, toEntity, fromEntity, TRANS_INCOME, transType, description, amount, transeTime, appid)
-		if err != nil {
-			return nil, baselogger.Errorf("transferCoin: setAccountEntity recordTranse fromEntity(id=%s) failed. err=%s", from, err)
+		errcm = b.recordTranse(stub, toEntity, fromEntity, TRANS_INCOME, transType, description, amount, transeTime, appid)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "transferCoin: setAccountEntity recordTranse fromEntity(id=%s) failed. error=(%s)", from, errcm)
 		}
 		return nil, nil
 	}
@@ -2149,28 +2223,28 @@ func (b *BASE) transferCoin(stub shim.ChaincodeStubInterface, from, to, transTyp
 	baselogger.Debug("transferCoin: fromEntity after= %+v", fromEntity)
 	baselogger.Debug("transferCoin: toEntity after= %+v", toEntity)
 
-	err = b.setAccountEntity(stub, fromEntity)
-	if err != nil {
-		return nil, baselogger.Errorf("transferCoin: setAccountEntity of fromEntity(id=%s) failed. err=%s", from, err)
+	errcm = b.setAccountEntity(stub, fromEntity)
+	if errcm != nil {
+		return nil, baselogger.ErrorECM(errcm.Code, "transferCoin: setAccountEntity of fromEntity(id=%s) failed. error=(%s)", from, errcm)
 	}
 
-	err = b.recordTranse(stub, fromEntity, toEntity, TRANS_PAY, transType, description, amount, transeTime, appid)
-	if err != nil {
-		return nil, baselogger.Errorf("transferCoin: setAccountEntity recordTranse fromEntity(id=%s) failed. err=%s", from, err)
+	errcm = b.recordTranse(stub, fromEntity, toEntity, TRANS_PAY, transType, description, amount, transeTime, appid)
+	if errcm != nil {
+		return nil, baselogger.ErrorECM(errcm.Code, "transferCoin: setAccountEntity recordTranse fromEntity(id=%s) failed. error=(%s)", from, errcm)
 	}
 
-	err = b.setAccountEntity(stub, toEntity)
-	if err != nil {
-		return nil, baselogger.Errorf("transferCoin: setAccountEntity of toEntity(id=%s) failed. err=%s", to, err)
+	errcm = b.setAccountEntity(stub, toEntity)
+	if errcm != nil {
+		return nil, baselogger.ErrorECM(errcm.Code, "transferCoin: setAccountEntity of toEntity(id=%s) failed. error=(%s)", to, errcm)
 	}
 
 	//两个账户的收入支出都记录交易
-	err = b.recordTranse(stub, toEntity, fromEntity, TRANS_INCOME, transType, description, amount, transeTime, appid)
-	if err != nil {
-		return nil, baselogger.Errorf("transferCoin: setAccountEntity recordTranse fromEntity(id=%s) failed. err=%s", from, err)
+	errcm = b.recordTranse(stub, toEntity, fromEntity, TRANS_INCOME, transType, description, amount, transeTime, appid)
+	if errcm != nil {
+		return nil, baselogger.ErrorECM(errcm.Code, "transferCoin: setAccountEntity recordTranse fromEntity(id=%s) failed. error=(%s)", from, errcm)
 	}
 
-	return nil, err
+	return nil, errcm
 }
 
 const (
@@ -2179,7 +2253,7 @@ const (
 )
 
 //记录交易。目前交易分为两种：一种是和央行打交道的，包括央行发行货币、央行给项目或企业转帐，此类交易普通用户不能查询；另一种是项目、企业、个人间互相转账，此类交易普通用户能查询
-func (b *BASE) recordTranse(stub shim.ChaincodeStubInterface, fromEnt, toEnt *AccountEntity, incomePayFlag int, transType, description string, amount, times int64, appid string) error {
+func (b *BASE) recordTranse(stub shim.ChaincodeStubInterface, fromEnt, toEnt *AccountEntity, incomePayFlag int, transType, description string, amount, times int64, appid string) *ErrorCodeMsg {
 	var transInfo Transaction
 	//var now = time.Now()
 
@@ -2197,9 +2271,9 @@ func (b *BASE) recordTranse(stub shim.ChaincodeStubInterface, fromEnt, toEnt *Ac
 	transInfo.Description = description
 
 	var transLevel uint64 = TRANS_LVL_COMM
-	accCB, err := b.getCenterBankAcc(stub)
-	if err != nil {
-		return baselogger.Errorf("recordTranse call getCenterBankAcc failed. err=%s", err)
+	accCB, errcm := b.getCenterBankAcc(stub)
+	if errcm != nil {
+		return baselogger.ErrorECM(errcm.Code, "recordTranse call getCenterBankAcc failed. error=(%s)", errcm)
 	}
 	if (accCB != nil) && (string(accCB) == transInfo.FromID || string(accCB) == transInfo.ToID) {
 		transLevel = TRANS_LVL_CB
@@ -2207,25 +2281,25 @@ func (b *BASE) recordTranse(stub shim.ChaincodeStubInterface, fromEnt, toEnt *Ac
 
 	transInfo.TransLvl = transLevel
 
-	err = b.setTransInfo(stub, &transInfo)
-	if err != nil {
-		return baselogger.Errorf("recordTranse call setTransInfo failed. err=%s", err)
+	errcm = b.setTransInfo(stub, &transInfo)
+	if errcm != nil {
+		return baselogger.ErrorECM(errcm.Code, "recordTranse call setTransInfo failed. error=(%s)", errcm)
 	}
 
 	return nil
 }
 
-func (b *BASE) checkAccountName(accName string) error {
+func (b *BASE) checkAccountName(accName string) *ErrorCodeMsg {
 	if strings.ContainsAny(accName, ACC_INVALID_CHAR_SET) {
-		return baselogger.Errorf("accName '%s' can not contains any of '%s'.", accName, ACC_INVALID_CHAR_SET)
+		return baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "accName '%s' can not contains any of '%s'.", accName, ACC_INVALID_CHAR_SET)
 	}
 	return nil
 }
 
-func (b *BASE) saveAccountName(stub shim.ChaincodeStubInterface, accName string) error {
+func (b *BASE) saveAccountName(stub shim.ChaincodeStubInterface, accName string) *ErrorCodeMsg {
 	accB, err := stateCache.GetState_Ex(stub, ALL_ACC_INFO_KEY)
 	if err != nil {
-		return baselogger.Errorf("saveAccountName GetState failed.err=%s", err)
+		return baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "saveAccountName GetState failed.error=(%s)", err)
 	}
 
 	var accs []byte
@@ -2238,7 +2312,7 @@ func (b *BASE) saveAccountName(stub shim.ChaincodeStubInterface, accName string)
 
 	err = stateCache.PutState_Ex(stub, ALL_ACC_INFO_KEY, accs)
 	if err != nil {
-		return baselogger.Errorf("saveAccountName PutState(accs) failed.err=%s", err)
+		return baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "saveAccountName PutState(accs) failed.error=(%s)", err)
 	}
 
 	var asi AccountStatisticInfo
@@ -2248,69 +2322,65 @@ func (b *BASE) saveAccountName(stub shim.ChaincodeStubInterface, accName string)
 	} else {
 		err = json.Unmarshal(asiB, &asi)
 		if err != nil {
-			return baselogger.Errorf("saveAccountName Unmarshal failed.err=%s", err)
+			return baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "saveAccountName Unmarshal failed.error=(%s)", err)
 		}
 		asi.AccountCount++
 	}
 
 	asiB, err = json.Marshal(asi)
 	if err != nil {
-		return baselogger.Errorf("saveAccountName Marshal failed.err=%s", err)
+		return baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "saveAccountName Marshal failed.error=(%s)", err)
 	}
 
 	err = stateCache.PutState_Ex(stub, ACC_STATIC_INFO_KEY, asiB)
 	if err != nil {
-		return baselogger.Errorf("saveAccountName PutState(asiB) failed.err=%s", err)
+		return baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "saveAccountName PutState(asiB) failed.error=(%s)", err)
 	}
 
 	return nil
 }
 
-func (b *BASE) newAccount(stub shim.ChaincodeStubInterface, accName string, accType int, userName, userIdHash, userPubKeyHash string, times int64, isCBAcc bool) ([]byte, error) {
+func (b *BASE) newAccount(stub shim.ChaincodeStubInterface, accName string, accType int, userName, userIdHash, userPubKeyHash string, times int64, isCBAcc bool) ([]byte, *ErrorCodeMsg) {
 	baselogger.Debug("Enter openAccount")
 
-	var err error
+	var errcm *ErrorCodeMsg
 	var accExist bool
 
-	if err = b.checkAccountName(accName); err != nil {
-		return nil, err
+	if errcm = b.checkAccountName(accName); errcm != nil {
+		return nil, errcm
 	}
 
-	accExist, err = b.isAccEntityExists(stub, accName)
-	if err != nil {
-		return nil, baselogger.Errorf("isEntityExists (id=%s) failed. err=%s", accName, err)
+	accExist, errcm = b.isAccEntityExists(stub, accName)
+	if errcm != nil {
+		return nil, baselogger.ErrorECM(errcm.Code, "isEntityExists (id=%s) failed. error=(%s)", accName, errcm)
 	}
 
 	if accExist {
 		/*
 			//兼容kd老版本，没有userIdHash和userPubKeyHash的情况，如果这两个字段为空，只写这两个字段，后续可以删除
-			accEnt, err := b.getAccountEntity(stub, accName)
-			if err != nil {
-				return nil, baselogger.Errorf("getAccountEntity (id=%s) failed. err=%s", accName, err)
+			accEnt, errcm := b.getAccountEntity(stub, accName)
+			if errcm != nil {
+				return nil, baselogger.ErrorECM(errcm.Code,"getAccountEntity (id=%s) failed. error=(%s)", accName, errcm)
 			}
 			if (len(accEnt.OwnerIdentityHash) == 0 && len(userIdHash) > 0) ||
 				(len(accEnt.OwnerPubKeyHash) == 0 && len(userPubKeyHash) > 0) {
 				accEnt.OwnerIdentityHash = userIdHash
 				accEnt.OwnerPubKeyHash = userPubKeyHash
 
-				err = b.setAccountEntity(stub, accEnt)
-				if err != nil {
-					return nil, baselogger.Errorf("setAccountEntity (id=%s) failed. err=%s", accName, err)
+				errcm = b.setAccountEntity(stub, accEnt)
+				if errcm != nil {
+					return nil, baselogger.ErrorECM(errcm.Code,"setAccountEntity (id=%s) failed. error=(%s)", accName, errcm)
 				}
 				return nil, nil
 			}
 			//兼容kd老版本，没有userIdHash和userPubKeyHash的情况，如果这两个字段为空，只写这两个字段，后续可以删除
 		*/
 
-		return nil, baselogger.Errorf("account (id=%s) failed, already exists.", accName)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "account (id=%s) failed, already exists.", accName)
 	}
 
 	var ent AccountEntity
 	//var now = time.Now()
-
-	if INVALID_PUBKEY_HASH_VALUE == userPubKeyHash {
-		return nil, baselogger.Errorf("openAccount userPubKeyHash (id=%s) invalid.", accName)
-	}
 
 	ent.EntID = accName
 	ent.EntType = accType
@@ -2322,16 +2392,16 @@ func (b *BASE) newAccount(stub shim.ChaincodeStubInterface, accName string, accT
 	ent.OwnerIdentityHash = userIdHash
 	ent.OwnerPubKeyHash = userPubKeyHash
 
-	err = b.setAccountEntity(stub, &ent)
-	if err != nil {
-		return nil, baselogger.Errorf("openAccount setAccountEntity (id=%s) failed. err=%s", accName, err)
+	errcm = b.setAccountEntity(stub, &ent)
+	if errcm != nil {
+		return nil, baselogger.ErrorECM(errcm.Code, "openAccount setAccountEntity (id=%s) failed. error=(%s)", accName, errcm)
 	}
 
 	baselogger.Debug("openAccount success: %+v", ent)
 
-	puserEnt, err := b.getUserEntity(stub, userName)
-	if err != nil && err != ErrNilEntity {
-		return nil, baselogger.Errorf("openAccount getUserEntity (id=%s) failed. err=%s", userName, err)
+	puserEnt, errcm := b.getUserEntity(stub, userName)
+	if errcm != nil && errcm != ErrcmNilEntity {
+		return nil, baselogger.ErrorECM(errcm.Code, "openAccount getUserEntity (id=%s) failed. error=(%s)", userName, errcm)
 	}
 
 	var userEnt UserEntity
@@ -2342,18 +2412,18 @@ func (b *BASE) newAccount(stub shim.ChaincodeStubInterface, accName string, accT
 	}
 	userEnt.AccList = append(userEnt.AccList, accName)
 
-	err = b.setUserEntity(stub, &userEnt)
-	if err != nil {
-		return nil, baselogger.Errorf("openAccount setUserEntity (id=%s) failed. err=%s", userName, err)
+	errcm = b.setUserEntity(stub, &userEnt)
+	if errcm != nil {
+		return nil, baselogger.ErrorECM(errcm.Code, "openAccount setUserEntity (id=%s) failed. error=(%s)", userName, errcm)
 	}
 
 	baselogger.Debug("setUserEntity success: %+v", userEnt)
 
 	//央行账户此处不保存
 	if !isCBAcc {
-		err = b.saveAccountName(stub, accName)
-		if err != nil {
-			return nil, baselogger.Errorf("openAccount saveAccountName (id=%s) failed. err=%s", accName, err)
+		errcm = b.saveAccountName(stub, accName)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "openAccount saveAccountName (id=%s) failed. error=(%s)", accName, errcm)
 		}
 	}
 
@@ -2362,26 +2432,24 @@ func (b *BASE) newAccount(stub shim.ChaincodeStubInterface, accName string, accT
 
 var centerBankAccCache []byte = nil
 
-func (b *BASE) setCenterBankAcc(stub shim.ChaincodeStubInterface, acc string) error {
+func (b *BASE) setCenterBankAcc(stub shim.ChaincodeStubInterface, acc string) *ErrorCodeMsg {
 	err := stateCache.PutState_Ex(stub, CENTERBANK_ACC_KEY, []byte(acc))
 	if err != nil {
-		baselogger.Error("setCenterBankAcc PutState failed.err=%s", err)
-		return err
+		return baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setCenterBankAcc PutState failed.error=(%s)", err)
 	}
 
 	centerBankAccCache = []byte(acc)
 
 	return nil
 }
-func (b *BASE) getCenterBankAcc(stub shim.ChaincodeStubInterface) ([]byte, error) {
+func (b *BASE) getCenterBankAcc(stub shim.ChaincodeStubInterface) ([]byte, *ErrorCodeMsg) {
 	if centerBankAccCache != nil {
 		return centerBankAccCache, nil
 	}
 
 	bankB, err := stateCache.GetState_Ex(stub, CENTERBANK_ACC_KEY)
 	if err != nil {
-		baselogger.Error("getCenterBankAcc GetState failed.err=%s", err)
-		return nil, err
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getCenterBankAcc GetState failed.error=(%s)", err)
 	}
 
 	centerBankAccCache = bankB
@@ -2389,35 +2457,31 @@ func (b *BASE) getCenterBankAcc(stub shim.ChaincodeStubInterface) ([]byte, error
 	return bankB, nil
 }
 
-func (b *BASE) getTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string) (int64, error) {
+func (b *BASE) getTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string) (int64, *ErrorCodeMsg) {
 	seqB, err := stateCache.GetState_Ex(stub, transSeqKey)
 	if err != nil {
-		baselogger.Error("getTransSeq GetState failed.err=%s", err)
-		return -1, err
+		return -1, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getTransSeq GetState failed.error=(%s)", err)
 	}
 	//如果不存在则创建
 	if seqB == nil {
 		err = stateCache.PutState_Ex(stub, transSeqKey, []byte("0"))
 		if err != nil {
-			baselogger.Error("initTransSeq PutState failed.err=%s", err)
-			return -1, err
+			return -1, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "initTransSeq PutState failed.error=(%s)", err)
 		}
 		return 0, nil
 	}
 
 	seq, err := strconv.ParseInt(string(seqB), 10, 64)
 	if err != nil {
-		baselogger.Error("getTransSeq ParseInt failed.seq=%+v, err=%s", seqB, err)
-		return -1, err
+		return -1, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getTransSeq ParseInt failed.seq=%+v, error=(%s)", seqB, err)
 	}
 
 	return seq, nil
 }
-func (b *BASE) setTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string, seq int64) error {
+func (b *BASE) setTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string, seq int64) *ErrorCodeMsg {
 	err := stateCache.PutState_Ex(stub, transSeqKey, []byte(strconv.FormatInt(seq, 10)))
 	if err != nil {
-		baselogger.Error("setTransSeq PutState failed.err=%s", err)
-		return err
+		return baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setTransSeq PutState failed.error=(%s)", err)
 	}
 
 	return nil
@@ -2438,12 +2502,12 @@ func (b *BASE) getAccTransSeqKey(accName string) string {
 	return TRANSSEQ_PREFIX + "acc_" + accName
 }
 
-func (b *BASE) setTransInfo(stub shim.ChaincodeStubInterface, info *Transaction) error {
+func (b *BASE) setTransInfo(stub shim.ChaincodeStubInterface, info *Transaction) *ErrorCodeMsg {
 	//先获取全局seq
-	seqGlob, err := b.getTransSeq(stub, b.getGlobalTransSeqKey(stub))
-	if err != nil {
-		baselogger.Error("setTransInfo getTransSeq failed.err=%s", err)
-		return err
+	seqGlob, errcm := b.getTransSeq(stub, b.getGlobalTransSeqKey(stub))
+	if errcm != nil {
+		baselogger.Error("setTransInfo getTransSeq failed.error=(%s)", errcm)
+		return errcm
 	}
 	seqGlob++
 
@@ -2451,7 +2515,7 @@ func (b *BASE) setTransInfo(stub shim.ChaincodeStubInterface, info *Transaction)
 	   //再获取当前交易级别的seq
 	   seqLvl, err := b.getTransSeq(stub, b.getTransSeqKey(stub, info.TransLvl))
 	   if err != nil {
-	       base_logger.Error("setTransInfo getTransSeq failed.err=%s", err)
+	       base_logger.Error("setTransInfo getTransSeq failed.error=(%s)", err)
 	       return err
 	   }
 	   seqLvl++
@@ -2461,41 +2525,41 @@ func (b *BASE) setTransInfo(stub shim.ChaincodeStubInterface, info *Transaction)
 	//info.Serial = seqLvl
 	transJson, err := json.Marshal(info)
 	if err != nil {
-		return baselogger.Errorf("setTransInfo marshal failed. err=%s", err)
+		return baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setTransInfo marshal failed. error=(%s)", err)
 	}
 
 	putKey := b.getTransInfoKey(stub, seqGlob)
 	err = stateCache.PutState_Ex(stub, putKey, transJson)
 	if err != nil {
-		return baselogger.Errorf("setTransInfo PutState failed. err=%s", err)
+		return baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setTransInfo PutState failed. error=(%s)", err)
 	}
 
 	/*
 	   //from和to账户都记录一次，因为两个账户的交易记录只有一条
 	   err = b.setOneAccTransInfo(stub, info.FromID, putKey)
 	   if err != nil {
-	       return base_logger.Errorf("setTransInfo setOneAccTransInfo(%s) failed. err=%s", info.FromID, err)
+	       return base_logger.Errorf("setTransInfo setOneAccTransInfo(%s) failed. error=(%s)", info.FromID, err)
 	   }
 	   err = b.setOneAccTransInfo(stub, info.ToID, putKey)
 	   if err != nil {
-	       return base_logger.Errorf("setTransInfo setOneAccTransInfo(%s) failed. err=%s", info.ToID, err)
+	       return base_logger.Errorf("setTransInfo setOneAccTransInfo(%s) failed. error=(%s)", info.ToID, err)
 	   }
 	*/
 	//目前交易记录收入和支出都记录了，所以这里只用记录一次
-	err = b.setOneAccTransInfo(stub, info.FromID, putKey)
-	if err != nil {
-		return baselogger.Errorf("setTransInfo setOneAccTransInfo(%s) failed. err=%s", info.FromID, err)
+	errcm = b.setOneAccTransInfo(stub, info.FromID, putKey)
+	if errcm != nil {
+		return baselogger.ErrorECM(errcm.Code, "setTransInfo setOneAccTransInfo(%s) failed. error=(%s)", info.FromID, errcm)
 	}
 
 	//交易信息设置成功后，保存序列号
-	err = b.setTransSeq(stub, b.getGlobalTransSeqKey(stub), seqGlob)
-	if err != nil {
-		return baselogger.Errorf("setTransInfo setTransSeq failed. err=%s", err)
+	errcm = b.setTransSeq(stub, b.getGlobalTransSeqKey(stub), seqGlob)
+	if errcm != nil {
+		return baselogger.ErrorECM(errcm.Code, "setTransInfo setTransSeq failed. error=(%s)", errcm)
 	}
 	/*
 	   err = b.setTransSeq(stub, b.getTransSeqKey(stub, info.TransLvl), seqLvl)
 	   if err != nil {
-	       base_logger.Error("setTransInfo setTransSeq failed. err=%s", err)
+	       base_logger.Error("setTransInfo setTransSeq failed. error=(%s)", err)
 	       return errors.New("setTransInfo setTransSeq failed.")
 	   }
 	*/
@@ -2509,69 +2573,67 @@ func (b *BASE) getOneAccTransInfoKey(accName string, seq int64) string {
 	return ONE_ACC_TRANS_PREFIX + accName + "_" + strconv.FormatInt(seq, 10)
 }
 
-func (b *BASE) setOneAccTransInfo(stub shim.ChaincodeStubInterface, accName, GlobalTransKey string) error {
+func (b *BASE) setOneAccTransInfo(stub shim.ChaincodeStubInterface, accName, GlobalTransKey string) *ErrorCodeMsg {
 
-	seq, err := b.getTransSeq(stub, b.getAccTransSeqKey(accName))
-	if err != nil {
-		return baselogger.Errorf("setOneAccTransInfo getTransSeq failed.err=%s", err)
+	seq, errcm := b.getTransSeq(stub, b.getAccTransSeqKey(accName))
+	if errcm != nil {
+		return baselogger.ErrorECM(errcm.Code, "setOneAccTransInfo getTransSeq failed.error=(%s)", errcm)
 	}
 	seq++
 
 	var key = b.getOneAccTransInfoKey(accName, seq)
-	err = stateCache.PutState_Ex(stub, key, []byte(GlobalTransKey))
+	err := stateCache.PutState_Ex(stub, key, []byte(GlobalTransKey))
 	if err != nil {
-		return baselogger.Errorf("setOneAccTransInfo PutState failed. err=%s", err)
+		return baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setOneAccTransInfo PutState failed. error=(%s)", err)
 	}
 
 	baselogger.Debug("setOneAccTransInfo key=%s, v=%s", key, GlobalTransKey)
 
 	//交易信息设置成功后，保存序列号
-	err = b.setTransSeq(stub, b.getAccTransSeqKey(accName), seq)
-	if err != nil {
-		return baselogger.Errorf("setOneAccTransInfo setTransSeq failed. err=%s", err)
+	errcm = b.setTransSeq(stub, b.getAccTransSeqKey(accName), seq)
+	if errcm != nil {
+		return baselogger.ErrorECM(errcm.Code, "setOneAccTransInfo setTransSeq failed. error=(%s)", errcm)
 	}
 
 	return nil
 }
 
-func (b *BASE) getOnceTransInfo(stub shim.ChaincodeStubInterface, key string) (*Transaction, error) {
+func (b *BASE) getOnceTransInfo(stub shim.ChaincodeStubInterface, key string) (*Transaction, *ErrorCodeMsg) {
 	var err error
 	var trans Transaction
 
 	tmpState, err := stateCache.GetState_Ex(stub, key)
 	if err != nil {
-		baselogger.Error("getTransInfo GetState failed.err=%s", err)
-		return nil, err
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getTransInfo GetState failed.error=(%s)", err)
 	}
 	if tmpState == nil {
-		return nil, baselogger.Errorf("getTransInfo GetState nil.")
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "getTransInfo GetState nil.")
 	}
 
 	err = json.Unmarshal(tmpState, &trans)
 	if err != nil {
-		return nil, baselogger.Errorf("getTransInfo Unmarshal failed. err=%s", err)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getTransInfo Unmarshal failed. error=(%s)", err)
 	}
 
 	baselogger.Debug("getTransInfo OK, info=%+v", trans)
 
 	return &trans, nil
 }
-func (b *BASE) getQueryTransInfo(stub shim.ChaincodeStubInterface, key string) (*QueryTransRecd, error) {
+func (b *BASE) getQueryTransInfo(stub shim.ChaincodeStubInterface, key string) (*QueryTransRecd, *ErrorCodeMsg) {
 	var err error
 	var trans QueryTransRecd
 
 	tmpState, err := stateCache.GetState_Ex(stub, key)
 	if err != nil {
-		baselogger.Error("getQueryTransInfo GetState failed.err=%s", err)
-		return nil, err
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getQueryTransInfo GetState failed.error=(%s)", err)
 	}
 	if tmpState == nil {
-		return nil, baselogger.Errorf("getQueryTransInfo GetState nil.")
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "getQueryTransInfo GetState nil.")
 	}
 
 	err = json.Unmarshal(tmpState, &trans)
 	if err != nil {
-		return nil, baselogger.Errorf("getQueryTransInfo Unmarshal failed. err=%s", err)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getQueryTransInfo Unmarshal failed. error=(%s)", err)
 	}
 
 	baselogger.Debug("getQueryTransInfo OK, info=%+v", trans)
@@ -2579,13 +2641,13 @@ func (b *BASE) getQueryTransInfo(stub shim.ChaincodeStubInterface, key string) (
 	return &trans, nil
 }
 
-func (b *BASE) dumpWorldState(stub shim.ChaincodeStubInterface, queryTime int64, flushLimit int, needHash bool, currCcid string) ([]byte, error) {
+func (b *BASE) dumpWorldState(stub shim.ChaincodeStubInterface, queryTime int64, flushLimit int, needHash bool, currCcid string) ([]byte, *ErrorCodeMsg) {
 	//queryTime单位是毫秒
 	var timestamp = time.Unix(queryTime/1000, (queryTime-(queryTime/1000*1000))*1000000)
 	var outFile = WORLDSTATE_FILE_PREFIX + timestamp.Format("20060102_150405.000") + "_" + currCcid[:8]
 	fHandle, err := os.OpenFile(outFile, os.O_RDWR|os.O_CREATE, 0755)
 	if err != nil {
-		return nil, baselogger.Errorf("getWorldState: OpenFile failed. err=%s", err)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getWorldState: OpenFile failed. error=(%s)", err)
 	}
 	//defer fHandle.Close()  手工close，因为后面要重命名这个文件
 
@@ -2607,7 +2669,7 @@ func (b *BASE) dumpWorldState(stub shim.ChaincodeStubInterface, queryTime int64,
 	var flushSize = 0
 	keysIter, err := stub.GetStateByRange("", "")
 	if err != nil {
-		return nil, baselogger.Errorf("getWorldState: keys operation failed. Error accessing state: %s", err)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getWorldState: keys operation failed. Error accessing state: %s", err)
 	}
 	defer keysIter.Close()
 
@@ -2615,7 +2677,7 @@ func (b *BASE) dumpWorldState(stub shim.ChaincodeStubInterface, queryTime int64,
 		qws.KeyCount++
 		kv, iterErr := keysIter.Next()
 		if iterErr != nil {
-			baselogger.Errorf("getWorldState: getNext failed, %s", iterErr)
+			baselogger.Error("getWorldState: getNext failed, %s", iterErr)
 			qws.GetNextErr = true
 			continue
 		}
@@ -2641,7 +2703,7 @@ func (b *BASE) dumpWorldState(stub shim.ChaincodeStubInterface, queryTime int64,
 
 		jsonRecd, err := json.Marshal(oneRecd)
 		if err != nil {
-			baselogger.Errorf("getWorldState: Marshal failed. key=%s, err=%s", key, err)
+			baselogger.Error("getWorldState: Marshal failed. key=%s, error=(%s)", key, err)
 			qws.ErrKeyList = append(qws.ErrKeyList, key)
 			continue
 		}
@@ -2649,7 +2711,7 @@ func (b *BASE) dumpWorldState(stub shim.ChaincodeStubInterface, queryTime int64,
 
 		_, err = writer.Write(jsonRecd)
 		if err != nil {
-			baselogger.Errorf("getWorldState: Write failed. key=%s, err=%s", key, err)
+			baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getWorldState: Write failed. key=%s, error=(%s)", key, err)
 			qws.ErrKeyList = append(qws.ErrKeyList, key)
 			continue
 		}
@@ -2681,17 +2743,17 @@ func (b *BASE) dumpWorldState(stub shim.ChaincodeStubInterface, queryTime int64,
 
 	retJson, err := json.Marshal(qws)
 	if err != nil {
-		return nil, baselogger.Errorf("getWorldState: Marshal failed. err=%s", err)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getWorldState: Marshal failed. error=(%s)", err)
 	}
 
 	return retJson, nil
 }
 
-func (b *BASE) loadWorldState(stub shim.ChaincodeStubInterface, fileName string, needHash, sameKeyOverwrite bool, srcCcid string) ([]byte, error) {
+func (b *BASE) loadWorldState(stub shim.ChaincodeStubInterface, fileName string, needHash, sameKeyOverwrite bool, srcCcid string) ([]byte, *ErrorCodeMsg) {
 	var inFile = fmt.Sprintf("/home/%s", fileName)
 	fHandle, err := os.OpenFile(inFile, os.O_RDONLY, 0755)
 	if err != nil {
-		return nil, baselogger.Errorf("setWorldState: OpenFile failed. err=%s", err)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setWorldState: OpenFile failed. error=(%s)", err)
 	}
 	defer fHandle.Close()
 
@@ -2719,7 +2781,7 @@ func (b *BASE) loadWorldState(stub shim.ChaincodeStubInterface, fileName string,
 			}
 
 			swsr.ReadErr = true
-			return nil, baselogger.Errorf("setWorldState: ReadBytes failed. err=%s", err)
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setWorldState: ReadBytes failed. error=(%s)", err)
 		}
 
 		swsr.FileLine++
@@ -2728,10 +2790,10 @@ func (b *BASE) loadWorldState(stub shim.ChaincodeStubInterface, fileName string,
 		var oneRecd []string
 		err = json.Unmarshal(lineB, &oneRecd)
 		if err != nil {
-			return nil, baselogger.Errorf("setWorldState: Unmarshal failed. line=%s err=%s", string(lineB), err)
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setWorldState: Unmarshal failed. line=%s error=(%s)", string(lineB), err)
 		}
 		if len(oneRecd) < 2 {
-			return nil, baselogger.Errorf("setWorldState: oneRecd format error. oneRecd=%v", oneRecd)
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "setWorldState: oneRecd format error. oneRecd=%v", oneRecd)
 		}
 		var key = oneRecd[0]
 		var value = oneRecd[1]
@@ -2739,7 +2801,7 @@ func (b *BASE) loadWorldState(stub shim.ChaincodeStubInterface, fileName string,
 		if !sameKeyOverwrite {
 			testB, err := stateCache.GetState_Ex(stub, key)
 			if err != nil {
-				return nil, baselogger.Errorf("setWorldState: GetState failed. key=%s err=%s", key, err)
+				return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setWorldState: GetState failed. key=%s error=(%s)", key, err)
 			}
 			if testB != nil {
 				baselogger.Debug("setWorldState: has key '%s', not Overwrite.", key)
@@ -2758,11 +2820,11 @@ func (b *BASE) loadWorldState(stub shim.ChaincodeStubInterface, fileName string,
 					var hash = md5.New()
 					_, err = io.WriteString(hash, key+value)
 					if err != nil {
-						return nil, baselogger.Errorf("setWorldState: md5 create failed. key=%s.", key)
+						return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setWorldState: md5 create failed. key=%s, error=(%s).", key, err)
 					} else {
 						var newMd5 = hex.EncodeToString(hash.Sum(nil))
 						if md5val != newMd5 {
-							return nil, baselogger.Errorf("setWorldState: md5 check failed. key=%s.", key)
+							return nil, baselogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "setWorldState: md5 check failed. key=%s.", key)
 						}
 					}
 				}
@@ -2771,17 +2833,17 @@ func (b *BASE) loadWorldState(stub shim.ChaincodeStubInterface, fileName string,
 
 		valueB, err := base64.StdEncoding.DecodeString(value)
 		if err != nil {
-			return nil, baselogger.Errorf("setWorldState: DecodeString failed. value=%s err=%s", value, err)
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setWorldState: DecodeString failed. value=%s error=(%s)", value, err)
 		}
 
-		newKey, newValB, err := b.dateConvertWhenLoad(stub, srcCcid, key, valueB)
-		if err != nil {
-			return nil, baselogger.Errorf("setWorldState: dateConvertWhenUpdate failed.  err=%s", err)
+		newKey, newValB, errcm := b.dateConvertWhenLoad(stub, srcCcid, key, valueB)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "setWorldState: dateConvertWhenUpdate failed.  error=(%s)", errcm)
 		}
 
 		err = stateCache.PutState_Ex(stub, newKey, newValB)
 		if err != nil {
-			return nil, baselogger.Errorf("setWorldState: PutState_Ex failed. key=%s err=%s", key, err)
+			return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setWorldState: PutState_Ex failed. key=%s error=(%s)", key, err)
 		}
 
 		swsr.KeyCount++
@@ -2789,9 +2851,9 @@ func (b *BASE) loadWorldState(stub shim.ChaincodeStubInterface, fileName string,
 		baselogger.Debug("setWorldState: PutState_Ex Ok, key=%s.", key)
 	}
 
-	err = b.loadAfter(stub, srcCcid)
-	if err != nil {
-		return nil, baselogger.Errorf("setWorldState: updateAfter failed.  err=%s", err)
+	errcm := b.loadAfter(stub, srcCcid)
+	if errcm != nil {
+		return nil, baselogger.ErrorECM(errcm.Code, "setWorldState: updateAfter failed.  error=(%s)", errcm)
 	}
 
 	var endTime = time.Now()
@@ -2802,33 +2864,33 @@ func (b *BASE) loadWorldState(stub shim.ChaincodeStubInterface, fileName string,
 
 	return nil, nil
 }
-func (b *BASE) dateConvertWhenLoad(stub shim.ChaincodeStubInterface, srcCcid, key string, valueB []byte) (string, []byte, error) {
-	var err error
+func (b *BASE) dateConvertWhenLoad(stub shim.ChaincodeStubInterface, srcCcid, key string, valueB []byte) (string, []byte, *ErrorCodeMsg) {
+	var errcm *ErrorCodeMsg
 	var newKey = key
 	var newValB = valueB
 
 	if DateConvertWhenLoadHook != nil {
-		newKey, newValB, err = DateConvertWhenLoadHook(stub, srcCcid, key, valueB)
-		if err != nil {
-			return "", nil, baselogger.Errorf("dateConvertWhenUpdate: hook failed. err=%s", err)
+		newKey, newValB, errcm = DateConvertWhenLoadHook(stub, srcCcid, key, valueB)
+		if errcm != nil {
+			return "", nil, baselogger.ErrorECM(errcm.Code, "dateConvertWhenUpdate: hook failed. error=(%s)", errcm)
 		}
 	}
 
 	return newKey, newValB, nil
 }
-func (b *BASE) loadAfter(stub shim.ChaincodeStubInterface, srcCcid string) error {
+func (b *BASE) loadAfter(stub shim.ChaincodeStubInterface, srcCcid string) *ErrorCodeMsg {
 
 	if DateUpdateAfterLoadHook != nil {
-		err := DateUpdateAfterLoadHook(stub, srcCcid)
-		if err != nil {
-			return baselogger.Errorf("loadAfter: hook failed. err=%s", err)
+		errcm := DateUpdateAfterLoadHook(stub, srcCcid)
+		if errcm != nil {
+			return baselogger.ErrorECM(errcm.Code, "loadAfter: hook failed. error=(%s)", errcm)
 		}
 	}
 
 	return nil
 }
 
-func (b *BASE) setAccountLockAmountCfg(stub shim.ChaincodeStubInterface, accName, cfgStr string, overwriteOld bool) (int64, int64, error) {
+func (b *BASE) setAccountLockAmountCfg(stub shim.ChaincodeStubInterface, accName, cfgStr string, overwriteOld bool) (int64, int64, *ErrorCodeMsg) {
 	//配置格式如下 "2000:1518407999000;3000:1518407999000..."，防止输入错误，先去除两边的空格，然后再去除两边的';'（防止split出来空字符串）
 	var newCfg = strings.Trim(strings.TrimSpace(cfgStr), ";")
 
@@ -2846,17 +2908,17 @@ func (b *BASE) setAccountLockAmountCfg(stub shim.ChaincodeStubInterface, accName
 	for _, ele := range amtEndtimeArr {
 		var pair = strings.Split(ele, ":")
 		if len(pair) != 2 {
-			return 0, 0, baselogger.Errorf("setAccountLockAmountCfg parse error, '%s' format error 1.", ele)
+			return 0, 0, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "setAccountLockAmountCfg parse error, '%s' format error 1.", ele)
 		}
 
 		amount, err = strconv.ParseInt(pair[0], 0, 64)
 		if err != nil {
-			return 0, 0, baselogger.Errorf("setAccountLockAmountCfg parse error, '%s' format error 2.", ele)
+			return 0, 0, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "setAccountLockAmountCfg parse error, '%s' format error 2.", ele)
 		}
 
 		endtime, err = strconv.ParseInt(pair[1], 0, 64)
 		if err != nil {
-			return 0, 0, baselogger.Errorf("setAccountLockAmountCfg parse error, '%s' format error 3.", ele)
+			return 0, 0, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "setAccountLockAmountCfg parse error, '%s' format error 3.", ele)
 		}
 
 		lockedThisTime += amount
@@ -2873,14 +2935,14 @@ func (b *BASE) setAccountLockAmountCfg(stub shim.ChaincodeStubInterface, accName
 	} else {
 		acliB, err := stateCache.GetState_Ex(stub, lockinfoKey)
 		if err != nil {
-			return 0, 0, baselogger.Errorf("setAccountLockAmountCfg: GetState  failed. err=%s", err)
+			return 0, 0, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setAccountLockAmountCfg: GetState  failed. error=(%s)", err)
 		}
 		if acliB == nil {
 			acli.AccName = accName
 		} else {
 			err = json.Unmarshal(acliB, &acli)
 			if err != nil {
-				return 0, 0, baselogger.Errorf("setAccountLockAmountCfg: Unmarshal failed. err=%s", err)
+				return 0, 0, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setAccountLockAmountCfg: Unmarshal failed. error=(%s)", err)
 			}
 		}
 	}
@@ -2893,11 +2955,11 @@ func (b *BASE) setAccountLockAmountCfg(stub shim.ChaincodeStubInterface, accName
 
 	acliB, err := json.Marshal(acli)
 	if err != nil {
-		return 0, 0, baselogger.Errorf("setAccountLockAmountCfg: Marshal  failed. err=%s", err)
+		return 0, 0, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setAccountLockAmountCfg: Marshal  failed. error=(%s)", err)
 	}
 	err = stateCache.PutState_Ex(stub, lockinfoKey, acliB)
 	if err != nil {
-		return 0, 0, baselogger.Errorf("setAccountLockAmountCfg: putState_Ex  failed. err=%s", err)
+		return 0, 0, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setAccountLockAmountCfg: putState_Ex  failed. error=(%s)", err)
 	}
 
 	baselogger.Debug("setAccountLockAmountCfg: acliB=%s", string(acliB))
@@ -2909,43 +2971,41 @@ func (b *BASE) getUserEntityKey(userName string) string {
 	return USR_ENTITY_PREFIX + userName
 }
 
-func (b *BASE) getUserEntity(stub shim.ChaincodeStubInterface, userName string) (*UserEntity, error) {
+func (b *BASE) getUserEntity(stub shim.ChaincodeStubInterface, userName string) (*UserEntity, *ErrorCodeMsg) {
 	var entB []byte
 	var ue UserEntity
 	var err error
 
 	entB, err = stateCache.GetState_Ex(stub, b.getUserEntityKey(userName))
 	if err != nil {
-		return nil, baselogger.Errorf("getUserEntity GetState failed. err=%s", err)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getUserEntity GetState failed. error=(%s)", err)
 	}
 
 	if entB == nil {
-		return nil, ErrNilEntity
+		return nil, ErrcmNilEntity
 	}
 
 	if err = json.Unmarshal(entB, &ue); err != nil {
-		return nil, baselogger.Errorf("getUserEntity Unmarshal failed. err=%s", err)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getUserEntity Unmarshal failed. error=(%s)", err)
 	}
 
 	return &ue, nil
 }
 
-func (b *BASE) setUserEntity(stub shim.ChaincodeStubInterface, ue *UserEntity) error {
+func (b *BASE) setUserEntity(stub shim.ChaincodeStubInterface, ue *UserEntity) *ErrorCodeMsg {
 	jsons, err := json.Marshal(ue)
-
 	if err != nil {
-		return baselogger.Errorf("setUserEntity: Marshal failed. err=%s", err)
+		return baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setUserEntity: Marshal failed. error=(%s)", err)
 	}
 
 	err = stateCache.PutState_Ex(stub, b.getUserEntityKey(ue.EntID), jsons)
-
 	if err != nil {
-		return baselogger.Errorf("setUserEntity: PutState cb failed. err=%s", err)
+		return baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setUserEntity: PutState cb failed. error=(%s)", err)
 	}
 	return nil
 }
 
-func (b *BASE) getSignAndMsg(function string, args []string, signIdx int) ([]byte, []byte, error) {
+func (b *BASE) getSignAndMsg(function string, args []string, signIdx int) ([]byte, []byte, *ErrorCodeMsg) {
 	var err error
 
 	var signBase64 = args[signIdx]
@@ -2953,7 +3013,7 @@ func (b *BASE) getSignAndMsg(function string, args []string, signIdx int) ([]byt
 	var sign []byte
 	sign, err = base64.StdEncoding.DecodeString(signBase64)
 	if err != nil {
-		return nil, nil, fmt.Errorf("getSignAndMsg: convert sign(%s) failed. err=%s", signBase64, err)
+		return nil, nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getSignAndMsg: convert sign(%s) failed. error=(%s)", signBase64, err)
 	}
 
 	//客户端签名的生成： 把函数名和输入的参数用","拼接为字符串，然后计算其Sha256作为msg，然后用私钥对msg做签名。所以这里用同样的方法生成msg
@@ -2970,35 +3030,35 @@ func (b *BASE) getAppRecdKey(appid string) string {
 	return APP_INFO_PREFIX + appid
 }
 
-func (b *BASE) setAppInfo(stub shim.ChaincodeStubInterface, app *AppInfo) error {
+func (b *BASE) setAppInfo(stub shim.ChaincodeStubInterface, app *AppInfo) *ErrorCodeMsg {
 
 	appB, err := json.Marshal(app)
 	if err != nil {
-		return baselogger.Errorf("Marshal failed. err=%s", err)
+		return baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Marshal failed. error=(%s)", err)
 	}
 
 	err = stateCache.PutState_Ex(stub, b.getAppRecdKey(app.AppID), appB)
 	if err != nil {
-		return baselogger.Errorf("PutState failed. err=%s", err)
+		return baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "PutState failed. error=(%s)", err)
 	}
 
 	return nil
 }
 
-func (b *BASE) getAppInfo(stub shim.ChaincodeStubInterface, appid string) (*AppInfo, error) {
+func (b *BASE) getAppInfo(stub shim.ChaincodeStubInterface, appid string) (*AppInfo, *ErrorCodeMsg) {
 	appB, err := stateCache.GetState_Ex(stub, b.getAppRecdKey(appid))
 	if err != nil {
-		return nil, baselogger.Errorf("GetState failed. err=%s", err)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "GetState failed. error=(%s)", err)
 	}
 
 	if appB == nil {
-		return nil, ErrNilEntity
+		return nil, ErrcmNilEntity
 	}
 
 	var ai AppInfo
 	err = json.Unmarshal(appB, &ai)
 	if err != nil {
-		return nil, baselogger.Errorf("Unmarshal failed. err=%s", err)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Unmarshal failed. error=(%s)", err)
 	}
 
 	return &ai, nil
@@ -3011,10 +3071,10 @@ func (b *BASE) getCrossChaincodeName(flag string) string {
 	return flag[len(CROSSCCCALL_PREFIX):]
 }
 
-func (b *BASE) isAppExists(stub shim.ChaincodeStubInterface, appid string) (bool, error) {
+func (b *BASE) isAppExists(stub shim.ChaincodeStubInterface, appid string) (bool, *ErrorCodeMsg) {
 	appB, err := stateCache.GetState_Ex(stub, b.getAppRecdKey(appid))
 	if err != nil {
-		return false, baselogger.Errorf("GetState failed. err=%s", err)
+		return false, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "GetState failed. error=(%s)", err)
 	}
 
 	if appB != nil {
@@ -3028,19 +3088,26 @@ func (b *BASE) isAccountSysFunc(function string) bool {
 	return strSliceContains(sysFunc, function)
 }
 
-func (b *BASE) corssChaincodeCall(stub shim.ChaincodeStubInterface, args [][]byte, chaincodeName, currUserName, currAccountName string, sign, signMsg []byte) ([]byte, error) {
+func (b *BASE) corssChaincodeCall(stub shim.ChaincodeStubInterface, args [][]byte, chaincodeName, currUserName, currAccountName string, sign, signMsg []byte) ([]byte, *ErrorCodeMsg) {
 	baselogger.Debug("before invoke")
 	response := stub.InvokeChaincode(chaincodeName, args, "")
 	if response.Status != shim.OK {
-		baselogger.Errorf("InvokeChaincode failed, response=%+v.", response)
-		return nil, errors.New(response.Message)
+		baselogger.Error("InvokeChaincode failed, response=%+v.", response)
+		//尝试将返回错误信息转为 ErrorCodeMsg
+		errcm, err := NewErrorCodeMsgFromString(response.Message)
+		if err != nil {
+			baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "convert response.Message failed, error=(%s).", err)
+			return nil, NewErrorCodeMsg(ERRCODE_COMMON_INNER_ERROR, response.Message)
+		}
+
+		return nil, errcm
 	}
 	baselogger.Debug(" after invoke, payload=%s, payload len=%v", string(response.Payload), len(response.Payload))
 
 	var invokeRslt InvokeResult
 	err := json.Unmarshal(response.Payload, &invokeRslt)
 	if err != nil {
-		return nil, baselogger.Errorf("InvokeChaincode(%s) Unmarshal error, err=%s.", chaincodeName, err)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "InvokeChaincode(%s) Unmarshal error, error=(%s).", chaincodeName, err)
 	}
 
 	if len(invokeRslt.TransInfos) > 0 {
@@ -3054,18 +3121,18 @@ func (b *BASE) corssChaincodeCall(stub shim.ChaincodeStubInterface, args [][]byt
 		}
 		//转出账户不是当前账户， 校验用户身份，看当前用户是否能操作该账户。  如果是当前账户，已经校验过了
 		for noCurrAcc, _ := range noCurrAccMap {
-			fromAcc, err := b.getAccountEntity(stub, noCurrAcc)
-			if err != nil {
-				return nil, baselogger.Errorf("InvokeChaincode(%s) transfer failed, get transfer-from account failed, err=%s.", chaincodeName, err)
+			fromAcc, errcm := b.getAccountEntity(stub, noCurrAcc)
+			if errcm != nil {
+				return nil, baselogger.ErrorECM(errcm.Code, "InvokeChaincode(%s) transfer failed, get transfer-from account failed, error=(%s).", chaincodeName, errcm)
 			}
-			if err := b.verifyIdentity(stub, currUserName, sign, signMsg, fromAcc, "", ""); err != nil {
-				return nil, baselogger.Errorf("InvokeChaincode(%s) transfer failed, verify user and transfer-from account failed, err=%s.", chaincodeName, err)
+			if errcm := b.verifyIdentity(stub, currUserName, sign, signMsg, fromAcc, "", ""); errcm != nil {
+				return nil, baselogger.ErrorECM(errcm.Code, "InvokeChaincode(%s) transfer failed, verify user and transfer-from account failed, error=(%s).", chaincodeName, errcm)
 			}
 		}
 		for _, tx := range invokeRslt.TransInfos {
-			_, err = b.transferCoin(stub, tx.FromID, tx.ToID, tx.TransType, tx.Description, tx.Amount, tx.Time, true, tx.AppID)
-			if err != nil {
-				return nil, baselogger.Errorf("InvokeChaincode(%s) transferCoin error, err=%s.", chaincodeName, err)
+			_, errcm := b.transferCoin(stub, tx.FromID, tx.ToID, tx.TransType, tx.Description, tx.Amount, tx.Time, true, tx.AppID)
+			if errcm != nil {
+				return nil, baselogger.ErrorECM(errcm.Code, "InvokeChaincode(%s) transferCoin error, error=(%s).", chaincodeName, errcm)
 			}
 		}
 	}
@@ -3090,7 +3157,7 @@ func (c AccountAmountList) Less(i, j int) bool {
 	return c[i].Amount > c[j].Amount
 }
 
-func (b *BASE) getAccoutAmountRankingOrTopN(stub shim.ChaincodeStubInterface, userName, accName string, topN int, excludeAcc []string, appid string) (*QueryAccAmtRankAndTopN, error) {
+func (b *BASE) getAccoutAmountRankingOrTopN(stub shim.ChaincodeStubInterface, userName, accName string, topN int, excludeAcc []string, appid string) (*QueryAccAmtRankAndTopN, *ErrorCodeMsg) {
 	var qaart QueryAccAmtRankAndTopN
 	qaart.AccoutName = accName
 	qaart.RestAmount = 0
@@ -3098,21 +3165,21 @@ func (b *BASE) getAccoutAmountRankingOrTopN(stub shim.ChaincodeStubInterface, us
 	qaart.TopN = []TopNData{}
 
 	if len(accName) == 0 && topN <= 0 {
-		return nil, baselogger.Errorf("nothing to do(%s,%d).", accName, topN)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "nothing to do(%s,%d).", accName, topN)
 	}
 
-	var err error
+	var errcm *ErrorCodeMsg
 	var accEnt *AccountEntity = nil
 	if len(accName) > 0 {
-		accEnt, err = b.getAccountEntity(stub, accName)
-		if err != nil {
-			return nil, baselogger.Errorf("getAccountEntity(%s) failed. err=%s", accName, err)
+		accEnt, errcm = b.getAccountEntity(stub, accName)
+		if errcm != nil {
+			return nil, baselogger.ErrorECM(errcm.Code, "getAccountEntity(%s) failed. error=(%s)", accName, errcm)
 		}
 	}
 
 	accsB, err := stateCache.GetState_Ex(stub, ALL_ACC_INFO_KEY)
 	if err != nil {
-		return nil, baselogger.Errorf("GetState failed. err=%s", err)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "GetState failed. error=(%s)", err)
 	}
 
 	var aal AccountAmountList
@@ -3128,7 +3195,7 @@ func (b *BASE) getAccoutAmountRankingOrTopN(stub shim.ChaincodeStubInterface, us
 				if err == io.EOF {
 					break
 				} else {
-					baselogger.Error("ReadBytes failed. err=%s", err)
+					baselogger.Error("ReadBytes failed. error=(%s)", err)
 					continue
 				}
 			}
@@ -3138,9 +3205,9 @@ func (b *BASE) getAccoutAmountRankingOrTopN(stub shim.ChaincodeStubInterface, us
 				continue
 			}
 
-			tmpEnt, err = b.getAccountEntity(stub, accS)
-			if err != nil {
-				baselogger.Error("getAccountEntity(%s) failed. err=%s", string(acc), err)
+			tmpEnt, errcm = b.getAccountEntity(stub, accS)
+			if errcm != nil {
+				baselogger.Error("getAccountEntity(%s) failed. error=(%s)", string(acc), errcm)
 				continue
 			}
 			if accEnt != nil && tmpEnt.RestAmount > accEnt.RestAmount {
@@ -3184,46 +3251,46 @@ func (b *BASE) getUserInfoKey(userName string) string {
 	return USR_INFOS_PREFIX + userName
 }
 
-func (b *BASE) setUserInfo(stub shim.ChaincodeStubInterface, user *UserInfo) error {
+func (b *BASE) setUserInfo(stub shim.ChaincodeStubInterface, user *UserInfo) *ErrorCodeMsg {
 
 	userB, err := json.Marshal(user)
 	if err != nil {
-		return baselogger.Errorf("Marshal failed. err=%s", err)
+		return baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Marshal failed. error=(%s)", err)
 	}
 
 	err = stateCache.PutState_Ex(stub, b.getUserInfoKey(user.EntID), userB)
 	if err != nil {
-		return baselogger.Errorf("PutState failed. err=%s", err)
+		return baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "PutState failed. error=(%s)", err)
 	}
 
 	return nil
 }
 
-func (b *BASE) getUserInfo(stub shim.ChaincodeStubInterface, userName string) (*UserInfo, error) {
+func (b *BASE) getUserInfo(stub shim.ChaincodeStubInterface, userName string) (*UserInfo, *ErrorCodeMsg) {
 	userB, err := stateCache.GetState_Ex(stub, b.getUserInfoKey(userName))
 	if err != nil {
-		return nil, baselogger.Errorf("GetState failed. err=%s", err)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "GetState failed. error=(%s)", err)
 	}
 
 	if userB == nil {
-		return nil, ErrNilEntity
+		return nil, ErrcmNilEntity
 	}
 
 	var ui UserInfo
 	err = json.Unmarshal(userB, &ui)
 	if err != nil {
-		return nil, baselogger.Errorf("Unmarshal failed. err=%s", err)
+		return nil, baselogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Unmarshal failed. error=(%s)", err)
 	}
 
 	return &ui, nil
 }
 
-func (b *BASE) updateUserInfo(stub shim.ChaincodeStubInterface, userName, picture, nickname string) error {
+func (b *BASE) updateUserInfo(stub shim.ChaincodeStubInterface, userName, picture, nickname string) *ErrorCodeMsg {
 
 	var userInfo UserInfo
-	pUser, err := b.getUserInfo(stub, userName)
-	if err != nil && err != ErrNilEntity {
-		return baselogger.Errorf("getUserInfo failed, err=%s.", err)
+	pUser, errcm := b.getUserInfo(stub, userName)
+	if errcm != nil && errcm != ErrcmNilEntity {
+		return baselogger.ErrorECM(errcm.Code, "getUserInfo failed, error=(%s).", errcm)
 	}
 
 	if pUser == nil {
@@ -3235,9 +3302,9 @@ func (b *BASE) updateUserInfo(stub shim.ChaincodeStubInterface, userName, pictur
 	userInfo.Nickname = nickname
 	userInfo.ProfilePicture = picture
 
-	err = b.setUserInfo(stub, &userInfo)
-	if err != nil {
-		return baselogger.Errorf("setUserInfo failed, err=%s.", err)
+	errcm = b.setUserInfo(stub, &userInfo)
+	if errcm != nil {
+		return baselogger.ErrorECM(errcm.Code, "setUserInfo failed, error=(%s).", errcm)
 	}
 
 	return nil
@@ -3247,25 +3314,16 @@ func (b *BASE) isAdmin(stub shim.ChaincodeStubInterface, accName string) bool {
 	//获取管理员帐号(央行账户作为管理员帐户)
 	tmpByte, err := b.getCenterBankAcc(stub)
 	if err != nil {
-		baselogger.Error("Query getCenterBankAcc failed. err=%s", err)
+		baselogger.Error("Query getCenterBankAcc failed. error=(%s)", err)
 		return false
 	}
 	//如果没有央行账户
 	if tmpByte == nil {
-		baselogger.Errorf("Query getCenterBankAcc nil.")
+		baselogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "Query getCenterBankAcc nil.")
 		return false
 	}
 
 	return string(tmpByte) == accName
-}
-
-type BaseErrorCode struct {
-	Response pb.Response
-}
-
-func (b *BASE) ErrorCode(code int, msg string) BaseErrorCode {
-	var json = fmt.Sprintf("{\"code\":%d,\"msg\":\"%s\"}", code, msg)
-	return BaseErrorCode{shim.Error(json)}
 }
 
 func main() {

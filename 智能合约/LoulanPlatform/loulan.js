@@ -647,7 +647,7 @@ function __execInvoke(params, req, outputQReslt, serialno) {
             logger.debug('args  : ', inputArgs);
 
 
-            return hfc_wrap.invokeChaincode(peers, channelName, chaincodeName, fcn, inputArgs, username, orgname)
+            return hfc_wrap.invokeChaincode(peers, channelName, chaincodeName, fcn, inputArgs, username, orgname, true)
             .then((response)=>{
                     logger.debug('invoke success, response=', response)
                     body.msg = util.format("Invoke(%s) OK.", fcn)
@@ -680,6 +680,10 @@ function __execInvoke(params, req, outputQReslt, serialno) {
     .catch((err)=>{
             logger.debug('invoke failed, err=%s', err)
             body.code = retCode.ERROR
+            if (err instanceof Object && err.code && err.msg) {
+                body.code = err.code
+                err = err.msg
+            }
             body.msg = '' + err
             
             if (outputQReslt == true) {
@@ -852,7 +856,7 @@ function handle_query(params, res, req, serialno) {
         logger.debug('args  : ', inputArgs);
     
 
-        return hfc_wrap.queryChaincode(peer, channelName, chaincodeName, inputArgs, fcn, username, orgname)
+        return hfc_wrap.queryChaincode(peer, channelName, chaincodeName, inputArgs, fcn, username, orgname, true)
         .then((response)=>{
                 logger.debug('query success, response=', response)
                 body.msg = util.format("Query(%s) OK.", fcn)
@@ -914,6 +918,10 @@ function handle_query(params, res, req, serialno) {
     .catch((err)=>{
             //logger.error('query failed, err=%s', err)
             body.code = retCode.ERROR
+            if (err instanceof Object && err.code && err.msg) {
+                body.code = err.code
+                err = err.msg
+            }
             body.msg = '' + err
             res.send(body);
             

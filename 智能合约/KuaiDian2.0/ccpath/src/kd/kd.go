@@ -65,17 +65,6 @@ const (
 	APPID_KEY = "!kd@appid@!"
 )
 
-//后续不需要密码功能，到时删除这些变量定义
-const (
-	ERRCODE_BEGIN                           = iota + 10000
-	ERRCODE_TRANS_PAY_ACCOUNT_NOT_EXIST     //付款账号不存在
-	ERRCODE_TRANS_PAYEE_ACCOUNT_NOT_EXIST   //收款账号不存在
-	ERRCODE_TRANS_BALANCE_NOT_ENOUGH        //账号余额不足d
-	ERRCODE_TRANS_PASSWD_INVALID            //密码错误
-	ERRCODE_TRANS_AMOUNT_INVALID            //转账金额不合法
-	ERRCODE_TRANS_BALANCE_NOT_ENOUGH_BYLOCK //锁定部分余额导致余额不足
-)
-
 const (
 	FINANC_STAGE_INIT         = iota
 	FINANC_STAGE_ISSUE_BEGING //理财发行开始
@@ -295,15 +284,15 @@ func (t *KD) Init(stub shim.ChaincodeStubInterface) (pbResponse pb.Response) {
 		}
 	}()
 
-	retBytes, err := t.__Init(stub)
-	if err != nil {
-		return shim.Error(err.Error())
+	retBytes, errcm := t.__Init(stub)
+	if errcm != nil {
+		return shim.Error(errcm.toJson())
 	}
 
 	return shim.Success(retBytes)
 }
 
-func (t *KD) __Init(stub shim.ChaincodeStubInterface) ([]byte, error) {
+func (t *KD) __Init(stub shim.ChaincodeStubInterface) ([]byte, *ErrorCodeMsg) {
 	kdlogger.Debug("Enter Init")
 	function, args := stub.GetFunctionAndParameters()
 	//init函数属于非常规操作，记录日志
@@ -317,7 +306,7 @@ func (t *KD) __Init(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	/*
 		defer func() {
 			if excption := recover(); excption != nil {
-				pbResponse = shim.Error(baselogger.SError("Init(%s) got an unexpect error:%s", function, excption))
+				pbResponse = shim.Error(baselogger.SError("Init(%s) got an unexpect error=(%s)", function, excption))
 				kdlogger.Critical("Init got exception, stack:\n%s", string(debug.Stack()))
 			}
 		}()
@@ -326,11 +315,11 @@ func (t *KD) __Init(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	//目前不需要参数
 	var fixedArgCount = 0
 	if len(args) < fixedArgCount {
-		return nil, kdlogger.Errorf("Init miss arg, got %d, at least need %d.", len(args), fixedArgCount)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Init miss arg, got %d, at least need %d.", len(args), fixedArgCount)
 	}
 	timestamp, err := stub.GetTxTimestamp()
 	if err != nil {
-		return nil, kdlogger.Errorf("Init: GetTxTimestamp failed, err=%s", err)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Init: GetTxTimestamp failed, error=(%s)", err)
 	}
 
 	var initTime = timestamp.Seconds*1000 + int64(timestamp.Nanos/1000000) //精确到毫秒
@@ -345,7 +334,7 @@ func (t *KD) __Init(stub shim.ChaincodeStubInterface) ([]byte, error) {
 
 		       times, err := strconv.ParseInt(args[0], 0, 64)
 		       if err != nil {
-		           return nil, mylog.Errorf("Invoke convert times(%s) failed. err=%s", args[0], err)
+		           return nil, mylog.Errorf("Invoke convert times(%s) failed. error=(%s)", args[0], err)
 		       }
 		*/
 		//全局分成比例设置
@@ -360,12 +349,12 @@ func (t *KD) __Init(stub shim.ChaincodeStubInterface) ([]byte, error) {
 
 		eapJson, err := json.Marshal(eap)
 		if err != nil {
-			return nil, kdlogger.Errorf("Init Marshal error, err=%s.", err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Init Marshal error, error=(%s).", err)
 		}
 
 		err = stateCache.PutState_Ex(stub, t.getGlobalRackAllocRateKey(), eapJson)
 		if err != nil {
-			return nil, kdlogger.Errorf("Init PutState_Ex error, err=%s.", err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Init PutState_Ex error, error=(%s).", err)
 		}
 
 		//全局销售额区间奖励积分设置
@@ -384,12 +373,12 @@ func (t *KD) __Init(stub shim.ChaincodeStubInterface) ([]byte, error) {
 
 		sercJson, err := json.Marshal(serc)
 		if err != nil {
-			return nil, kdlogger.Errorf("Init Marshal(serc) error, err=%s.", err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Init Marshal(serc) error, error=(%s).", err)
 		}
 
 		err = stateCache.PutState_Ex(stub, t.getGlobalRackEncourageScoreCfgKey(), sercJson)
 		if err != nil {
-			return nil, kdlogger.Errorf("Init PutState_Ex(serc) error, err=%s.", err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Init PutState_Ex(serc) error, error=(%s).", err)
 		}
 
 		var rfc RackFinanceCfg
@@ -401,12 +390,12 @@ func (t *KD) __Init(stub shim.ChaincodeStubInterface) ([]byte, error) {
 
 		rfcJson, err := json.Marshal(rfc)
 		if err != nil {
-			return nil, kdlogger.Errorf("Init Marshal(rfc) error, err=%s.", err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Init Marshal(rfc) error, error=(%s).", err)
 		}
 
 		err = stateCache.PutState_Ex(stub, t.getGlobalRackFinancCfgKey(), rfcJson)
 		if err != nil {
-			return nil, kdlogger.Errorf("Init PutState_Ex(rfc) error, err=%s.", err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Init PutState_Ex(rfc) error, error=(%s).", err)
 		}
 
 		return nil, nil
@@ -415,7 +404,7 @@ func (t *KD) __Init(stub shim.ChaincodeStubInterface) ([]byte, error) {
 		return nil, nil
 	} else {
 
-		return nil, kdlogger.Errorf("unkonwn function '%s'", function)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "unkonwn function '%s'", function)
 	}
 }
 
@@ -436,9 +425,9 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response) {
 		transInfoCache.Destroy(stub)
 	}()
 
-	payload, err := t.__Invoke(stub)
-	if err != nil {
-		return shim.Error(err.Error())
+	payload, errcm := t.__Invoke(stub)
+	if errcm != nil {
+		return shim.Error(errcm.toJson())
 	}
 
 	if CROSSCHAINCODE_CALL_THIS {
@@ -448,7 +437,7 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response) {
 
 		invokeRsltB, err := json.Marshal(invokeRslt)
 		if err != nil {
-			return shim.Error(kdlogger.SError("Invoke(%s) marshal invokeResult failed, err=%s", function, err))
+			return shim.Error(kdlogger.SError("Invoke(%s) marshal invokeResult failed, error=(%s)", function, err))
 		}
 
 		kdlogger.Debug("invokeRsltB=%s len=%v", string(invokeRsltB), len(invokeRsltB))
@@ -461,7 +450,7 @@ func (t *KD) Invoke(stub shim.ChaincodeStubInterface) (pbResponse pb.Response) {
 }
 
 // Transaction makes payment of X units from A to B
-func (t *KD) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
+func (t *KD) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, *ErrorCodeMsg) {
 	kdlogger.Debug("Enter Invoke")
 	function, args := stub.GetFunctionAndParameters()
 	kdlogger.Debug("func =%s, args = %+v", function, args)
@@ -471,20 +460,18 @@ func (t *KD) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
 		stateCache.Destroy(stub)
 	}()
 
-	var err error
-
 	//第一个参数为用户名，第二个参数为账户名， 第三个...  最后一个元素是用户签名，实际情况中，可以根据业务需求调整这个最小参数个数。
 	var fixedArgCount = 2
 	//最后一个参数为签名，所以参数必须大于fixedArgCount个
 	if len(args) < fixedArgCount+1 {
-		return nil, kdlogger.Errorf("Invoke miss arg, got %d, at least need %d.", len(args), fixedArgCount+1)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke miss arg, got %d, at least need %d.", len(args), fixedArgCount+1)
 	}
 
 	var userName = args[0]
 	var accName = args[1]
 	timestamp, err := stub.GetTxTimestamp()
 	if err != nil {
-		return nil, kdlogger.Errorf("Init: GetTxTimestamp failed, err=%s", err)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Init: GetTxTimestamp failed, error=(%s)", err)
 	}
 
 	var invokeTime = timestamp.Seconds*1000 + int64(timestamp.Nanos/1000000) //精确到毫秒
@@ -499,22 +486,22 @@ func (t *KD) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	if function == "saveAppid" {
 		var argCount = fixedArgCount + 1
 		if len(args) < argCount {
-			return nil, kdlogger.Errorf("Invoke(saveAppid) miss arg, got %d, need %d.", len(args), argCount)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(saveAppid) miss arg, got %d, need %d.", len(args), argCount)
 		}
 
 		var appid = args[fixedArgCount]
-		kdlogger.Errorf("saveAppid: appid=%s", appid)
+		kdlogger.Debug("saveAppid: appid=%s", appid)
 
 		err = stateCache.PutState_Ex(stub, APPID_KEY, []byte(appid))
 		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(saveAppid) save appid failed, err=%s.", err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Invoke(saveAppid) save appid failed, error=(%s).", err)
 		}
 
 		return nil, nil
 	} else if function == "transefer2" { //带交易密码功能
 		var argCount = fixedArgCount + 4
 		if len(args) < argCount {
-			return nil, kdlogger.Errorf("Invoke(transeferUsePwd) miss arg, got %d, at least need %d.", len(args), argCount)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(transeferUsePwd) miss arg, got %d, at least need %d.", len(args), argCount)
 		}
 
 		var toAcc = args[fixedArgCount]
@@ -522,14 +509,14 @@ func (t *KD) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
 		var transAmount int64
 		transAmount, err = strconv.ParseInt(args[fixedArgCount+1], 0, 64)
 		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(transeferUsePwd): convert issueAmount(%s) failed. err=%s", args[fixedArgCount+1], err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Invoke(transeferUsePwd): convert issueAmount(%s) failed. error=(%s)", args[fixedArgCount+1], err)
 		}
 		kdlogger.Debug("transAmount= %+v", transAmount)
 
 		var pwdBase64 = args[fixedArgCount+2]
-		pwd, err := t.decodeAccountPasswd(pwdBase64)
-		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(resetAccPwd): decodeAccountPasswd (%s) failed. err=%s", pwdBase64, err)
+		pwd, errcm := t.decodeAccountPasswd(pwdBase64)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "Invoke(resetAccPwd): decodeAccountPasswd (%s) failed. error=(%s)", pwdBase64, errcm)
 		}
 		kdlogger.Debug("Invoke(transeferUsePwd): pwd=%s", pwd)
 
@@ -554,60 +541,60 @@ func (t *KD) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
 		}
 
 		//验证密码
-		setPwd, err := t.isSetAccountPasswd(stub, accName)
-		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(transeferUsePwd): IsSetAccountPasswd failed. err=%s, acc=%s", err, accName)
+		setPwd, errcm := t.isSetAccountPasswd(stub, accName)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "Invoke(transeferUsePwd): IsSetAccountPasswd failed. error=(%s), acc=%s", errcm, accName)
 		}
 		kdlogger.Debug("Invoke(transeferUsePwd): setPwd=%v", setPwd)
 		if setPwd {
-			ok, err := t.authAccountPasswd(stub, accName, pwd)
-			if err != nil {
-				return nil, kdlogger.Errorf("Invoke(transeferUsePwd): AuthAccountPasswd failed. err=%s", err)
+			ok, errcm := t.authAccountPasswd(stub, accName, pwd)
+			if errcm != nil {
+				return nil, kdlogger.ErrorECM(errcm.Code, "Invoke(transeferUsePwd): AuthAccountPasswd failed. error=(%s)", errcm)
 			}
 			if !ok {
-				return nil, kdlogger.Errorf("Invoke(transeferUsePwd): passwd invalid.")
+				return nil, kdlogger.ErrorECM(ERRCODE_COMMON_IDENTITY_VERIFY_FAILED, "Invoke(transeferUsePwd): passwd invalid.")
 			}
 		} else {
 
-			err = t.setAccountPasswd(stub, accName, pwd)
-			if err != nil {
-				return nil, kdlogger.Errorf("Invoke(transeferUsePwd): setAccountPasswd failed. err=%s", err)
+			errcm := t.setAccountPasswd(stub, accName, pwd)
+			if errcm != nil {
+				return nil, kdlogger.ErrorECM(errcm.Code, "Invoke(transeferUsePwd): setAccountPasswd failed. error=(%s)", errcm)
 			}
 		}
 
-		_, err = t.transferCoin(stub, accName, toAcc, transType, description, transAmount, invokeTime, sameEntSaveTransFlag)
-		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(transeferUsePwd) transferCoin2 failed. err=%s", err)
+		_, errcm = t.transferCoin(stub, accName, toAcc, transType, description, transAmount, invokeTime, sameEntSaveTransFlag)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "Invoke(transeferUsePwd) transferCoin2 failed. error=(%s)", errcm)
 		}
 		return nil, nil
 
 	} else if function == "setAllocCfg" {
 		if !t.isAdmin(stub, accName) {
-			return nil, kdlogger.Errorf("Invoke(setAllocCfg) can't exec by %s.", accName)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "Invoke(setAllocCfg) can't exec by %s.", accName)
 		}
 
 		var argCount = fixedArgCount + 5
 		if len(args) < argCount {
-			return nil, kdlogger.Errorf("Invoke(setAllocCfg) miss arg, got %d, at least need %d.", len(args), argCount)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(setAllocCfg) miss arg, got %d, at least need %d.", len(args), argCount)
 		}
 
 		rackid := args[fixedArgCount]
 
 		seller, err := strconv.ParseInt(args[fixedArgCount+1], 0, 64)
 		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(setAllocCfg) convert seller(%s) failed. err=%s", args[fixedArgCount+1], err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Invoke(setAllocCfg) convert seller(%s) failed. error=(%s)", args[fixedArgCount+1], err)
 		}
 		fielder, err := strconv.ParseInt(args[fixedArgCount+2], 0, 64)
 		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(setAllocCfg) convert fielder(%s) failed. err=%s", args[fixedArgCount+2], err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Invoke(setAllocCfg) convert fielder(%s) failed. error=(%s)", args[fixedArgCount+2], err)
 		}
 		delivery, err := strconv.ParseInt(args[fixedArgCount+3], 0, 64)
 		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(setAllocCfg) convert delivery(%s) failed. err=%s", args[fixedArgCount+3], err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Invoke(setAllocCfg) convert delivery(%s) failed. error=(%s)", args[fixedArgCount+3], err)
 		}
 		platform, err := strconv.ParseInt(args[fixedArgCount+4], 0, 64)
 		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(setAllocCfg) convert platform(%s) failed. err=%s", args[fixedArgCount+4], err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Invoke(setAllocCfg) convert platform(%s) failed. error=(%s)", args[fixedArgCount+4], err)
 		}
 
 		var eap EarningAllocRate
@@ -624,7 +611,7 @@ func (t *KD) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
 
 		eapJson, err := json.Marshal(eap)
 		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(setAllocCfg) Marshal error, err=%s.", err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Invoke(setAllocCfg) Marshal error, error=(%s).", err)
 		}
 
 		var stateKey string
@@ -636,19 +623,19 @@ func (t *KD) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
 
 		err = stateCache.PutState_Ex(stub, stateKey, eapJson)
 		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(setAllocCfg) PutState_Ex error, err=%s.", err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Invoke(setAllocCfg) PutState_Ex error, error=(%s).", err)
 		}
 
 		return nil, nil
 
 	} else if function == "allocEarning" {
 		if !t.isAdmin(stub, accName) {
-			return nil, kdlogger.Errorf("Invoke(allocEarning) can't exec by %s.", accName)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "Invoke(allocEarning) can't exec by %s.", accName)
 		}
 
 		var argCount = fixedArgCount + 7
 		if len(args) < argCount {
-			return nil, kdlogger.Errorf("Invoke(allocEarning) miss arg, got %d, at least need %d.", len(args), argCount)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(allocEarning) miss arg, got %d, at least need %d.", len(args), argCount)
 		}
 
 		rackid := args[fixedArgCount]
@@ -661,30 +648,30 @@ func (t *KD) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
 		var totalAmt int64
 		totalAmt, err = strconv.ParseInt(args[fixedArgCount+6], 0, 64)
 		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(allocEarning) convert totalAmt(%s) failed. err=%s", args[fixedArgCount+6], err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Invoke(allocEarning) convert totalAmt(%s) failed. error=(%s)", args[fixedArgCount+6], err)
 		}
 
 		var eap EarningAllocRate
 
 		eapB, err := stateCache.GetState_Ex(stub, t.getRackAllocRateKey(rackid))
 		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(allocEarning) GetState(rackid=%s) failed. err=%s", rackid, err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Invoke(allocEarning) GetState(rackid=%s) failed. error=(%s)", rackid, err)
 		}
 		if eapB == nil {
 			kdlogger.Warn("Invoke(allocEarning) GetState(rackid=%s) nil, try to get global.", rackid)
 			//没有为该货架单独配置，返回global配置
 			eapB, err = stateCache.GetState_Ex(stub, t.getGlobalRackAllocRateKey())
 			if err != nil {
-				return nil, kdlogger.Errorf("Invoke(allocEarning) GetState(global, rackid=%s) failed. err=%s", rackid, err)
+				return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Invoke(allocEarning) GetState(global, rackid=%s) failed. error=(%s)", rackid, err)
 			}
 			if eapB == nil {
-				return nil, kdlogger.Errorf("Invoke(allocEarning) GetState(global, rackid=%s) nil.", rackid)
+				return nil, kdlogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "Invoke(allocEarning) GetState(global, rackid=%s) nil.", rackid)
 			}
 		}
 
 		err = json.Unmarshal(eapB, &eap)
 		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(allocEarning) Unmarshal failed. err=%s", err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Invoke(allocEarning) Unmarshal failed. error=(%s)", err)
 		}
 
 		var accs AllocAccs
@@ -693,35 +680,35 @@ func (t *KD) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
 		accs.DeliveryAcc = deliveryAcc
 		accs.PlatformAcc = platformAcc
 
-		_, err = t.setAllocEarnTx(stub, rackid, allocKey, totalAmt, &accs, &eap, invokeTime)
-		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(allocEarning) setAllocEarnTx failed. err=%s", err)
+		_, errcm := t.setAllocEarnTx(stub, rackid, allocKey, totalAmt, &accs, &eap, invokeTime)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "Invoke(allocEarning) setAllocEarnTx failed. error=(%s)", errcm)
 		}
 		return nil, nil
 
 	} else if function == "setSESCfg" { //设置每个货架的销售额奖励区间比例
 		if !t.isAdmin(stub, accName) {
-			return nil, kdlogger.Errorf("Invoke(setSESCfg) can't exec by %s.", accName)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "Invoke(setSESCfg) can't exec by %s.", accName)
 		}
 
 		var argCount = fixedArgCount + 2
 		if len(args) < argCount {
-			return nil, kdlogger.Errorf("Invoke(setSESCfg) miss arg, got %d, at least need %d.", len(args), argCount)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(setSESCfg) miss arg, got %d, at least need %d.", len(args), argCount)
 		}
 
 		var rackid = args[fixedArgCount]
 		var cfgStr = args[fixedArgCount+1]
 
-		_, err = t.setRackEncourageScoreCfg(stub, rackid, cfgStr, invokeTime)
-		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(setSESCfg) setRackEncourageScoreCfg failed. err=%s", err)
+		_, errcm := t.setRackEncourageScoreCfg(stub, rackid, cfgStr, invokeTime)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "Invoke(setSESCfg) setRackEncourageScoreCfg failed. error=(%s)", errcm)
 		}
 		return nil, nil
 
 	} else if function == "encourageScoreForSales" { //根据销售额奖励积分
 		var argCount = fixedArgCount + 4
 		if len(args) < argCount {
-			return nil, kdlogger.Errorf("Invoke(encourageScoreForSales) miss arg, got %d, at least need %d.", len(args), argCount)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(encourageScoreForSales) miss arg, got %d, at least need %d.", len(args), argCount)
 		}
 
 		var paraStr = args[fixedArgCount]
@@ -734,16 +721,16 @@ func (t *KD) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
 		}
 
 		//使用登录的账户进行转账
-		_, err = t.allocEncourageScoreForSales(stub, paraStr, accName, transType, transDesc, invokeTime, sameEntSaveTransFlag)
-		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(encourageScoreForSales) allocEncourageScoreForSales failed. err=%s", err)
+		_, errcm := t.allocEncourageScoreForSales(stub, paraStr, accName, transType, transDesc, invokeTime, sameEntSaveTransFlag)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "Invoke(encourageScoreForSales) allocEncourageScoreForSales failed. error=(%s)", errcm)
 		}
 		return nil, nil
 
 	} else if function == "encourageScoreForNewRack" { //新开货架奖励积分
 		var argCount = fixedArgCount + 4
 		if len(args) < argCount {
-			return nil, kdlogger.Errorf("Invoke(encourageScoreForNewRack) miss arg, got %d, at least need %d.", len(args), argCount)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(encourageScoreForNewRack) miss arg, got %d, at least need %d.", len(args), argCount)
 		}
 
 		var paraStr = args[fixedArgCount]
@@ -756,20 +743,20 @@ func (t *KD) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
 		}
 
 		//使用登录的账户进行转账
-		_, err = t.allocEncourageScoreForNewRack(stub, paraStr, accName, transType, transDesc, invokeTime, sameEntSaveTransFlag)
-		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(encourageScoreForNewRack) allocEncourageScoreForNewRack failed. err=%s", err)
+		_, errcm := t.allocEncourageScoreForNewRack(stub, paraStr, accName, transType, transDesc, invokeTime, sameEntSaveTransFlag)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "Invoke(encourageScoreForNewRack) allocEncourageScoreForNewRack failed. error=(%s)", errcm)
 		}
 		return nil, nil
 
 	} else if function == "setFinanceCfg" {
 		if !t.isAdmin(stub, accName) {
-			return nil, kdlogger.Errorf("Invoke(setFinanceCfg) can't exec by %s.", accName)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "Invoke(setFinanceCfg) can't exec by %s.", accName)
 		}
 
 		var argCount = fixedArgCount + 4
 		if len(args) < argCount {
-			return nil, kdlogger.Errorf("Invoke(setFinanceCfg) miss arg, got %d, at least need %d.", len(args), argCount)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(setFinanceCfg) miss arg, got %d, at least need %d.", len(args), argCount)
 		}
 
 		var rackid = args[fixedArgCount]
@@ -779,15 +766,15 @@ func (t *KD) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
 
 		profitsPercent, err = strconv.Atoi(args[fixedArgCount+1])
 		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(setFinanceCfg) convert profitsPercent(%s) failed. err=%s", args[fixedArgCount+1], err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Invoke(setFinanceCfg) convert profitsPercent(%s) failed. error=(%s)", args[fixedArgCount+1], err)
 		}
 		investProfitsPercent, err = strconv.Atoi(args[fixedArgCount+2])
 		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(setFinanceCfg) convert investProfitsPercent(%s) failed. err=%s", args[fixedArgCount+2], err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Invoke(setFinanceCfg) convert investProfitsPercent(%s) failed. error=(%s)", args[fixedArgCount+2], err)
 		}
 		investCapacity, err = strconv.ParseInt(args[fixedArgCount+3], 0, 64)
 		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(setFinanceCfg) convert investCapacity(%s) failed. err=%s", args[fixedArgCount+3], err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Invoke(setFinanceCfg) convert investCapacity(%s) failed. error=(%s)", args[fixedArgCount+3], err)
 		}
 
 		var rfc RackFinanceCfg
@@ -802,7 +789,7 @@ func (t *KD) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
 
 		rfcJson, err := json.Marshal(rfc)
 		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(setFinanceCfg) Marshal(rfc) error, err=%s.", err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Invoke(setFinanceCfg) Marshal(rfc) error, error=(%s).", err)
 		}
 
 		var stateKey string
@@ -814,7 +801,7 @@ func (t *KD) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
 
 		err = stateCache.PutState_Ex(stub, stateKey, rfcJson)
 		if err != nil {
-			return nil, kdlogger.Errorf("IInvoke(setFinanceCfg) PutState_Ex(rfc) error, err=%s.", err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "IInvoke(setFinanceCfg) PutState_Ex(rfc) error, error=(%s).", err)
 		}
 
 		return nil, nil
@@ -822,7 +809,7 @@ func (t *KD) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	} else if function == "buyFinance" {
 		var argCount = fixedArgCount + 7
 		if len(args) < argCount {
-			return nil, kdlogger.Errorf("Invoke(buyFinancial) miss arg, got %d, at least need %d.", len(args), argCount)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(buyFinancial) miss arg, got %d, at least need %d.", len(args), argCount)
 		}
 
 		var rackid = args[fixedArgCount]
@@ -831,7 +818,7 @@ func (t *KD) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
 		var amount int64
 		amount, err = strconv.ParseInt(args[fixedArgCount+3], 0, 64)
 		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(buyFinancial) convert amount(%s) failed. err=%s", args[fixedArgCount+3], err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "Invoke(buyFinancial) convert amount(%s) failed. error=(%s)", args[fixedArgCount+3], err)
 		}
 
 		var transType = args[fixedArgCount+4]
@@ -843,39 +830,39 @@ func (t *KD) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
 		}
 
 		//每次购买时，肯定是购买最新一期的理财，设置为当前的fid
-		err = t.setCurrentFid(stub, financid)
-		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(buyFinancial) setCurrentFid failed, err=%s.", err)
+		errcm := t.setCurrentFid(stub, financid)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "Invoke(buyFinancial) setCurrentFid failed, error=(%s).", errcm)
 		}
 
 		//使用登录的账户进行转账
-		_, err = t.userBuyFinance(stub, accName, rackid, financid, payee, transType, transDesc, amount, invokeTime, sameEntSaveTransFlag, false)
-		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(buyFinancial) userBuyFinance failed. err=%s", err)
+		_, errcm = t.userBuyFinance(stub, accName, rackid, financid, payee, transType, transDesc, amount, invokeTime, sameEntSaveTransFlag, false)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "Invoke(buyFinancial) userBuyFinance failed. error=(%s)", errcm)
 		}
 		return nil, nil
 
 	} else if function == "financeIssueFinish" {
 		if !t.isAdmin(stub, accName) {
-			return nil, kdlogger.Errorf("Invoke(financeIssueFinish) can't exec by %s.", accName)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "Invoke(financeIssueFinish) can't exec by %s.", accName)
 		}
 
 		var argCount = fixedArgCount + 1
 		if len(args) < argCount {
-			return nil, kdlogger.Errorf("Invoke(financeIssueFinish) miss arg, got %d, at least need %d.", len(args), argCount)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(financeIssueFinish) miss arg, got %d, at least need %d.", len(args), argCount)
 		}
 
 		var financid = args[fixedArgCount]
 
 		//理财结束时，肯定是最新一期的理财，设置为当前的fid
-		err = t.setCurrentFid(stub, financid)
-		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(financeIssueFinish) setCurrentFid failed, err=%s.", err)
+		errcm := t.setCurrentFid(stub, financid)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "Invoke(financeIssueFinish) setCurrentFid failed, error=(%s).", errcm)
 		}
 
-		err = t.financeIssueFinishAfter(stub, financid, invokeTime)
-		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(financeIssueFinishAfter) financeRenewal failed, err=%s.", err)
+		errcm = t.financeIssueFinishAfter(stub, financid, invokeTime)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "Invoke(financeIssueFinishAfter) financeRenewal failed, error=(%s).", errcm)
 		}
 
 		return nil, nil
@@ -883,7 +870,7 @@ func (t *KD) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	} else if function == "payFinance" {
 		var argCount = fixedArgCount + 5
 		if len(args) < argCount {
-			return nil, kdlogger.Errorf("Invoke(payFinance) miss arg, got %d, at least need %d.", len(args), argCount)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(payFinance) miss arg, got %d, at least need %d.", len(args), argCount)
 		}
 
 		var rackid = args[fixedArgCount]
@@ -896,110 +883,111 @@ func (t *KD) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
 			sameEntSaveTransFlag = false
 		}
 
-		err = t.payUserFinance(stub, accName, reacc, rackid, invokeTime, transType, transDesc, sameEntSaveTransFlag)
-		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(payFinance) payUserFinance failed, err=%s.", err)
+		errcm := t.payUserFinance(stub, accName, reacc, rackid, invokeTime, transType, transDesc, sameEntSaveTransFlag)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "Invoke(payFinance) payUserFinance failed, error=(%s).", errcm)
 		}
 
 		return nil, nil
 
 	} else if function == "financeBouns" {
 		if !t.isAdmin(stub, accName) {
-			return nil, kdlogger.Errorf("Invoke(financeBouns) can't exec by %s.", accName)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "Invoke(financeBouns) can't exec by %s.", accName)
 		}
 
 		var argCount = fixedArgCount + 2
 		if len(args) < argCount {
-			return nil, kdlogger.Errorf("Invoke(financeBouns) miss arg, got %d, at least need %d.", len(args), argCount)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(financeBouns) miss arg, got %d, at least need %d.", len(args), argCount)
 		}
 
 		var fid = args[fixedArgCount]
 		var rackSalesCfg = args[fixedArgCount+1]
-		_, err = t.financeBonus(stub, fid, rackSalesCfg, invokeTime)
-		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(financeBouns) financeBonus failed. err=%s", err)
+		_, errcm := t.financeBonus(stub, fid, rackSalesCfg, invokeTime)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "Invoke(financeBouns) financeBonus failed. error=(%s)", errcm)
 		}
 		return nil, nil
 
 	} else if function == "setAccCfg1" { //设置交易密码
 		var argCount = fixedArgCount + 1
 		if len(args) < argCount {
-			return nil, kdlogger.Errorf("Invoke(setAccPwd) miss arg, got %d, need %d.", len(args), argCount)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(setAccPwd) miss arg, got %d, need %d.", len(args), argCount)
 		}
 
-		setPwd, err := t.isSetAccountPasswd(stub, accName)
-		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(setAccPwd): IsSetAccountPasswd failed. err=%s, acc=%s", err, accName)
+		setPwd, errcm := t.isSetAccountPasswd(stub, accName)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "Invoke(setAccPwd): IsSetAccountPasswd failed. error=(%s), acc=%s", errcm, accName)
 		}
 		//如果已设置，则报错
 		if setPwd {
-			return nil, kdlogger.Errorf("Invoke(setAccPwd): pwd is setted, do nothing, acc=%s", accName)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "Invoke(setAccPwd): pwd is setted, do nothing, acc=%s", accName)
 		}
 
 		var pwdBase64 = args[fixedArgCount]
-		pwd, err := t.decodeAccountPasswd(pwdBase64)
-		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(setAccPwd): decodeAccountPasswd (%s) failed. err=%s", pwdBase64, err)
+		pwd, errcm := t.decodeAccountPasswd(pwdBase64)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "Invoke(setAccPwd): decodeAccountPasswd (%s) failed. error=(%s)", pwdBase64, errcm)
 		}
 		kdlogger.Debug("Invoke(setAccPwd): pwd=%s", pwd)
 
-		err = t.setAccountPasswd(stub, accName, pwd)
-		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(setAccPwd) setAccountPasswd failed. err=%s", err)
+		errcm = t.setAccountPasswd(stub, accName, pwd)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "Invoke(setAccPwd) setAccountPasswd failed. error=(%s)", errcm)
 		}
 		return nil, nil
 
 	} else if function == "setAccCfg2" { //重置交易密码
 		var argCount = fixedArgCount + 1
 		if len(args) < argCount {
-			return nil, kdlogger.Errorf("Invoke(resetAccPwd) miss arg, got %d, need %d.", len(args), argCount)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(resetAccPwd) miss arg, got %d, need %d.", len(args), argCount)
 		}
 
 		var pwdBase64 = args[fixedArgCount]
-		pwd, err := t.decodeAccountPasswd(pwdBase64)
-		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(resetAccPwd): decodeAccountPasswd (%s) failed. err=%s", pwdBase64, err)
+		pwd, errcm := t.decodeAccountPasswd(pwdBase64)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "Invoke(resetAccPwd): decodeAccountPasswd (%s) failed. error=(%s)", pwdBase64, errcm)
 		}
 		kdlogger.Debug("Invoke(resetAccPwd): pwd=%s", pwd)
 
-		err = t.setAccountPasswd(stub, accName, pwd)
-		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(resetAccPwd) setAccountPasswd failed. err=%s", err)
+		errcm = t.setAccountPasswd(stub, accName, pwd)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "Invoke(resetAccPwd) setAccountPasswd failed. error=(%s)", errcm)
 		}
 		return nil, nil
 
 	} else if function == "setAccCfg3" { //修改交易密码
 		var argCount = fixedArgCount + 2
 		if len(args) < argCount {
-			return nil, kdlogger.Errorf("Invoke(chgAccPwd) miss arg, got %d, need %d.", len(args), argCount)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(chgAccPwd) miss arg, got %d, need %d.", len(args), argCount)
 		}
 
+		var errcm *ErrorCodeMsg
 		var oldpwd, newpwd string
 		var oldpwdBase64 = args[fixedArgCount]
 		var newpwdBase64 = args[fixedArgCount+1]
 
-		oldpwd, err = t.decodeAccountPasswd(oldpwdBase64)
-		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(chgAccPwd): decodeAccountPasswd o(%s) failed. err=%s", oldpwdBase64, err)
+		oldpwd, errcm = t.decodeAccountPasswd(oldpwdBase64)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "Invoke(chgAccPwd): decodeAccountPasswd o(%s) failed. error=(%s)", oldpwdBase64, errcm)
 		}
-		newpwd, err = t.decodeAccountPasswd(newpwdBase64)
-		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(chgAccPwd): decodeAccountPasswd n(%s) failed. err=%s", newpwdBase64, err)
+		newpwd, errcm = t.decodeAccountPasswd(newpwdBase64)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "Invoke(chgAccPwd): decodeAccountPasswd n(%s) failed. error=(%s)", newpwdBase64, errcm)
 		}
 
 		kdlogger.Debug("Invoke(chgAccPwd): opwd=%s", oldpwd)
 		kdlogger.Debug("Invoke(chgAccPwd): npwd=%s", newpwd)
 
-		err = t.changeAccountPasswd(stub, accName, oldpwd, newpwd)
-		if err != nil {
-			return nil, kdlogger.Errorf("Invoke(chgAccPwd) changeAccountPasswd failed. err=%s", err)
+		errcm = t.changeAccountPasswd(stub, accName, oldpwd, newpwd)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "Invoke(chgAccPwd) changeAccountPasswd failed. error=(%s)", errcm)
 		}
 		return nil, nil
 
 	} else if function == "updateEnv" {
 		var argCount = fixedArgCount + 2
 		if len(args) < argCount {
-			return nil, kdlogger.Errorf("Invoke(updateEnv) miss arg, got %d, at least need %d.", len(args), argCount)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Invoke(updateEnv) miss arg, got %d, at least need %d.", len(args), argCount)
 		}
 		key := args[fixedArgCount]
 		value := args[fixedArgCount+1]
@@ -1024,16 +1012,15 @@ func (t *KD) __Invoke(stub shim.ChaincodeStubInterface) ([]byte, error) {
 }
 
 // Query callback representing the query of a chaincode
-func (t *KD) __Query(stub shim.ChaincodeStubInterface, ifas *InvokeArgs) ([]byte, error) {
+func (t *KD) __Query(stub shim.ChaincodeStubInterface, ifas *InvokeArgs) ([]byte, *ErrorCodeMsg) {
 	kdlogger.Debug("Enter Query")
 	function, args := stub.GetFunctionAndParameters()
 	kdlogger.Debug("func =%s, args = %+v", function, args)
 
-	var err error
 
 	var fixedArgCount = ifas.FixedArgCount
 	if len(args) < fixedArgCount {
-		return nil, kdlogger.Errorf("Query miss arg, got %d, at least need %d.", len(args), fixedArgCount)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "Query miss arg, got %d, at least need %d.", len(args), fixedArgCount)
 	}
 
 	//var userName = ifas.UserName
@@ -1044,7 +1031,7 @@ func (t *KD) __Query(stub shim.ChaincodeStubInterface, ifas *InvokeArgs) ([]byte
 
 		var argCount = fixedArgCount + 7
 		if len(args) < argCount {
-			return nil, kdlogger.Errorf("queryRackAlloc miss arg, got %d, need %d.", len(args), argCount)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "queryRackAlloc miss arg, got %d, need %d.", len(args), argCount)
 		}
 
 		var rackid string
@@ -1054,63 +1041,64 @@ func (t *KD) __Query(stub shim.ChaincodeStubInterface, ifas *InvokeArgs) ([]byte
 		var begTime int64
 		var endTime int64
 		var txAcc string
+        var err error
 
 		rackid = args[fixedArgCount]
 		allocKey = args[fixedArgCount+1]
 
 		begSeq, err = strconv.ParseInt(args[fixedArgCount+2], 0, 64)
 		if err != nil {
-			return nil, kdlogger.Errorf("queryRackAlloc ParseInt for begSeq(%s) failed. err=%s", args[fixedArgCount+2], err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "queryRackAlloc ParseInt for begSeq(%s) failed. error=(%s)", args[fixedArgCount+2], err)
 		}
 		txCount, err = strconv.ParseInt(args[fixedArgCount+3], 0, 64)
 		if err != nil {
-			return nil, kdlogger.Errorf("queryRackAlloc ParseInt for txCount(%s) failed. err=%s", args[fixedArgCount+3], err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "queryRackAlloc ParseInt for txCount(%s) failed. error=(%s)", args[fixedArgCount+3], err)
 		}
 
 		begTime, err = strconv.ParseInt(args[fixedArgCount+4], 0, 64)
 		if err != nil {
-			return nil, kdlogger.Errorf("queryRackAlloc ParseInt for begTime(%s) failed. err=%s", args[fixedArgCount+4], err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "queryRackAlloc ParseInt for begTime(%s) failed. error=(%s)", args[fixedArgCount+4], err)
 		}
 		endTime, err = strconv.ParseInt(args[fixedArgCount+5], 0, 64)
 		if err != nil {
-			return nil, kdlogger.Errorf("queryRackAlloc ParseInt for endTime(%s) failed. err=%s", args[fixedArgCount+5], err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "queryRackAlloc ParseInt for endTime(%s) failed. error=(%s)", args[fixedArgCount+5], err)
 		}
 		txAcc = args[fixedArgCount+6]
 
 		if len(allocKey) > 0 {
 			//是否是管理员帐户，管理员用户才可以查
 			if !t.isAdmin(stub, accName) {
-				return nil, kdlogger.Errorf("queryRackAlloc: %s can't query allocKey.", accName)
+				return nil, kdlogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "queryRackAlloc: %s can't query allocKey.", accName)
 			}
 
 			//查询某一次的分配情况（由allocKey检索）
-			retValue, err := t.getAllocTxRecdByKey(stub, rackid, allocKey)
-			if err != nil {
-				return nil, kdlogger.Errorf("queryRackAlloc: getAllocTxRecdByKey failed. err=%s", err)
+			retValue, errcm := t.getAllocTxRecdByKey(stub, rackid, allocKey)
+			if errcm != nil {
+				return nil, kdlogger.ErrorECM(errcm.Code, "queryRackAlloc: getAllocTxRecdByKey failed. error=(%s)", errcm)
 			}
 			return retValue, nil
 		} else {
 			if t.isAdmin(stub, accName) {
 				if len(txAcc) > 0 {
 					//查询某一个账户的分配情况
-					retValue, err := t.getOneAccAllocTxRecds(stub, txAcc, begSeq, txCount, begTime, endTime)
-					if err != nil {
-						return nil, kdlogger.Errorf("queryRackAlloc: getOneAccAllocTxRecds failed. err=%s", err)
+					retValue, errcm := t.getOneAccAllocTxRecds(stub, txAcc, begSeq, txCount, begTime, endTime)
+					if errcm != nil {
+						return nil, kdlogger.ErrorECM(errcm.Code, "queryRackAlloc: getOneAccAllocTxRecds failed. error=(%s)", errcm)
 					}
 					return retValue, nil
 				} else {
 					//查询某一个货架的分配情况
-					retValue, err := t.getAllocTxRecds(stub, rackid, begSeq, txCount, begTime, endTime)
-					if err != nil {
-						return nil, kdlogger.Errorf("queryRackAlloc: getAllocTxRecds failed. err=%s", err)
+					retValue, errcm := t.getAllocTxRecds(stub, rackid, begSeq, txCount, begTime, endTime)
+					if errcm != nil {
+						return nil, kdlogger.ErrorECM(errcm.Code, "queryRackAlloc: getAllocTxRecds failed. error=(%s)", errcm)
 					}
 					return retValue, nil
 				}
 			} else {
 				//非管理员账户，只能查询自己的交易记录，忽略txAcc参数
-				retValue, err := t.getOneAccAllocTxRecds(stub, accName, begSeq, txCount, begTime, endTime)
-				if err != nil {
-					return nil, kdlogger.Errorf("queryRackAlloc: getOneAccAllocTxRecds2 failed. err=%s", err)
+				retValue, errcm := t.getOneAccAllocTxRecds(stub, accName, begSeq, txCount, begTime, endTime)
+				if errcm != nil {
+					return nil, kdlogger.ErrorECM(errcm.Code, "queryRackAlloc: getOneAccAllocTxRecds2 failed. error=(%s)", errcm)
 				}
 				return retValue, nil
 			}
@@ -1120,57 +1108,57 @@ func (t *KD) __Query(stub shim.ChaincodeStubInterface, ifas *InvokeArgs) ([]byte
 
 	} else if function == "getRackAllocCfg" {
 		if !t.isAdmin(stub, accName) {
-			return nil, kdlogger.Errorf("getRackAllocCfg: %s can't query.", accName)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "getRackAllocCfg: %s can't query.", accName)
 		}
 
 		var argCount = fixedArgCount + 1
 		if len(args) < argCount {
-			return nil, kdlogger.Errorf("getRackAllocCfg miss arg, got %d, need %d.", len(args), argCount)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "getRackAllocCfg miss arg, got %d, need %d.", len(args), argCount)
 		}
 
 		var rackid = args[fixedArgCount]
 
-		eapB, err := t.getRackAllocCfg(stub, rackid, nil)
-		if err != nil {
-			return nil, kdlogger.Errorf("getRackAllocCfg getRackAllocCfg(rackid=%s) failed. err=%s", rackid, err)
+		eapB, errcm := t.getRackAllocCfg(stub, rackid, nil)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "getRackAllocCfg getRackAllocCfg(rackid=%s) failed. error=(%s)", rackid, errcm)
 		}
 
 		return eapB, nil
 
 	} else if function == "getSESCfg" {
 		if !t.isAdmin(stub, accName) {
-			return nil, kdlogger.Errorf("getSESCfg: %s can't query.", accName)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "getSESCfg: %s can't query.", accName)
 		}
 
 		var argCount = fixedArgCount + 1
 		if len(args) < argCount {
-			return nil, kdlogger.Errorf("getSESCfg miss arg, got %d, need %d.", len(args), argCount)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "getSESCfg miss arg, got %d, need %d.", len(args), argCount)
 		}
 
 		var rackid = args[fixedArgCount]
 
-		sercB, err := t.getRackEncourageScoreCfg(stub, rackid, nil)
-		if err != nil {
-			return nil, kdlogger.Errorf("getSESCfg getRackEncourageScoreCfg(rackid=%s) failed. err=%s", rackid, err)
+		sercB, errcm := t.getRackEncourageScoreCfg(stub, rackid, nil)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "getSESCfg getRackEncourageScoreCfg(rackid=%s) failed. error=(%s)", rackid, errcm)
 		}
 
 		return sercB, nil
 
 	} else if function == "getRackFinanceCfg" {
 		if !t.isAdmin(stub, accName) {
-			return nil, kdlogger.Errorf("getRackFinanceCfg: %s can't query.", accName)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "getRackFinanceCfg: %s can't query.", accName)
 		}
 
 		var argCount = fixedArgCount + 1
 		if len(args) < argCount {
-			return nil, kdlogger.Errorf("getRackFinanceCfg miss arg, got %d, need %d.", len(args), argCount)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "getRackFinanceCfg miss arg, got %d, need %d.", len(args), argCount)
 		}
 
 		var rackid = args[fixedArgCount]
 
-		rfcB, err := t.getRackFinancCfg(stub, rackid, nil)
-		if err != nil {
-			return nil, kdlogger.Errorf("getRackFinanceCfg getRackFinancCfg(rackid=%s) failed. err=%s", rackid, err)
+		rfcB, errcm := t.getRackFinancCfg(stub, rackid, nil)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "getRackFinanceCfg getRackFinancCfg(rackid=%s) failed. error=(%s)", rackid, errcm)
 		}
 
 		return rfcB, nil
@@ -1178,27 +1166,26 @@ func (t *KD) __Query(stub shim.ChaincodeStubInterface, ifas *InvokeArgs) ([]byte
 	} else if function == "getRackFinanceProfit" {
 		var argCount = fixedArgCount + 1
 		if len(args) < argCount {
-			return nil, kdlogger.Errorf("getRackFinanceProfit miss arg, got %d, need %d.", len(args), argCount)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "getRackFinanceProfit miss arg, got %d, need %d.", len(args), argCount)
 		}
 
 		var rackid = args[fixedArgCount]
 
-		var profit int64
-		profit, err = t.getUserFinanceProfit(stub, accName, rackid)
-		if err != nil {
-			return nil, kdlogger.Errorf("getRackFinanceProfit getUserFinanceProfit(rackid=%s) failed. err=%s", rackid, err)
+		profit, errcm := t.getUserFinanceProfit(stub, accName, rackid)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "getRackFinanceProfit getUserFinanceProfit(rackid=%s) failed. error=(%s)", rackid, errcm)
 		}
 
 		return []byte(strconv.FormatInt(profit, 10)), nil
 
 	} else if function == "getRackRestFinanceCapacity" {
 		if !t.isAdmin(stub, accName) {
-			return nil, kdlogger.Errorf("getRackFinanceCapacity: %s can't query.", accName)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "getRackFinanceCapacity: %s can't query.", accName)
 		}
 
 		var argCount = fixedArgCount + 2
 		if len(args) < argCount {
-			return nil, kdlogger.Errorf("getRackFinanceCapacity miss arg, got %d, need %d.", len(args), argCount)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "getRackFinanceCapacity miss arg, got %d, need %d.", len(args), argCount)
 		}
 
 		var rackid = args[fixedArgCount]
@@ -1206,9 +1193,9 @@ func (t *KD) __Query(stub shim.ChaincodeStubInterface, ifas *InvokeArgs) ([]byte
 
 		//新理财发行后，用户购买理财时，前台会查询一下货架剩余的投资额度，传入的fid为最新期的理财id
 
-		restCap, err := t.getRestFinanceCapacityForRack(stub, rackid, fid)
-		if err != nil {
-			return nil, kdlogger.Errorf("getRackFinanceCapacity getFinanceCapacityForRack(rackid=%s) failed. err=%s", rackid, err)
+		restCap, errcm := t.getRestFinanceCapacityForRack(stub, rackid, fid)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "getRackFinanceCapacity getFinanceCapacityForRack(rackid=%s) failed. error=(%s)", rackid, errcm)
 		}
 
 		return []byte(strconv.FormatInt(restCap, 10)), nil
@@ -1216,27 +1203,29 @@ func (t *KD) __Query(stub shim.ChaincodeStubInterface, ifas *InvokeArgs) ([]byte
 	} else if function == "transPreCheck" {
 		var argCount = fixedArgCount + 3
 		if len(args) < argCount {
-			return nil, kdlogger.Errorf("transPreCheck miss arg, got %d, need %d.", len(args), argCount)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "transPreCheck miss arg, got %d, need %d.", len(args), argCount)
 		}
 
 		//toAcc := args[fixedArgCount]
 		pwd := args[fixedArgCount+1]
-		//transAmount, err := strconv.ParseInt(args[fixedArgCount+2], 0, 64)
-		if err != nil {
-			return nil, kdlogger.Errorf("transPreCheck: convert transAmount(%s) failed. err=%s", args[fixedArgCount+2], err)
-		}
+		/*
+			transAmount, err := strconv.ParseInt(args[fixedArgCount+2], 0, 64)
+			if err != nil {
+				return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "transPreCheck: convert transAmount(%s) failed. error=(%s)", args[fixedArgCount+2], err)
+			}
+		*/
 
 		//先看密码是否正确
 		if len(pwd) > 0 {
-			setPwd, err := t.isSetAccountPasswd(stub, accName)
-			if err != nil {
-				return nil, kdlogger.Errorf("transPreCheck: isSetAccountPasswd(%s) failed. err=%s", accName, err)
+			setPwd, errcm := t.isSetAccountPasswd(stub, accName)
+			if errcm != nil {
+				return nil, kdlogger.ErrorECM(errcm.Code, "transPreCheck: isSetAccountPasswd(%s) failed. error=(%s)", accName, errcm)
 			}
 
 			if setPwd {
-				ok, err := t.authAccountPasswd(stub, accName, pwd)
-				if err != nil {
-					return nil, kdlogger.Errorf("transPreCheck: AuthAccountPasswd(%s) failed. err=%s", accName, err)
+				ok, errcm := t.authAccountPasswd(stub, accName, pwd)
+				if errcm != nil {
+					return nil, kdlogger.ErrorECM(errcm.Code, "transPreCheck: AuthAccountPasswd(%s) failed. error=(%s)", accName, errcm)
 				}
 				if !ok {
 					return []byte(strconv.FormatInt(ERRCODE_TRANS_PASSWD_INVALID, 10)), nil
@@ -1248,9 +1237,9 @@ func (t *KD) __Query(stub shim.ChaincodeStubInterface, ifas *InvokeArgs) ([]byte
 		return []byte(strconv.FormatInt(0, 10)), nil
 
 	} else if function == "isAccSetPwd" { //账户是否设置密码
-		setPwd, err := t.isSetAccountPasswd(stub, accName)
-		if err != nil {
-			return nil, kdlogger.Errorf("Query(isAccSetPwd): IsSetAccountPasswd failed. err=%s, acc=%s", err, accName)
+		setPwd, errcm := t.isSetAccountPasswd(stub, accName)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "Query(isAccSetPwd): IsSetAccountPasswd failed. error=(%s), acc=%s", errcm, accName)
 		}
 
 		var retValues []byte
@@ -1263,12 +1252,12 @@ func (t *KD) __Query(stub shim.ChaincodeStubInterface, ifas *InvokeArgs) ([]byte
 		return retValues, nil
 	} else {
 
-		return nil, kdlogger.Errorf("unknown function: %s.", function)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "unknown function: %s.", function)
 	}
 }
 
 func (t *KD) setAllocEarnTx(stub shim.ChaincodeStubInterface, rackid, allocKey string, totalAmt int64,
-	accs *AllocAccs, eap *EarningAllocRate, times int64) ([]byte, error) {
+	accs *AllocAccs, eap *EarningAllocRate, times int64) ([]byte, *ErrorCodeMsg) {
 
 	var eat EarningAllocTx
 	eat.Rackid = rackid
@@ -1284,28 +1273,27 @@ func (t *KD) setAllocEarnTx(stub shim.ChaincodeStubInterface, rackid, allocKey s
 
 	rolesAllocAmt := t.getRackRolesAllocAmt(eap, totalAmt)
 
-	var err error
-	err = t.getRolesAllocEarning(rolesAllocAmt.SellerAmount, accs.SellerAcc, eat.AmountMap[RACK_ROLE_SELLER])
-	if err != nil {
-		return nil, kdlogger.Errorf("setAllocEarnTx getRolesAllocEarning 1 failed.err=%s", err)
+	errcm := t.getRolesAllocEarning(rolesAllocAmt.SellerAmount, accs.SellerAcc, eat.AmountMap[RACK_ROLE_SELLER])
+	if errcm != nil {
+		return nil, kdlogger.ErrorECM(errcm.Code, "setAllocEarnTx getRolesAllocEarning 1 failed.error=(%s)", errcm)
 	}
-	err = t.getRolesAllocEarning(rolesAllocAmt.FielderAmount, accs.FielderAcc, eat.AmountMap[RACK_ROLE_FIELDER])
-	if err != nil {
-		return nil, kdlogger.Errorf("setAllocEarnTx getRolesAllocEarning 2 failed.err=%s", err)
+	errcm = t.getRolesAllocEarning(rolesAllocAmt.FielderAmount, accs.FielderAcc, eat.AmountMap[RACK_ROLE_FIELDER])
+	if errcm != nil {
+		return nil, kdlogger.ErrorECM(errcm.Code, "setAllocEarnTx getRolesAllocEarning 2 failed.error=(%s)", errcm)
 	}
-	err = t.getRolesAllocEarning(rolesAllocAmt.DeliveryAmount, accs.DeliveryAcc, eat.AmountMap[RACK_ROLE_DELIVERY])
-	if err != nil {
-		return nil, kdlogger.Errorf("setAllocEarnTx getRolesAllocEarning 3 failed.err=%s", err)
+	errcm = t.getRolesAllocEarning(rolesAllocAmt.DeliveryAmount, accs.DeliveryAcc, eat.AmountMap[RACK_ROLE_DELIVERY])
+	if errcm != nil {
+		return nil, kdlogger.ErrorECM(errcm.Code, "setAllocEarnTx getRolesAllocEarning 3 failed.error=(%s)", errcm)
 	}
-	err = t.getRolesAllocEarning(rolesAllocAmt.PlatformAmount, accs.PlatformAcc, eat.AmountMap[RACK_ROLE_PLATFORM])
-	if err != nil {
-		return nil, kdlogger.Errorf("setAllocEarnTx getRolesAllocEarning 4 failed.err=%s", err)
+	errcm = t.getRolesAllocEarning(rolesAllocAmt.PlatformAmount, accs.PlatformAcc, eat.AmountMap[RACK_ROLE_PLATFORM])
+	if errcm != nil {
+		return nil, kdlogger.ErrorECM(errcm.Code, "setAllocEarnTx getRolesAllocEarning 4 failed.error=(%s)", errcm)
 	}
 
 	seqKey := t.getAllocTxSeqKey(stub, rackid)
-	seq, err := t.getTransSeq(stub, seqKey)
-	if err != nil {
-		return nil, kdlogger.Errorf("setAllocEarnTx  getTransSeq failed.err=%s", err)
+	seq, errcm := t.getTransSeq(stub, seqKey)
+	if errcm != nil {
+		return nil, kdlogger.ErrorECM(errcm.Code, "setAllocEarnTx  getTransSeq failed.error=(%s)", errcm)
 	}
 	seq++
 
@@ -1314,50 +1302,50 @@ func (t *KD) setAllocEarnTx(stub shim.ChaincodeStubInterface, rackid, allocKey s
 
 	eatJson, err := json.Marshal(eat)
 	if err != nil {
-		return nil, kdlogger.Errorf("setAllocEarnTx Marshal failed. err=%s", err)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setAllocEarnTx Marshal failed. error=(%s)", err)
 	}
 	kdlogger.Debug("setAllocEarnTx return %s.", string(eatJson))
 
 	var txKey = t.getAllocTxKey(stub, rackid, seq)
 	err = stateCache.PutState_Ex(stub, txKey, eatJson)
 	if err != nil {
-		return nil, kdlogger.Errorf("setAllocEarnTx  PutState_Ex failed.err=%s", err)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setAllocEarnTx  PutState_Ex failed.error=(%s)", err)
 	}
 
-	err = t.setTransSeq(stub, seqKey, seq)
-	if err != nil {
-		return nil, kdlogger.Errorf("setAllocEarnTx  setTransSeq failed.err=%s", err)
+	errcm = t.setTransSeq(stub, seqKey, seq)
+	if errcm != nil {
+		return nil, kdlogger.ErrorECM(errcm.Code, "setAllocEarnTx  setTransSeq failed.error=(%s)", errcm)
 	}
 
 	//记录每个账户的分成情况
 	//四种角色有可能是同一个人，所以判断一下，如果已保存过key，则不再保存
 	var checkMap = make(map[string]int)
-	err = t.setOneAccAllocEarnTx(stub, accs.SellerAcc, txKey)
-	if err != nil {
-		return nil, kdlogger.Errorf("setAllocEarnTx  setOneAccAllocEarnTx(%s) failed.err=%s", accs.SellerAcc, err)
+	errcm = t.setOneAccAllocEarnTx(stub, accs.SellerAcc, txKey)
+	if errcm != nil {
+		return nil, kdlogger.ErrorECM(errcm.Code, "setAllocEarnTx  setOneAccAllocEarnTx(%s) failed.error=(%s)", accs.SellerAcc, errcm)
 	}
 	checkMap[accs.SellerAcc] = 0
 
 	if _, ok := checkMap[accs.FielderAcc]; !ok {
-		err = t.setOneAccAllocEarnTx(stub, accs.FielderAcc, txKey)
-		if err != nil {
-			return nil, kdlogger.Errorf("setAllocEarnTx  setOneAccAllocEarnTx(%s) failed.err=%s", accs.FielderAcc, err)
+		errcm = t.setOneAccAllocEarnTx(stub, accs.FielderAcc, txKey)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "setAllocEarnTx  setOneAccAllocEarnTx(%s) failed.error=(%s)", accs.FielderAcc, errcm)
 		}
 		checkMap[accs.FielderAcc] = 0
 	}
 
 	if _, ok := checkMap[accs.DeliveryAcc]; !ok {
-		err = t.setOneAccAllocEarnTx(stub, accs.DeliveryAcc, txKey)
-		if err != nil {
-			return nil, kdlogger.Errorf("setAllocEarnTx  setOneAccAllocEarnTx(%s) failed.err=%s", accs.DeliveryAcc, err)
+		errcm = t.setOneAccAllocEarnTx(stub, accs.DeliveryAcc, txKey)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "setAllocEarnTx  setOneAccAllocEarnTx(%s) failed.error=(%s)", accs.DeliveryAcc, errcm)
 		}
 		checkMap[accs.DeliveryAcc] = 0
 	}
 
 	if _, ok := checkMap[accs.PlatformAcc]; !ok {
-		err = t.setOneAccAllocEarnTx(stub, accs.PlatformAcc, txKey)
-		if err != nil {
-			return nil, kdlogger.Errorf("setAllocEarnTx  setOneAccAllocEarnTx(%s) failed.err=%s", accs.PlatformAcc, err)
+		errcm = t.setOneAccAllocEarnTx(stub, accs.PlatformAcc, txKey)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "setAllocEarnTx  setOneAccAllocEarnTx(%s) failed.error=(%s)", accs.PlatformAcc, errcm)
 		}
 		checkMap[accs.PlatformAcc] = 0
 	}
@@ -1379,12 +1367,12 @@ func (t *KD) getRackRolesAllocAmt(eap *EarningAllocRate, totalAmt int64) *RolesA
 	return &raa
 }
 
-func (t *KD) setOneAccAllocEarnTx(stub shim.ChaincodeStubInterface, accName, txKey string) error {
+func (t *KD) setOneAccAllocEarnTx(stub shim.ChaincodeStubInterface, accName, txKey string) *ErrorCodeMsg {
 	var accTxKey = t.getOneAccAllocTxKey(accName)
 
 	txsB, err := stateCache.GetState_Ex(stub, accTxKey)
 	if err != nil {
-		return kdlogger.Errorf("setOneAccAllocEarnTx: GetState err = %s", err)
+		return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setOneAccAllocEarnTx: GetState error=(%s)", err)
 	}
 
 	var newTxsB []byte
@@ -1397,14 +1385,14 @@ func (t *KD) setOneAccAllocEarnTx(stub shim.ChaincodeStubInterface, accName, txK
 
 	err = stateCache.PutState_Ex(stub, accTxKey, newTxsB)
 	if err != nil {
-		kdlogger.Error("setOneAccAllocEarnTx PutState failed.err=%s", err)
-		return err
+
+		return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setOneAccAllocEarnTx PutState failed.error=(%s)", err)
 	}
 
 	return nil
 }
 
-func (t *KD) getRolesAllocEarning(totalAmt int64, accs string, result map[string]int64) error {
+func (t *KD) getRolesAllocEarning(totalAmt int64, accs string, result map[string]int64) *ErrorCodeMsg {
 
 	//如果有多个子账户，格式如下 "a:20;b:20;c:60"，防止输入错误，先去除两边的空格，然后再去除两边的';'（防止split出来空字符串）
 	var newAccs = strings.Trim(strings.TrimSpace(accs), ";")
@@ -1422,15 +1410,15 @@ func (t *KD) getRolesAllocEarning(totalAmt int64, accs string, result map[string
 		//检查输入格式并计算比例总和，用于做分母
 		for _, acc := range accRatArr {
 			if !strings.Contains(acc, ":") {
-				return kdlogger.Errorf("getRolesAllocEarning  accs parse error, '%s' has no ':'.", acc)
+				return kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "getRolesAllocEarning  accs parse error, '%s' has no ':'.", acc)
 			}
 			var pair = strings.Split(acc, ":")
 			if len(pair) != 2 {
-				return kdlogger.Errorf("getRolesAllocEarning  accs parse error, '%s' format error 1.", acc)
+				return kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "getRolesAllocEarning  accs parse error, '%s' format error 1.", acc)
 			}
 			rat, err = strconv.Atoi(pair[1])
 			if err != nil {
-				return kdlogger.Errorf("getRolesAllocEarning  accs parse error, '%s' format error 2.", acc)
+				return kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "getRolesAllocEarning  accs parse error, '%s' format error 2.", acc)
 			}
 			base += rat
 			accArr = append(accArr, pair[0])
@@ -1448,7 +1436,7 @@ func (t *KD) getRolesAllocEarning(totalAmt int64, accs string, result map[string
 	} else {
 		//没有分号，有冒号，报错
 		if strings.Contains(newAccs, ":") {
-			return kdlogger.Errorf("getRolesAllocEarning  accs parse error, '%s' format error 3.", newAccs)
+			return kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "getRolesAllocEarning  accs parse error, '%s' format error 3.", newAccs)
 		}
 		result[accs] = totalAmt
 	}
@@ -1479,7 +1467,7 @@ func (t *KD) getGlobalRackAllocRateKey() string {
 	return RACK_GLOBAL_ALLOCRATE_KEY
 }
 
-func (t *KD) getAllocTxRecdByKey(stub shim.ChaincodeStubInterface, rackid, allocKey string) ([]byte, error) {
+func (t *KD) getAllocTxRecdByKey(stub shim.ChaincodeStubInterface, rackid, allocKey string) ([]byte, *ErrorCodeMsg) {
 
 	var retTransInfo = []byte("[]") //默认为空数组。 因为和下面的查询所有记录使用同一个restful接口，所以这里也返回数组形式
 
@@ -1487,7 +1475,7 @@ func (t *KD) getAllocTxRecdByKey(stub shim.ChaincodeStubInterface, rackid, alloc
 	var seqKey = t.getAllocTxSeqKey(stub, rackid)
 	test, err := stateCache.GetState_Ex(stub, seqKey)
 	if err != nil {
-		return nil, kdlogger.Errorf("getOneAllocRecd GetState(seqKey) failed. err=%s", err)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getOneAllocRecd GetState(seqKey) failed. error=(%s)", err)
 	}
 	if test == nil {
 		kdlogger.Info("getOneAllocRecd no trans saved.")
@@ -1495,9 +1483,9 @@ func (t *KD) getAllocTxRecdByKey(stub shim.ChaincodeStubInterface, rackid, alloc
 	}
 
 	//先获取当前最大的序列号
-	maxSeq, err := t.getTransSeq(stub, seqKey)
-	if err != nil {
-		return nil, kdlogger.Errorf("getOneAllocRecd getTransSeq failed. err=%s", err)
+	maxSeq, errcm := t.getTransSeq(stub, seqKey)
+	if errcm != nil {
+		return nil, kdlogger.ErrorECM(errcm.Code, "getOneAllocRecd getTransSeq failed. error=(%s)", errcm)
 	}
 
 	var txArray []QueryEarningAllocTx = []QueryEarningAllocTx{} //给个默认空值，即使没有数据，marshal之后也会为'[]'
@@ -1507,18 +1495,18 @@ func (t *KD) getAllocTxRecdByKey(stub shim.ChaincodeStubInterface, rackid, alloc
 		txkey := t.getAllocTxKey(stub, rackid, i)
 		txB, err := stateCache.GetState_Ex(stub, txkey)
 		if err != nil {
-			kdlogger.Errorf("getOneAllocRecd GetState(rackid=%s) failed. err=%s", rackid, err)
+			kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getOneAllocRecd GetState(rackid=%s) failed. error=(%s)", rackid, err)
 			continue
 		}
 		if txB == nil {
-			kdlogger.Errorf("getOneAllocRecd GetState(rackid=%s) nil.", rackid)
+			kdlogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "getOneAllocRecd GetState(rackid=%s) nil.", rackid)
 			continue
 		}
 
 		var eat EarningAllocTx
 		err = json.Unmarshal(txB, &eat)
 		if err != nil {
-			return nil, kdlogger.Errorf("getOneAllocRecd Unmarshal(rackid=%s) failed. err=%s", rackid, err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getOneAllocRecd Unmarshal(rackid=%s) failed. error=(%s)", rackid, err)
 		}
 
 		if eat.AllocKey == allocKey {
@@ -1532,14 +1520,14 @@ func (t *KD) getAllocTxRecdByKey(stub shim.ChaincodeStubInterface, rackid, alloc
 
 	retTransInfo, err = json.Marshal(txArray)
 	if err != nil {
-		return nil, kdlogger.Errorf("getOneAllocRecd Marshal(rackid=%s) failed. err=%s", rackid, err)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getOneAllocRecd Marshal(rackid=%s) failed. error=(%s)", rackid, err)
 	}
 
 	return retTransInfo, nil
 }
-func (t *KD) getAllocTxRecds(stub shim.ChaincodeStubInterface, rackid string, begIdx, count, begTime, endTime int64) ([]byte, error) {
+func (t *KD) getAllocTxRecds(stub shim.ChaincodeStubInterface, rackid string, begIdx, count, begTime, endTime int64) ([]byte, *ErrorCodeMsg) {
 	var maxSeq int64
-	var err error
+	var errcm *ErrorCodeMsg
 	var retTransInfo = []byte("[]") //默认为空数组
 
 	//begIdx从1开始， 因为保存交易时，从1开始编号
@@ -1560,7 +1548,7 @@ func (t *KD) getAllocTxRecds(stub shim.ChaincodeStubInterface, rackid string, be
 	var seqKey = t.getAllocTxSeqKey(stub, rackid)
 	test, err := stateCache.GetState_Ex(stub, seqKey)
 	if err != nil {
-		return nil, kdlogger.Errorf("getAllocTxRecds GetState(seqKey) failed. err=%s", err)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getAllocTxRecds GetState(seqKey) failed. error=(%s)", err)
 	}
 	if test == nil {
 		kdlogger.Info("getAllocTxRecds no trans saved.")
@@ -1568,9 +1556,9 @@ func (t *KD) getAllocTxRecds(stub shim.ChaincodeStubInterface, rackid string, be
 	}
 
 	//先获取当前最大的序列号
-	maxSeq, err = t.getTransSeq(stub, seqKey)
-	if err != nil {
-		return nil, kdlogger.Errorf("getAllocTxRecds getTransSeq failed. err=%s", err)
+	maxSeq, errcm = t.getTransSeq(stub, seqKey)
+	if errcm != nil {
+		return nil, kdlogger.ErrorECM(errcm.Code, "getAllocTxRecds getTransSeq failed. error=(%s)", errcm)
 	}
 
 	if begIdx > maxSeq {
@@ -1594,18 +1582,18 @@ func (t *KD) getAllocTxRecds(stub shim.ChaincodeStubInterface, rackid string, be
 		txkey := t.getAllocTxKey(stub, rackid, loop)
 		txB, err := stateCache.GetState_Ex(stub, txkey)
 		if err != nil {
-			kdlogger.Errorf("getAllocTxRecds GetState(rackid=%s) failed. err=%s", rackid, err)
+			kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getAllocTxRecds GetState(rackid=%s) failed. error=(%s)", rackid, err)
 			continue
 		}
 		if txB == nil {
-			kdlogger.Errorf("getAllocTxRecds GetState(rackid=%s) nil.", rackid)
+			kdlogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "getAllocTxRecds GetState(rackid=%s) nil.", rackid)
 			continue
 		}
 
 		var eat EarningAllocTx
 		err = json.Unmarshal(txB, &eat)
 		if err != nil {
-			return nil, kdlogger.Errorf("getAllocTxRecds Unmarshal(rackid=%s) failed. err=%s", rackid, err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getAllocTxRecds Unmarshal(rackid=%s) failed. error=(%s)", rackid, err)
 		}
 
 		if eat.DateTime >= begTime && eat.DateTime <= endTime {
@@ -1619,13 +1607,13 @@ func (t *KD) getAllocTxRecds(stub shim.ChaincodeStubInterface, rackid string, be
 
 	retTransInfo, err = json.Marshal(txArray)
 	if err != nil {
-		return nil, kdlogger.Errorf("getAllocTxRecds Marshal(rackid=%s) failed. err=%s", rackid, err)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getAllocTxRecds Marshal(rackid=%s) failed. error=(%s)", rackid, err)
 	}
 
 	return retTransInfo, nil
 }
 
-func (t *KD) getOneAccAllocTxRecds(stub shim.ChaincodeStubInterface, accName string, begIdx, count, begTime, endTime int64) ([]byte, error) {
+func (t *KD) getOneAccAllocTxRecds(stub shim.ChaincodeStubInterface, accName string, begIdx, count, begTime, endTime int64) ([]byte, *ErrorCodeMsg) {
 	var resultJson = []byte("[]") //默认为空数组
 	var accTxKey = t.getOneAccAllocTxKey(accName)
 
@@ -1649,7 +1637,7 @@ func (t *KD) getOneAccAllocTxRecds(stub shim.ChaincodeStubInterface, accName str
 
 	txsB, err := stateCache.GetState_Ex(stub, accTxKey)
 	if err != nil {
-		return nil, kdlogger.Errorf("getOneAccAllocTxRecds: GetState(accName=%s) err = %s", accName, err)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getOneAccAllocTxRecds: GetState(accName=%s) error=(%s)", accName, err)
 	}
 	if txsB == nil {
 		return resultJson, nil
@@ -1661,6 +1649,7 @@ func (t *KD) getOneAccAllocTxRecds(stub shim.ChaincodeStubInterface, accName str
 	var oneString string
 	var loop int64 = 0
 	var cnt int64 = 0
+	var errcm *ErrorCodeMsg
 	for {
 		if cnt >= count {
 			break
@@ -1671,7 +1660,7 @@ func (t *KD) getOneAccAllocTxRecds(stub shim.ChaincodeStubInterface, accName str
 				kdlogger.Debug("getOneAccAllocTxRecds proc %d recds, end.", loop)
 				break
 			}
-			return nil, kdlogger.Errorf("getOneAccAllocTxRecds ReadBytes failed. last=%s, err=%s", string(oneStringB), err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getOneAccAllocTxRecds ReadBytes failed. last=%s, error=(%s)", string(oneStringB), err)
 		}
 		loop++
 		if begIdx > loop {
@@ -1680,9 +1669,9 @@ func (t *KD) getOneAccAllocTxRecds(stub shim.ChaincodeStubInterface, accName str
 
 		oneString = string(oneStringB[:len(oneStringB)-1]) //去掉末尾的分隔符
 		var pqaeat *QueryAccEarningAllocTx
-		pqaeat, err = t.getOneAccAllocTx(stub, oneString, accName)
-		if err != nil {
-			return nil, kdlogger.Errorf("getOneAccAllocTxRecds walker failed. acc=%s, err=%s", accName, err)
+		pqaeat, errcm = t.getOneAccAllocTx(stub, oneString, accName)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "getOneAccAllocTxRecds walker failed. acc=%s, error=(%s)", accName, errcm)
 		}
 		if pqaeat.DateTime >= begTime && pqaeat.DateTime <= endTime {
 			pqaeat.Serail = loop
@@ -1693,16 +1682,16 @@ func (t *KD) getOneAccAllocTxRecds(stub shim.ChaincodeStubInterface, accName str
 
 	resultJson, err = json.Marshal(qaeatArr)
 	if err != nil {
-		return nil, kdlogger.Errorf("getOneAccAllocTxRecds Marshal failed. acc=%s, err=%s", accName, err)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getOneAccAllocTxRecds Marshal failed. acc=%s, error=(%s)", accName, err)
 	}
 
 	return resultJson, nil
 }
 
-func (t *KD) getOneAccAllocTx(stub shim.ChaincodeStubInterface, txKey, accName string) (*QueryAccEarningAllocTx, error) {
-	eat, err := t.getAllocTxRecdEntity(stub, txKey)
-	if err != nil {
-		return nil, kdlogger.Errorf("procOneAccAllocTx getAllocTxRecdEntity failed. txKey=%s, err=%s", txKey, err)
+func (t *KD) getOneAccAllocTx(stub shim.ChaincodeStubInterface, txKey, accName string) (*QueryAccEarningAllocTx, *ErrorCodeMsg) {
+	eat, errcm := t.getAllocTxRecdEntity(stub, txKey)
+	if errcm != nil {
+		return nil, kdlogger.ErrorECM(errcm.Code, "procOneAccAllocTx getAllocTxRecdEntity failed. txKey=%s, error=(%s)", txKey, errcm)
 	}
 
 	var qaeat QueryAccEarningAllocTx
@@ -1724,32 +1713,32 @@ func (t *KD) getOneAccAllocTx(stub shim.ChaincodeStubInterface, txKey, accName s
 	return &qaeat, nil
 }
 
-func (t *KD) getAllocTxRecdEntity(stub shim.ChaincodeStubInterface, txKey string) (*EarningAllocTx, error) {
+func (t *KD) getAllocTxRecdEntity(stub shim.ChaincodeStubInterface, txKey string) (*EarningAllocTx, *ErrorCodeMsg) {
 	txB, err := stateCache.GetState_Ex(stub, txKey)
 	if err != nil {
-		return nil, kdlogger.Errorf("getAllocTxRecdEntity GetState(txKey=%s) failed. err=%s", txKey, err)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getAllocTxRecdEntity GetState(txKey=%s) failed. error=(%s)", txKey, err)
 	}
 	if txB == nil {
-		return nil, kdlogger.Errorf("getAllocTxRecdEntity GetState(txKey=%s) nil.", txKey)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "getAllocTxRecdEntity GetState(txKey=%s) nil.", txKey)
 	}
 
 	var eat EarningAllocTx
 	err = json.Unmarshal(txB, &eat)
 	if err != nil {
-		return nil, kdlogger.Errorf("getAllocTxRecdEntity Unmarshal(txKey=%s) failed. err=%s", txKey, err)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getAllocTxRecdEntity Unmarshal(txKey=%s) failed. error=(%s)", txKey, err)
 	}
 
 	return &eat, nil
 }
 
-func (t *KD) getRackAllocCfg(stub shim.ChaincodeStubInterface, rackid string, peap *EarningAllocRate) ([]byte, error) {
+func (t *KD) getRackAllocCfg(stub shim.ChaincodeStubInterface, rackid string, peap *EarningAllocRate) ([]byte, *ErrorCodeMsg) {
 	var eapB []byte = nil
 	var err error
 
 	if rackid != "*" {
 		eapB, err = stateCache.GetState_Ex(stub, t.getRackAllocRateKey(rackid))
 		if err != nil {
-			return nil, kdlogger.Errorf("getRackAllocCfg GetState(rackid=%s) failed. err=%s", rackid, err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getRackAllocCfg GetState(rackid=%s) failed. error=(%s)", rackid, err)
 		}
 	}
 
@@ -1758,21 +1747,21 @@ func (t *KD) getRackAllocCfg(stub shim.ChaincodeStubInterface, rackid string, pe
 		//没有为该货架单独配置，返回global配置
 		eapB, err = stateCache.GetState_Ex(stub, t.getGlobalRackAllocRateKey())
 		if err != nil {
-			return nil, kdlogger.Errorf("getRackAllocCfg GetState(global, rackid=%s) failed. err=%s", rackid, err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getRackAllocCfg GetState(global, rackid=%s) failed. error=(%s)", rackid, err)
 		}
 		if eapB == nil {
-			return nil, kdlogger.Errorf("getRackAllocCfg GetState(global, rackid=%s) nil.", rackid)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "getRackAllocCfg GetState(global, rackid=%s) nil.", rackid)
 		}
 	}
 
 	if peap != nil {
 		err = json.Unmarshal(eapB, peap)
 		if err != nil {
-			return nil, kdlogger.Errorf("getRackAllocCfg Unmarshal failed. err=%s", rackid, err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getRackAllocCfg Unmarshal failed. error=(%s)", rackid, err)
 		}
 	}
 
-	return eapB, err
+	return eapB, nil
 }
 
 /* ----------------------- 积分奖励相关 ----------------------- */
@@ -1783,7 +1772,7 @@ func (t *KD) getRackEncourageScoreCfgKey(rackid string) string {
 	return RACK_SALE_ENC_SCORE_CFG_PREFIX + "rack_" + rackid
 }
 
-func (t *KD) setRackEncourageScoreCfg(stub shim.ChaincodeStubInterface, rackid, cfgStr string, invokeTime int64) ([]byte, error) {
+func (t *KD) setRackEncourageScoreCfg(stub shim.ChaincodeStubInterface, rackid, cfgStr string, invokeTime int64) ([]byte, *ErrorCodeMsg) {
 	//配置格式如下 "2000:150;3000:170..."，防止输入错误，先去除两边的空格，然后再去除两边的';'（防止split出来空字符串）
 	var newCfg = strings.Trim(strings.TrimSpace(cfgStr), ";")
 
@@ -1811,11 +1800,11 @@ func (t *KD) setRackEncourageScoreCfg(stub shim.ChaincodeStubInterface, rackid, 
 	var rangePercentMap = make(map[int64]int)
 	for _, rangeRate := range rangeRatArr {
 		if !strings.Contains(rangeRate, ":") {
-			return nil, kdlogger.Errorf("setRackEncourageScoreCfg  rangeRate parse error, '%s' has no ':'.", rangeRate)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "setRackEncourageScoreCfg  rangeRate parse error, '%s' has no ':'.", rangeRate)
 		}
 		var pair = strings.Split(rangeRate, ":")
 		if len(pair) != 2 {
-			return nil, kdlogger.Errorf("setRackEncourageScoreCfg  rangeRate parse error, '%s' format error 1.", rangeRate)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "setRackEncourageScoreCfg  rangeRate parse error, '%s' format error 1.", rangeRate)
 		}
 		//"-"表示正无穷
 		if pair[0] == "-" {
@@ -1823,12 +1812,12 @@ func (t *KD) setRackEncourageScoreCfg(stub shim.ChaincodeStubInterface, rackid, 
 		} else {
 			rang, err = strconv.ParseInt(pair[0], 0, 64)
 			if err != nil {
-				return nil, kdlogger.Errorf("setRackEncourageScoreCfg  rangeRate parse error, '%s' format error 2.", rangeRate)
+				return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setRackEncourageScoreCfg  rangeRate parse error, '%s' format error 2.", rangeRate)
 			}
 		}
 		percent, err = strconv.Atoi(pair[1])
 		if err != nil {
-			return nil, kdlogger.Errorf("setRackEncourageScoreCfg  rangeRate parse error, '%s' format error 3.", rangeRate)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setRackEncourageScoreCfg  rangeRate parse error, '%s' format error 3.", rangeRate)
 		}
 
 		//sepc.RangePercentMap[rang] = percent
@@ -1856,7 +1845,7 @@ func (t *KD) setRackEncourageScoreCfg(stub shim.ChaincodeStubInterface, rackid, 
 
 	sepcJson, err := json.Marshal(sepc)
 	if err != nil {
-		return nil, kdlogger.Errorf("setRackEncourageScoreCfg Marshal failed. err=%s", err)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setRackEncourageScoreCfg Marshal failed. error=(%s)", err)
 	}
 
 	var stateKey string
@@ -1868,13 +1857,13 @@ func (t *KD) setRackEncourageScoreCfg(stub shim.ChaincodeStubInterface, rackid, 
 
 	err = stateCache.PutState_Ex(stub, stateKey, sepcJson)
 	if err != nil {
-		return nil, kdlogger.Errorf("setRackEncourageScoreCfg PutState_Ex failed. err=%s", err)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setRackEncourageScoreCfg PutState_Ex failed. error=(%s)", err)
 	}
 
 	return nil, nil
 }
 
-func (t *KD) getRackEncourageScoreCfg(stub shim.ChaincodeStubInterface, rackid string, psepc *ScoreEncouragePercentCfg) ([]byte, error) {
+func (t *KD) getRackEncourageScoreCfg(stub shim.ChaincodeStubInterface, rackid string, psepc *ScoreEncouragePercentCfg) ([]byte, *ErrorCodeMsg) {
 
 	var sepcB []byte = nil
 	var err error
@@ -1882,7 +1871,7 @@ func (t *KD) getRackEncourageScoreCfg(stub shim.ChaincodeStubInterface, rackid s
 	if rackid != "*" {
 		sepcB, err = stateCache.GetState_Ex(stub, t.getRackEncourageScoreCfgKey(rackid))
 		if err != nil {
-			return nil, kdlogger.Errorf("getRackEncourageScoreCfg GetState failed.rackid=%s err=%s", rackid, err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getRackEncourageScoreCfg GetState failed.rackid=%s error=(%s)", rackid, err)
 		}
 	}
 
@@ -1890,24 +1879,24 @@ func (t *KD) getRackEncourageScoreCfg(stub shim.ChaincodeStubInterface, rackid s
 		kdlogger.Warn("getRackEncourageScoreCfg: can not find cfg for %s, will use golobal.", rackid)
 		sepcB, err = stateCache.GetState_Ex(stub, t.getGlobalRackEncourageScoreCfgKey())
 		if err != nil {
-			return nil, kdlogger.Errorf("getRackEncourageScoreCfg GetState(global cfg) failed.rackid=%s err=%s", rackid, err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getRackEncourageScoreCfg GetState(global cfg) failed.rackid=%s error=(%s)", rackid, err)
 		}
 		if sepcB == nil {
-			return nil, kdlogger.Errorf("getRackEncourageScoreCfg GetState(global cfg) nil.rackid=%s", rackid)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "getRackEncourageScoreCfg GetState(global cfg) nil.rackid=%s", rackid)
 		}
 	}
 
 	if psepc != nil {
 		err = json.Unmarshal(sepcB, psepc)
 		if err != nil {
-			return nil, kdlogger.Errorf("getRackEncourageScoreCfg Unmarshal failed.rackid=%s err=%s", rackid, err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getRackEncourageScoreCfg Unmarshal failed.rackid=%s error=(%s)", rackid, err)
 		}
 	}
 
 	return sepcB, nil
 }
 
-func (t *KD) allocEncourageScoreForSales(stub shim.ChaincodeStubInterface, paraStr string, transFromAcc, transType, transDesc string, invokeTime int64, sameEntSaveTx bool) ([]byte, error) {
+func (t *KD) allocEncourageScoreForSales(stub shim.ChaincodeStubInterface, paraStr string, transFromAcc, transType, transDesc string, invokeTime int64, sameEntSaveTx bool) ([]byte, *ErrorCodeMsg) {
 	//配置格式如下 "货架id1,销售额,货架经营者账户,场地提供者账户,送货人账户,平台账户;货架id2,销售额,货架经营者账户,场地提供者账户,送货人账户,平台账户;...."，
 	//防止输入错误，先去除两边的空格，然后再去除两边的';'（防止split出来空字符串）
 	var newStr = strings.Trim(strings.TrimSpace(paraStr), ";")
@@ -1931,13 +1920,13 @@ func (t *KD) allocEncourageScoreForSales(stub shim.ChaincodeStubInterface, paraS
 	for _, v := range rackRolesSalesArr {
 		rackRolesSales = strings.Trim(strings.TrimSpace(v), eleDelim)
 		if !strings.Contains(rackRolesSales, eleDelim) {
-			kdlogger.Errorf("encourageScoreBySales  rackRolesSales parse error, '%s' has no '%s'.", rackRolesSales, eleDelim)
+			kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "encourageScoreBySales  rackRolesSales parse error, '%s' has no '%s'.", rackRolesSales, eleDelim)
 			errList = append(errList, rackRolesSales)
 			continue
 		}
 		var eles = strings.Split(rackRolesSales, eleDelim)
 		if len(eles) != 6 {
-			kdlogger.Errorf("encourageScoreBySales  rackRolesSales parse error, '%s' format error 1.", rackRolesSales)
+			kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "encourageScoreBySales  rackRolesSales parse error, '%s' format error 1.", rackRolesSales)
 			errList = append(errList, rackRolesSales)
 			continue
 		}
@@ -1947,7 +1936,7 @@ func (t *KD) allocEncourageScoreForSales(stub shim.ChaincodeStubInterface, paraS
 		rrs.Rackid = eles[0]
 		rrs.Sales, err = strconv.ParseInt(eles[1], 0, 64)
 		if err != nil {
-			kdlogger.Errorf("encourageScoreBySales  rackRolesSales parse error, '%s' format error 2.", rackRolesSales)
+			kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "encourageScoreBySales  rackRolesSales parse error, '%s' format error 2.", rackRolesSales)
 			errList = append(errList, rrs.Rackid)
 			continue
 		}
@@ -1968,9 +1957,9 @@ func (t *KD) allocEncourageScoreForSales(stub shim.ChaincodeStubInterface, paraS
 	}
 
 	for _, rrs := range rrsList {
-		encourageScore, err := t.getRackEncourgeScoreBySales(stub, rrs.Rackid, rrs.Sales)
-		if err != nil {
-			kdlogger.Errorf("encourageScoreBySales  getRackEncourgePercentBySales failed, error=%s.", err)
+		encourageScore, errcm := t.getRackEncourgeScoreBySales(stub, rrs.Rackid, rrs.Sales)
+		if errcm != nil {
+			kdlogger.ErrorECM(errcm.Code, "encourageScoreBySales  getRackEncourgePercentBySales failed, error=%s.", errcm)
 			errList = append(errList, rrs.Rackid)
 			continue
 		}
@@ -1981,27 +1970,26 @@ func (t *KD) allocEncourageScoreForSales(stub shim.ChaincodeStubInterface, paraS
 		rres.AllocAccs = rrs.AllocAccs
 
 		//销售奖励积分时，货架经营者要补偿销售额同等的积分
-		err = t.allocEncourageScore(stub, &rres, transFromAcc, transType, transDesc, invokeTime, sameEntSaveTx, rrs.Sales)
-		if err != nil {
-			kdlogger.Errorf("encourageScoreBySales allocEncourageScore failed, error=%s.", err)
+		errcm = t.allocEncourageScore(stub, &rres, transFromAcc, transType, transDesc, invokeTime, sameEntSaveTx, rrs.Sales)
+		if errcm != nil {
+			kdlogger.ErrorECM(errcm.Code, "encourageScoreBySales allocEncourageScore failed, error=%s.", errcm)
 			errList = append(errList, rrs.Rackid)
 			continue
 		}
 	}
 
 	if len(errList) > 0 {
-		return nil, kdlogger.Errorf("encourageScoreBySales: has some err,[%s].", strings.Join(errList, ";"))
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "encourageScoreBySales: has some error:(%s).", strings.Join(errList, ";"))
 	}
 
 	return nil, nil
 }
 
-func (t *KD) getRackEncourgeScoreBySales(stub shim.ChaincodeStubInterface, rackid string, sales int64) (int64, error) {
-	var err error
+func (t *KD) getRackEncourgeScoreBySales(stub shim.ChaincodeStubInterface, rackid string, sales int64) (int64, *ErrorCodeMsg) {
 	var sepc ScoreEncouragePercentCfg
-	_, err = t.getRackEncourageScoreCfg(stub, rackid, &sepc)
-	if err != nil {
-		return 0, kdlogger.Errorf("getRackEncourgePercent getRackEncourageScoreCfg failed.rackid=%s err=%s", rackid, err)
+	_, errcm := t.getRackEncourageScoreCfg(stub, rackid, &sepc)
+	if errcm != nil {
+		return 0, kdlogger.ErrorECM(errcm.Code, "getRackEncourgePercent getRackEncourageScoreCfg failed.rackid=%s error=(%s)", rackid, errcm)
 	}
 
 	/*
@@ -2035,11 +2023,12 @@ func (t *KD) getRackEncourgeScoreBySales(stub shim.ChaincodeStubInterface, racki
 	return sales, nil
 }
 
-func (t *KD) allocEncourageScore(stub shim.ChaincodeStubInterface, rrs *RackRolesEncourageScores, transFromAcc, transType, transDesc string, invokeTime int64, sameEntSaveTx bool, sellerComps int64) error {
+func (t *KD) allocEncourageScore(stub shim.ChaincodeStubInterface, rrs *RackRolesEncourageScores, transFromAcc, transType, transDesc string,
+	invokeTime int64, sameEntSaveTx bool, sellerComps int64) *ErrorCodeMsg {
 	var ear EarningAllocRate
-	_, err := t.getRackAllocCfg(stub, rrs.Rackid, &ear)
-	if err != nil {
-		return kdlogger.Errorf("allocEncourageScore getRackAllocCfg failed,Rackid=%s,  error=%s.", rrs.Rackid, err)
+	_, errcm := t.getRackAllocCfg(stub, rrs.Rackid, &ear)
+	if errcm != nil {
+		return kdlogger.ErrorECM(errcm.Code, "allocEncourageScore getRackAllocCfg failed,Rackid=%s,  error=%s.", rrs.Rackid, errcm)
 	}
 
 	var hasErr = false
@@ -2047,46 +2036,46 @@ func (t *KD) allocEncourageScore(stub shim.ChaincodeStubInterface, rrs *RackRole
 
 	rolesAllocScore := t.getRackRolesAllocAmt(&ear, rrs.Scores)
 
-	_, err = t.transferCoin(stub, transFromAcc, rrs.SellerAcc, transType, transDesc,
+	_, errcm = t.transferCoin(stub, transFromAcc, rrs.SellerAcc, transType, transDesc,
 		rolesAllocScore.SellerAmount+sellerComps, invokeTime, sameEntSaveTx)
-	if err != nil {
-		kdlogger.Errorf("allocEncourageScore: transferCoin(SellerAcc=%s) failed, error=%s.", rrs.SellerAcc, err)
+	if errcm != nil {
+		kdlogger.ErrorECM(errcm.Code, "allocEncourageScore: transferCoin(SellerAcc=%s) failed, error=%s.", rrs.SellerAcc, errcm)
 		hasErr = true
 		failedAccList = append(failedAccList, rrs.SellerAcc)
 	}
 
-	_, err = t.transferCoin(stub, transFromAcc, rrs.FielderAcc, transType, transDesc,
+	_, errcm = t.transferCoin(stub, transFromAcc, rrs.FielderAcc, transType, transDesc,
 		rolesAllocScore.FielderAmount, invokeTime, sameEntSaveTx)
-	if err != nil {
-		kdlogger.Errorf("allocEncourageScore: transferCoin(FielderAcc=%s) failed, error=%s.", rrs.FielderAcc, err)
+	if errcm != nil {
+		kdlogger.ErrorECM(errcm.Code, "allocEncourageScore: transferCoin(FielderAcc=%s) failed, error=%s.", rrs.FielderAcc, errcm)
 		hasErr = true
 		failedAccList = append(failedAccList, rrs.FielderAcc)
 	}
 
-	_, err = t.transferCoin(stub, transFromAcc, rrs.DeliveryAcc, transType, transDesc,
+	_, errcm = t.transferCoin(stub, transFromAcc, rrs.DeliveryAcc, transType, transDesc,
 		rolesAllocScore.DeliveryAmount, invokeTime, sameEntSaveTx)
-	if err != nil {
-		kdlogger.Errorf("allocEncourageScore: transferCoin(DeliveryAcc=%s) failed, error=%s.", rrs.DeliveryAcc, err)
+	if errcm != nil {
+		kdlogger.ErrorECM(errcm.Code, "allocEncourageScore: transferCoin(DeliveryAcc=%s) failed, error=%s.", rrs.DeliveryAcc, errcm)
 		hasErr = true
 		failedAccList = append(failedAccList, rrs.DeliveryAcc)
 	}
 
-	_, err = t.transferCoin(stub, transFromAcc, rrs.PlatformAcc, transType, transDesc,
+	_, errcm = t.transferCoin(stub, transFromAcc, rrs.PlatformAcc, transType, transDesc,
 		rolesAllocScore.PlatformAmount, invokeTime, sameEntSaveTx)
-	if err != nil {
-		kdlogger.Errorf("allocEncourageScore: transferCoin(PlatformAcc=%s) failed, error=%s.", rrs.PlatformAcc, err)
+	if errcm != nil {
+		kdlogger.ErrorECM(errcm.Code, "allocEncourageScore: transferCoin(PlatformAcc=%s) failed, error=%s.", rrs.PlatformAcc, errcm)
 		hasErr = true
 		failedAccList = append(failedAccList, rrs.PlatformAcc)
 	}
 
 	if hasErr {
-		return kdlogger.Errorf("allocEncourageScore: transferCoin faied, acc=%s", strings.Join(failedAccList, ";"))
+		return kdlogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "allocEncourageScore: transferCoin faied, acc=%s", strings.Join(failedAccList, ";"))
 	}
 
 	return nil
 }
 
-func (t *KD) allocEncourageScoreForNewRack(stub shim.ChaincodeStubInterface, paraStr string, transFromAcc, transType, transDesc string, invokeTime int64, sameEntSaveTx bool) ([]byte, error) {
+func (t *KD) allocEncourageScoreForNewRack(stub shim.ChaincodeStubInterface, paraStr string, transFromAcc, transType, transDesc string, invokeTime int64, sameEntSaveTx bool) ([]byte, *ErrorCodeMsg) {
 	//配置格式如下 "货架1,货架经营者账户,场地提供者账户,送货人账户,平台账户,奖励金额(可省略);货架2,货架经营者账户,场地提供者账户,送货人账户,平台账户,奖励金额(可省略);...."，
 	//防止输入错误，先去除两边的空格，然后再去除两边的';'（防止split出来空字符串）
 	var newStr = strings.Trim(strings.TrimSpace(paraStr), ";")
@@ -2111,14 +2100,14 @@ func (t *KD) allocEncourageScoreForNewRack(stub shim.ChaincodeStubInterface, par
 	for _, v := range rackRolesScoreArr {
 		rackRolesScore = strings.Trim(strings.TrimSpace(v), eleDelim)
 		if !strings.Contains(rackRolesScore, eleDelim) {
-			kdlogger.Errorf("allocEncourageScoreForNewRack  rackRolesSales parse error, '%s' has no '%s'.", rackRolesScore, eleDelim)
+			kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "allocEncourageScoreForNewRack  rackRolesSales parse error, '%s' has no '%s'.", rackRolesScore, eleDelim)
 			errList = append(errList, rackRolesScore)
 			continue
 		}
 		var eles = strings.Split(rackRolesScore, eleDelim)
 		//至少包含货架id，四个角色
 		if len(eles) < 5 {
-			kdlogger.Errorf("allocEncourageScoreForNewRack  rackRolesSales parse error, '%s' format error 1.", rackRolesScore)
+			kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "allocEncourageScoreForNewRack  rackRolesSales parse error, '%s' format error 1.", rackRolesScore)
 			errList = append(errList, rackRolesScore)
 			continue
 		}
@@ -2133,7 +2122,7 @@ func (t *KD) allocEncourageScoreForNewRack(stub shim.ChaincodeStubInterface, par
 		if len(eles) >= 6 {
 			rres.Scores, err = strconv.ParseInt(eles[5], 0, 64)
 			if err != nil {
-				kdlogger.Errorf("allocEncourageScoreForNewRack  rackRolesSales parse error, '%s' format error 2.", rackRolesScore)
+				kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "allocEncourageScoreForNewRack  rackRolesSales parse error, '%s' format error 2.", rackRolesScore)
 				errList = append(errList, rres.Rackid)
 				continue
 			}
@@ -2145,16 +2134,16 @@ func (t *KD) allocEncourageScoreForNewRack(stub shim.ChaincodeStubInterface, par
 	}
 
 	for _, rres := range rresList {
-		err = t.allocEncourageScore(stub, &rres, transFromAcc, transType, transDesc, invokeTime, sameEntSaveTx, 0)
-		if err != nil {
-			kdlogger.Errorf("allocEncourageScoreForNewRack allocEncourageScore failed, error=%s.", err)
+		errcm := t.allocEncourageScore(stub, &rres, transFromAcc, transType, transDesc, invokeTime, sameEntSaveTx, 0)
+		if errcm != nil {
+			kdlogger.ErrorECM(errcm.Code, "allocEncourageScoreForNewRack allocEncourageScore failed, error=%s.", errcm)
 			errList = append(errList, rres.Rackid)
 			continue
 		}
 	}
 
 	if len(errList) > 0 {
-		return nil, kdlogger.Errorf("allocEncourageScoreForNewRack: some err,[%s].", strings.Join(errList, ";"))
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "allocEncourageScoreForNewRack: some err,[%s].", strings.Join(errList, ";"))
 	}
 
 	return nil, nil
@@ -2170,7 +2159,7 @@ func (t *KD) getRackFinancCfgKey(rackid string) string {
 	return RACK_FINANCE_CFG_PREFIX + "rack_" + rackid
 }
 
-func (t *KD) getRackFinancCfg(stub shim.ChaincodeStubInterface, rackid string, prfc *RackFinanceCfg) ([]byte, error) {
+func (t *KD) getRackFinancCfg(stub shim.ChaincodeStubInterface, rackid string, prfc *RackFinanceCfg) ([]byte, *ErrorCodeMsg) {
 
 	var rfcB []byte = nil
 	var err error
@@ -2178,7 +2167,7 @@ func (t *KD) getRackFinancCfg(stub shim.ChaincodeStubInterface, rackid string, p
 	if rackid != "*" { // "*"表示查询全局配置
 		rfcB, err = stateCache.GetState_Ex(stub, t.getRackFinancCfgKey(rackid))
 		if err != nil {
-			return nil, kdlogger.Errorf("getRackFinancCfg GetState failed.rackid=%s err=%s", rackid, err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getRackFinancCfg GetState failed.rackid=%s error=(%s)", rackid, err)
 		}
 	}
 
@@ -2186,17 +2175,17 @@ func (t *KD) getRackFinancCfg(stub shim.ChaincodeStubInterface, rackid string, p
 		kdlogger.Warn("getRackFinancCfg: can not find cfg for %s, will use golobal.", rackid)
 		rfcB, err = stateCache.GetState_Ex(stub, t.getGlobalRackFinancCfgKey())
 		if err != nil {
-			return nil, kdlogger.Errorf("getRackFinancCfg GetState(global cfg) failed.rackid=%s err=%s", rackid, err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getRackFinancCfg GetState(global cfg) failed.rackid=%s error=(%s)", rackid, err)
 		}
 		if rfcB == nil {
-			return nil, kdlogger.Errorf("getRackFinancCfg GetState(global cfg) nil.rackid=%s", rackid)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "getRackFinancCfg GetState(global cfg) nil.rackid=%s", rackid)
 		}
 	}
 
 	if prfc != nil {
 		err = json.Unmarshal(rfcB, prfc)
 		if err != nil {
-			return nil, kdlogger.Errorf("getRackFinancCfg Unmarshal failed.rackid=%s err=%s", rackid, err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getRackFinancCfg Unmarshal failed.rackid=%s error=(%s)", rackid, err)
 		}
 	}
 
@@ -2214,11 +2203,11 @@ func (t *KD) getRackFinacInfoKey(rackId, finacId string) string {
 }
 
 //用户购买理财，包括自动续期
-func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, fid, payee, transType, desc string, amount, invokeTime int64, sameEntSaveTx, isRenewal bool) ([]byte, error) {
+func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, fid, payee, transType, desc string, amount, invokeTime int64, sameEntSaveTx, isRenewal bool) ([]byte, *ErrorCodeMsg) {
 	var fiacInfoKey = t.getFinacInfoKey(fid)
 	fiB, err := stateCache.GetState_Ex(stub, fiacInfoKey)
 	if err != nil {
-		return nil, kdlogger.Errorf("userBuyFinance:  GetState(%s) failed. err=%s.", fiacInfoKey, err)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "userBuyFinance:  GetState(%s) failed. error=(%s).", fiacInfoKey, err)
 	}
 	var fi FinancialInfo
 	if fiB == nil {
@@ -2227,18 +2216,18 @@ func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, f
 	} else {
 		err = json.Unmarshal(fiB, &fi)
 		if err != nil {
-			return nil, kdlogger.Errorf("userBuyFinance:  Unmarshal(fib) failed. err=%s.", err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "userBuyFinance:  Unmarshal(fib) failed. error=(%s).", err)
 		}
 		//一般不会出现此情况
 		if fi.FID != fid {
-			return nil, kdlogger.Errorf("userBuyFinance:  fid missmatch(%s).", fi.FID)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "userBuyFinance:  fid missmatch(%s).", fi.FID)
 		}
 	}
 
 	var rackInfoKey = t.getRackInfoKey(rackid)
 	riB, err := stateCache.GetState_Ex(stub, rackInfoKey)
 	if err != nil {
-		return nil, kdlogger.Errorf("userBuyFinance:  GetState(%s) failed. err=%s.", rackInfoKey, err)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "userBuyFinance:  GetState(%s) failed. error=(%s).", rackInfoKey, err)
 	}
 	var ri RackInfo
 	if riB == nil {
@@ -2247,11 +2236,11 @@ func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, f
 	} else {
 		err = json.Unmarshal(riB, &ri)
 		if err != nil {
-			return nil, kdlogger.Errorf("userBuyFinance:  Unmarshal(riB) failed. err=%s.", err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "userBuyFinance:  Unmarshal(riB) failed. error=(%s).", err)
 		}
 		//一般不会出现此情况
 		if ri.RackID != rackid {
-			return nil, kdlogger.Errorf("userBuyFinance:  rackid missmatch(%s).", ri.RackID)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "userBuyFinance:  rackid missmatch(%s).", ri.RackID)
 		}
 	}
 
@@ -2259,7 +2248,7 @@ func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, f
 	rackFinacInfoKey := t.getRackFinacInfoKey(rackid, fid)
 	rfiB, err := stateCache.GetState_Ex(stub, rackFinacInfoKey)
 	if err != nil {
-		return nil, kdlogger.Errorf("userBuyFinance:  GetState(%s) failed. err=%s.", rackFinacInfoKey, err)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "userBuyFinance:  GetState(%s) failed. error=(%s).", rackFinacInfoKey, err)
 	}
 	var rfi RackFinancInfo
 	if rfiB == nil {
@@ -2277,15 +2266,15 @@ func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, f
 		rfi.Stage = FINANC_STAGE_ISSUE_BEGING //新购买理财时，初始为理财发行开始
 
 		var rfc RackFinanceCfg
-		_, err = t.getRackFinancCfg(stub, rackid, &rfc)
-		if err != nil {
-			return nil, kdlogger.Errorf("userBuyFinance:  getRackFinancCfg failed. err=%s.", err)
+		_, errcm := t.getRackFinancCfg(stub, rackid, &rfc)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "userBuyFinance:  getRackFinancCfg failed. error=(%s).", errcm)
 		}
 
 		var ear EarningAllocRate
-		_, err = t.getRackAllocCfg(stub, rackid, &ear)
-		if err != nil {
-			return nil, kdlogger.Errorf("userBuyFinance:  getRackAllocCfg failed. err=%s.", err)
+		_, errcm = t.getRackAllocCfg(stub, rackid, &ear)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "userBuyFinance:  getRackAllocCfg failed. error=(%s).", errcm)
 		}
 
 		rfi.RFCfg = rfc.PubRackFinanceCfg
@@ -2293,12 +2282,12 @@ func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, f
 	} else {
 		err = json.Unmarshal(rfiB, &rfi)
 		if err != nil {
-			return nil, kdlogger.Errorf("userBuyFinance:  Unmarshal RackFinancInfo failed. err=%s.", err)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "userBuyFinance:  Unmarshal RackFinancInfo failed. error=(%s).", err)
 		}
 
 		//如果不是续期，且理财发行完毕，不能购买
 		if !isRenewal && rfi.Stage >= FINANC_STAGE_ISSUE_FINISH {
-			return nil, kdlogger.Errorf("userBuyFinance:  finance finish, user can't buy.")
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "userBuyFinance:  finance finish, user can't buy.")
 		}
 
 		rfi.AmountFinca += amount
@@ -2332,48 +2321,48 @@ func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, f
 	}
 
 	var rfc RackFinanceCfg
-	_, err = t.getRackFinancCfg(stub, rackid, &rfc)
-	if err != nil {
-		return nil, kdlogger.Errorf("userBuyFinance:  getRackFinancCfg failed. err=%s.", err)
+	_, errcm := t.getRackFinancCfg(stub, rackid, &rfc)
+	if errcm != nil {
+		return nil, kdlogger.ErrorECM(errcm.Code, "userBuyFinance:  getRackFinancCfg failed. error=(%s).", errcm)
 	}
 
 	//看该货架是否有历史投资，如果有的话，这些投资会自动转到当前融资，就会导致超额。
 	var historyFinance int64 = 0
 	if !isRenewal { //自动续期时，不需要计算历史投资，因为续期的金额就是历史投资额
 		//调用购买理财的接口时，已经将最新的理财期号设置了（调用setCurrentFid），所以这里取前一期的期号
-		pfid, err := t.getPreviousFid(stub)
-		if err != nil {
-			return nil, kdlogger.Errorf("userBuyFinance: getPreviousFid failed. err=%s.", err)
+		pfid, errcm := t.getPreviousFid(stub)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "userBuyFinance: getPreviousFid failed. error=(%s).", errcm)
 		}
 
 		kdlogger.Debug("userBuyFinance: pfid=%s", pfid)
 
 		//有前一期的fid时才计算。如果没有说明没有历史投资
 		if len(pfid) > 0 {
-			historyFinance, err = t.getRackFinanceAmount(stub, rackid, pfid)
-			if err != nil {
-				return nil, kdlogger.Errorf("userBuyFinance: getRackHistoryFinance failed. err=%s.", err)
+			historyFinance, errcm = t.getRackFinanceAmount(stub, rackid, pfid)
+			if errcm != nil {
+				return nil, kdlogger.ErrorECM(errcm.Code, "userBuyFinance: getRackHistoryFinance failed. error=(%s).", errcm)
 			}
 		}
 	}
 
 	//融资额度超出货架支持能力
 	if rfi.AmountFinca+historyFinance > rfc.InvestCapacity {
-		return nil, kdlogger.Errorf("userBuyFinance:  AmountFinca > rack's capacity. (%d,%d,%d)", rfi.AmountFinca, historyFinance, rfc.InvestCapacity)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "userBuyFinance:  AmountFinca > rack's capacity. (%d,%d,%d)", rfi.AmountFinca, historyFinance, rfc.InvestCapacity)
 	}
 
 	//用户给融资方转账
 	if !isRenewal {
-		_, err = t.transferCoin(stub, accName, payee, transType, desc, amount, invokeTime, sameEntSaveTx)
-		if err != nil {
-			return nil, kdlogger.Errorf("userBuyFinance: transferCoin failed. err=%s.", err)
+		_, errcm := t.transferCoin(stub, accName, payee, transType, desc, amount, invokeTime, sameEntSaveTx)
+		if errcm != nil {
+			return nil, kdlogger.ErrorECM(errcm.Code, "userBuyFinance: transferCoin failed. error=(%s).", errcm)
 		}
 	}
 
 	//转账成功后在用户entity中写入相应信息
-	paccRFEnt, err := t.getAccountRackInvestInfo(stub, accName)
-	if err != nil {
-		return nil, kdlogger.Errorf("userBuyFinance: getAccountRackFinanceInfo failed. err=%s.", err)
+	paccRFEnt, errcm := t.getAccountRackInvestInfo(stub, accName)
+	if errcm != nil {
+		return nil, kdlogger.ErrorECM(errcm.Code, "userBuyFinance: getAccountRackFinanceInfo failed. error=(%s).", errcm)
 	}
 
 	var arfi AccRackInvest
@@ -2389,9 +2378,9 @@ func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, f
 	arfi.RFInfoMap[t.getMapKey4RackFinance(rackid, fid)] = 0
 	arfi.LatestFid = fid
 
-	err = t.setAccountRackInvestInfo(stub, &arfi)
-	if err != nil {
-		return nil, kdlogger.Errorf("userBuyFinance: setAccountRackInvestInfo failed. err=%s.", err)
+	errcm = t.setAccountRackInvestInfo(stub, &arfi)
+	if errcm != nil {
+		return nil, kdlogger.ErrorECM(errcm.Code, "userBuyFinance: setAccountRackInvestInfo failed. error=(%s).", errcm)
 	}
 	kdlogger.Debug("userBuyFinance: ent=%+v", arfi)
 
@@ -2400,7 +2389,7 @@ func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, f
 	}
 	fiJson, err := json.Marshal(fi)
 	if err != nil {
-		return nil, kdlogger.Errorf("userBuyFinance:  Marshal failed. err=%s.", err)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "userBuyFinance:  Marshal failed. error=(%s).", err)
 	}
 
 	if !strSliceContains(ri.FinacList, fi.FID) {
@@ -2409,26 +2398,26 @@ func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, f
 
 	riJson, err := json.Marshal(ri)
 	if err != nil {
-		return nil, kdlogger.Errorf("userBuyFinance:  Marshal failed. err=%s.", err)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "userBuyFinance:  Marshal failed. error=(%s).", err)
 	}
 	rfiJson, err := json.Marshal(rfi)
 	if err != nil {
-		return nil, kdlogger.Errorf("userBuyFinance:  Marshal failed. err=%s.", err)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "userBuyFinance:  Marshal failed. error=(%s).", err)
 	}
 
 	err = stateCache.PutState_Ex(stub, rackFinacInfoKey, rfiJson)
 	if err != nil {
-		return nil, kdlogger.Errorf("userBuyFinance:  PutState failed. err=%s.", err)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "userBuyFinance:  PutState failed. error=(%s).", err)
 	}
 
 	err = stateCache.PutState_Ex(stub, rackInfoKey, riJson)
 	if err != nil {
-		return nil, kdlogger.Errorf("userBuyFinance:  PutState failed. err=%s.", err)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "userBuyFinance:  PutState failed. error=(%s).", err)
 	}
 
 	err = stateCache.PutState_Ex(stub, fiacInfoKey, fiJson)
 	if err != nil {
-		return nil, kdlogger.Errorf("userBuyFinance:  PutState failed. err=%s.", err)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "userBuyFinance:  PutState failed. error=(%s).", err)
 	}
 
 	kdlogger.Debug("userBuyFinance: ri=%+v fi=%+v rfi=%+v", ri, fi, rfi)
@@ -2437,7 +2426,7 @@ func (t *KD) userBuyFinance(stub shim.ChaincodeStubInterface, accName, rackid, f
 	return nil, nil
 }
 
-func (t *KD) financeBonus(stub shim.ChaincodeStubInterface, fid, rackales string, invokeTime int64) ([]byte, error) {
+func (t *KD) financeBonus(stub shim.ChaincodeStubInterface, fid, rackales string, invokeTime int64) ([]byte, *ErrorCodeMsg) {
 	//配置格式如下 "货架1:销售额;货架2:销售额"，
 	//防止输入错误，先去除两边的空格，然后再去除两边的';'（防止split出来空字符串）
 	var newStr = strings.Trim(strings.TrimSpace(rackales), ";")
@@ -2459,13 +2448,13 @@ func (t *KD) financeBonus(stub shim.ChaincodeStubInterface, fid, rackales string
 	for _, v := range rackSalesArr {
 		rackSales = strings.Trim(strings.TrimSpace(v), eleDelim)
 		if !strings.Contains(rackSales, eleDelim) {
-			kdlogger.Errorf("financeBonus: rackSales parse error, '%s' has no '%s'.", rackSales, eleDelim)
+			kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "financeBonus: rackSales parse error, '%s' has no '%s'.", rackSales, eleDelim)
 			errRackList = append(errRackList, rackSales)
 			continue
 		}
 		var eles = strings.Split(rackSales, eleDelim)
 		if len(eles) < 2 {
-			kdlogger.Errorf("financeBonus: rackSales parse error, '%s' format error 1.", rackSales)
+			kdlogger.ErrorECM(ERRCODE_COMMON_PARAM_INVALID, "financeBonus: rackSales parse error, '%s' format error 1.", rackSales)
 			errRackList = append(errRackList, rackSales)
 			continue
 		}
@@ -2474,45 +2463,45 @@ func (t *KD) financeBonus(stub shim.ChaincodeStubInterface, fid, rackales string
 		var sales int64
 		sales, err = strconv.ParseInt(eles[1], 0, 64)
 		if err != nil {
-			kdlogger.Errorf("financeBonus: sales parse error, '%s' format error 2.", rackSales)
+			kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "financeBonus: sales parse error, '%s' format error 2.", rackSales)
 			errRackList = append(errRackList, rackid)
 			continue
 		}
 
-		err = t.financeBonus4OneRack(stub, rackid, fid, sales, invokeTime)
-		if err != nil {
-			kdlogger.Errorf("financeBonus: financeBonus4OneRack failed, err=%s", err)
+		errcm := t.financeBonus4OneRack(stub, rackid, fid, sales, invokeTime)
+		if errcm != nil {
+			kdlogger.ErrorECM(errcm.Code, "financeBonus: financeBonus4OneRack failed, error=(%s)", errcm)
 			errRackList = append(errRackList, rackid)
 			continue
 		}
 	}
 
 	if len(errRackList) > 0 {
-		return nil, kdlogger.Errorf("financeBonus: has some err,[%s]", strings.Join(errRackList, ";"))
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "financeBonus: has some error:(%s)", strings.Join(errRackList, ";"))
 	}
 
 	return nil, nil
 }
 
-func (t *KD) financeBonus4OneRack(stub shim.ChaincodeStubInterface, rackid, fid string, sales, invokeTime int64) error {
+func (t *KD) financeBonus4OneRack(stub shim.ChaincodeStubInterface, rackid, fid string, sales, invokeTime int64) *ErrorCodeMsg {
 	var rackFinacInfoKey = t.getRackFinacInfoKey(rackid, fid)
 
 	rfiB, err := stateCache.GetState_Ex(stub, rackFinacInfoKey)
 	if err != nil {
-		return kdlogger.Errorf("financeBonus4OneRack:  GetState(%s) failed. err=%s.", rackFinacInfoKey, err)
+		return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "financeBonus4OneRack:  GetState(%s) failed. error=(%s).", rackFinacInfoKey, err)
 	}
 	if rfiB == nil {
-		return kdlogger.Errorf("financeBonus4OneRack:  rackFinacInfo not exists(%s,%s).", rackid, fid)
+		return kdlogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "financeBonus4OneRack:  rackFinacInfo not exists(%s,%s).", rackid, fid)
 	}
 	var rfi RackFinancInfo
 	err = json.Unmarshal(rfiB, &rfi)
 	if err != nil {
-		return kdlogger.Errorf("financeBonus4OneRack:  Unmarshal failed. err=%s.", err)
+		return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "financeBonus4OneRack:  Unmarshal failed. error=(%s).", err)
 	}
 
 	//已分红过不能再分红
 	if rfi.Stage >= FINANC_STAGE_BONUS_FINISH {
-		return kdlogger.Errorf("financeBonus4OneRack: rack(rid=%s fid=%s) has bonus, something wrong?", rackid, fid)
+		return kdlogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "financeBonus4OneRack: rack(rid=%s fid=%s) has bonus, something wrong?", rackid, fid)
 	}
 
 	rfi.CEInfo.WareSales = sales
@@ -2548,19 +2537,19 @@ func (t *KD) financeBonus4OneRack(stub shim.ChaincodeStubInterface, rackid, fid 
 		profitCheck += accProfit
 	}
 	if profitCheck > profit || amtCheck != rfi.AmountFinca {
-		return kdlogger.Errorf("financeBonus4OneRack:  bonus check(%d,%d,%d,%d) failed.", profitCheck, profit, amtCheck, rfi.AmountFinca)
+		return kdlogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "financeBonus4OneRack:  bonus check(%d,%d,%d,%d) failed.", profitCheck, profit, amtCheck, rfi.AmountFinca)
 	}
 
 	rfi.Stage = FINANC_STAGE_BONUS_FINISH
 
 	rfiJson, err := json.Marshal(rfi)
 	if err != nil {
-		return kdlogger.Errorf("financeBonus4OneRack:  Marshal failed. err=%s.", err)
+		return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "financeBonus4OneRack:  Marshal failed. error=(%s).", err)
 	}
 
 	err = stateCache.PutState_Ex(stub, rackFinacInfoKey, rfiJson)
 	if err != nil {
-		return kdlogger.Errorf("financeBonus4OneRack:  PutState failed. err=%s.", err)
+		return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "financeBonus4OneRack:  PutState failed. error=(%s).", err)
 	}
 
 	kdlogger.Info("financeBonus4OneRack: statistic(%v,%v,%v,%v), rfi=%+v", rfi.CEInfo.WareSales, rackProfit, sellerProfit, profit, rfi)
@@ -2570,7 +2559,7 @@ func (t *KD) financeBonus4OneRack(stub shim.ChaincodeStubInterface, rackid, fid 
 
 var currentFidCache string
 
-func (t *KD) setCurrentFid(stub shim.ChaincodeStubInterface, currentFid string) error {
+func (t *KD) setCurrentFid(stub shim.ChaincodeStubInterface, currentFid string) *ErrorCodeMsg {
 	//因为会调用多次，所以用cache加速一下
 	if len(currentFidCache) > 0 && currentFidCache == currentFid {
 		return nil
@@ -2578,7 +2567,7 @@ func (t *KD) setCurrentFid(stub shim.ChaincodeStubInterface, currentFid string) 
 
 	hisB, err := stateCache.GetState_Ex(stub, RACKFINACHISTORY_KEY)
 	if err != nil {
-		return kdlogger.Errorf("setCurrentFid: GetState failed. err=%s.", err)
+		return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setCurrentFid: GetState failed. error=(%s).", err)
 	}
 	var his RackFinancHistory
 	if hisB == nil {
@@ -2587,7 +2576,7 @@ func (t *KD) setCurrentFid(stub shim.ChaincodeStubInterface, currentFid string) 
 	} else {
 		err = json.Unmarshal(hisB, &his)
 		if err != nil {
-			return kdlogger.Errorf("setCurrentFid: Unmarshal failed. err=%s.", err)
+			return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setCurrentFid: Unmarshal failed. error=(%s).", err)
 		}
 		//该函数可能调用多次，如果和当前值相同，不用再设置
 		if his.PreCurrFID[1] == currentFid {
@@ -2602,12 +2591,12 @@ func (t *KD) setCurrentFid(stub shim.ChaincodeStubInterface, currentFid string) 
 
 	hisB, err = json.Marshal(his)
 	if err != nil {
-		return kdlogger.Errorf("setCurrentFid: Marshal failed. err=%s.", err)
+		return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setCurrentFid: Marshal failed. error=(%s).", err)
 	}
 
 	err = stateCache.PutState_Ex(stub, RACKFINACHISTORY_KEY, hisB)
 	if err != nil {
-		return kdlogger.Errorf("setCurrentFid: PutState_Ex failed. err=%s.", err)
+		return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setCurrentFid: PutState_Ex failed. error=(%s).", err)
 	}
 
 	kdlogger.Debug("setCurrentFid: his=%+v", his)
@@ -2615,10 +2604,10 @@ func (t *KD) setCurrentFid(stub shim.ChaincodeStubInterface, currentFid string) 
 	return nil
 }
 
-func (t *KD) getPrevAndCurrFids(stub shim.ChaincodeStubInterface) (*RackFinancHistory, error) {
+func (t *KD) getPrevAndCurrFids(stub shim.ChaincodeStubInterface) (*RackFinancHistory, *ErrorCodeMsg) {
 	hisB, err := stateCache.GetState_Ex(stub, RACKFINACHISTORY_KEY)
 	if err != nil {
-		return nil, kdlogger.Errorf("getPrevAndCurrFids: GetState failed. err=%s.", err)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getPrevAndCurrFids: GetState failed. error=(%s).", err)
 	}
 	if hisB == nil {
 		//return "", mylog.Errorf("getPrevAndCurrFids: nil info.")
@@ -2628,16 +2617,16 @@ func (t *KD) getPrevAndCurrFids(stub shim.ChaincodeStubInterface) (*RackFinancHi
 	var his RackFinancHistory
 	err = json.Unmarshal(hisB, &his)
 	if err != nil {
-		return nil, kdlogger.Errorf("getPrevAndCurrFids: Unmarshal failed. err=%s.", err)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getPrevAndCurrFids: Unmarshal failed. error=(%s).", err)
 	}
 
 	return &his, nil
 }
 
-func (t *KD) getRecentlyFid(stub shim.ChaincodeStubInterface, getCurrent bool) (string, error) {
-	his, err := t.getPrevAndCurrFids(stub)
-	if err != nil {
-		return "", kdlogger.Errorf("getRecentlyFid: getPrevAndCurrFids failed. err=%s.", err)
+func (t *KD) getRecentlyFid(stub shim.ChaincodeStubInterface, getCurrent bool) (string, *ErrorCodeMsg) {
+	his, errcm := t.getPrevAndCurrFids(stub)
+	if errcm != nil {
+		return "", kdlogger.ErrorECM(errcm.Code, "getRecentlyFid: getPrevAndCurrFids failed. error=(%s).", errcm)
 	}
 	if his == nil {
 		return "", nil //如果第一次执行，这个可能为空
@@ -2649,24 +2638,24 @@ func (t *KD) getRecentlyFid(stub shim.ChaincodeStubInterface, getCurrent bool) (
 		return his.PreCurrFID[0], nil
 	}
 }
-func (t *KD) getPreviousFid(stub shim.ChaincodeStubInterface) (string, error) {
+func (t *KD) getPreviousFid(stub shim.ChaincodeStubInterface) (string, *ErrorCodeMsg) {
 	return t.getRecentlyFid(stub, false)
 }
-func (t *KD) getLatestFid(stub shim.ChaincodeStubInterface) (string, error) {
+func (t *KD) getLatestFid(stub shim.ChaincodeStubInterface) (string, *ErrorCodeMsg) {
 	return t.getRecentlyFid(stub, true)
 }
 
-func (t *KD) getUserInvestAmount(stub shim.ChaincodeStubInterface, accName, rackid, fid string) (int64, error) {
+func (t *KD) getUserInvestAmount(stub shim.ChaincodeStubInterface, accName, rackid, fid string) (int64, *ErrorCodeMsg) {
 	/*
 	   fid, err := t.getLatestFid(stub)
 	   if err != nil {
-	       return 0, mylog.Errorf("getUserHistoryFinance: getLatestFid failed. err=%s.", err)
+	       return 0, mylog.Errorf("getUserHistoryFinance: getLatestFid failed. error=(%s).", err)
 	   }
 	*/
 
-	ent, err := t.getAccountRackInvestInfo(stub, accName)
-	if err != nil {
-		return 0, kdlogger.Errorf("getUserHistoryFinance: getAccountRackInvestInfo failed. err=%s.", err)
+	ent, errcm := t.getAccountRackInvestInfo(stub, accName)
+	if errcm != nil {
+		return 0, kdlogger.ErrorECM(errcm.Code, "getUserHistoryFinance: getAccountRackInvestInfo failed. error=(%s).", errcm)
 	}
 
 	var rfkey = t.getMapKey4RackFinance(rackid, fid)
@@ -2683,20 +2672,20 @@ func (t *KD) getUserInvestAmount(stub shim.ChaincodeStubInterface, accName, rack
 
 	rfiB, err := stateCache.GetState_Ex(stub, t.getRackFinacInfoKey(rackid, fid))
 	if err != nil {
-		return 0, kdlogger.Errorf("getUserHistoryFinance:  GetState failed. err=%s.", err)
+		return 0, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getUserHistoryFinance:  GetState failed. error=(%s).", err)
 	}
 	//ent中记录了该条记录，肯定是有的，没有则报错
 	if rfiB == nil {
-		return 0, kdlogger.Errorf("getUserHistoryFinance:  FinancialInfo not exists.")
+		return 0, kdlogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "getUserHistoryFinance:  FinancialInfo not exists.")
 	}
 	var rfi RackFinancInfo
 	err = json.Unmarshal(rfiB, &rfi)
 	if err != nil {
-		return 0, kdlogger.Errorf("getUserHistoryFinance:  Unmarshal failed. err=%s.", err)
+		return 0, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getUserHistoryFinance:  Unmarshal failed. error=(%s).", err)
 	}
 	//投资记录没有该账户，报错
 	if _, ok := rfi.UserAmountMap[accName]; !ok {
-		return 0, kdlogger.Errorf("getUserHistoryFinance: acc not exists in UserAmountMap.")
+		return 0, kdlogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "getUserHistoryFinance: acc not exists in UserAmountMap.")
 	}
 
 	kdlogger.Debug("getUserHistoryFinance: rfi=%+v", rfi)
@@ -2704,17 +2693,17 @@ func (t *KD) getUserInvestAmount(stub shim.ChaincodeStubInterface, accName, rack
 	return rfi.UserAmountMap[accName], nil
 }
 
-func (t *KD) getRackFinanceAmount(stub shim.ChaincodeStubInterface, rackid, fid string) (int64, error) {
+func (t *KD) getRackFinanceAmount(stub shim.ChaincodeStubInterface, rackid, fid string) (int64, *ErrorCodeMsg) {
 	/*
 	   fid, err := t.getLatestFid(stub)
 	   if err != nil {
-	       return 0, mylog.Errorf("getRackHistoryFinance: getLatestFid failed. err=%s.", err)
+	       return 0, mylog.Errorf("getRackHistoryFinance: getLatestFid failed. error=(%s).", err)
 	   }
 	*/
 
 	rfiB, err := stateCache.GetState_Ex(stub, t.getRackFinacInfoKey(rackid, fid))
 	if err != nil {
-		return 0, kdlogger.Errorf("getRackHistoryFinance:  GetState failed. err=%s.", err)
+		return 0, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getRackHistoryFinance:  GetState failed. error=(%s).", err)
 	}
 	if rfiB == nil {
 		kdlogger.Debug("getRackHistoryFinance: rfiB is nil.")
@@ -2723,7 +2712,7 @@ func (t *KD) getRackFinanceAmount(stub shim.ChaincodeStubInterface, rackid, fid 
 	var rfi RackFinancInfo
 	err = json.Unmarshal(rfiB, &rfi)
 	if err != nil {
-		return 0, kdlogger.Errorf("getRackHistoryFinance:  Unmarshal failed. err=%s.", err)
+		return 0, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getRackHistoryFinance:  Unmarshal failed. error=(%s).", err)
 	}
 	var totalAmt int64 = 0
 	for acc, amt := range rfi.UserAmountMap {
@@ -2735,43 +2724,43 @@ func (t *KD) getRackFinanceAmount(stub shim.ChaincodeStubInterface, rackid, fid 
 	return totalAmt, nil
 }
 
-func (t *KD) financeIssueFinishAfter(stub shim.ChaincodeStubInterface, currentFid string, invokeTime int64) error {
+func (t *KD) financeIssueFinishAfter(stub shim.ChaincodeStubInterface, currentFid string, invokeTime int64) *ErrorCodeMsg {
 	//看是否已经处理过
 	finishIdB, err := stateCache.GetState_Ex(stub, RACKFINACISSUEFINISHID_KEY)
 	if err != nil {
-		return kdlogger.Errorf("financeIssueFinishAfter: GetState(finishId) failed. err=%s.", err)
+		return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "financeIssueFinishAfter: GetState(finishId) failed. error=(%s).", err)
 	}
 	if finishIdB == nil {
 		err = stateCache.PutState_Ex(stub, RACKFINACISSUEFINISHID_KEY, []byte(currentFid))
 		if err != nil {
-			return kdlogger.Errorf("financeIssueFinishAfter: PutState_Ex(finishId) failed. err=%s.", err)
+			return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "financeIssueFinishAfter: PutState_Ex(finishId) failed. error=(%s).", err)
 		}
 	} else {
 		var finishId = string(finishIdB)
 
 		if finishId == currentFid {
-			return kdlogger.Errorf("financeIssueFinishAfter: has finished already.")
+			return kdlogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "financeIssueFinishAfter: has finished already.")
 		}
 	}
 
 	//给本期理财设置为"发行完毕"
 	fiB, err := stateCache.GetState_Ex(stub, t.getFinacInfoKey(currentFid))
 	if err != nil {
-		return kdlogger.Errorf("financeIssueFinishAfter: GetState(fi=%s) failed. err=%s.", currentFid, err)
+		return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "financeIssueFinishAfter: GetState(fi=%s) failed. error=(%s).", currentFid, err)
 	}
 
 	if fiB != nil {
 		var fi FinancialInfo
 		err = json.Unmarshal(fiB, &fi)
 		if err != nil {
-			return kdlogger.Errorf("financeIssueFinishAfter: Unmarshal failed. err=%s.", err)
+			return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "financeIssueFinishAfter: Unmarshal failed. error=(%s).", err)
 		}
 
 		for _, rackid := range fi.RackList {
 			var rfiKey = t.getRackFinacInfoKey(rackid, currentFid)
 			rfiB, err := stateCache.GetState_Ex(stub, rfiKey)
 			if err != nil {
-				return kdlogger.Errorf("financeIssueFinishAfter: GetState(rfi=%s,%s) failed. err=%s.", rackid, currentFid, err)
+				return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "financeIssueFinishAfter: GetState(rfi=%s,%s) failed. error=(%s).", rackid, currentFid, err)
 			}
 			if rfiB == nil {
 				continue
@@ -2780,25 +2769,25 @@ func (t *KD) financeIssueFinishAfter(stub shim.ChaincodeStubInterface, currentFi
 			var rfi RackFinancInfo
 			err = json.Unmarshal(rfiB, &rfi)
 			if err != nil {
-				return kdlogger.Errorf("financeIssueFinishAfter: Unmarshal(rfi=%s,%s) failed. err=%s.", rackid, currentFid, err)
+				return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "financeIssueFinishAfter: Unmarshal(rfi=%s,%s) failed. error=(%s).", rackid, currentFid, err)
 			}
 
 			kdlogger.Debug("financeIssueFinishAfter: rfi=%+v", rfi)
 
 			if rfi.Stage >= FINANC_STAGE_ISSUE_FINISH {
-				return kdlogger.Errorf("financeIssueFinishAfter: (%s,%s) has finished already, something wrong?", rackid, currentFid)
+				return kdlogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "financeIssueFinishAfter: (%s,%s) has finished already, something wrong?", rackid, currentFid)
 			}
 
 			rfi.Stage = FINANC_STAGE_ISSUE_FINISH
 
 			rfiB, err = json.Marshal(rfi)
 			if err != nil {
-				return kdlogger.Errorf("financeIssueFinishAfter: Marshal(rfi=%s,%s) failed. err=%s.", rackid, currentFid, err)
+				return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "financeIssueFinishAfter: Marshal(rfi=%s,%s) failed. error=(%s).", rackid, currentFid, err)
 			}
 
 			err = stateCache.PutState_Ex(stub, rfiKey, rfiB)
 			if err != nil {
-				return kdlogger.Errorf("financeIssueFinishAfter: PutState_Ex(rfi=%s,%s) failed. err=%s.", rackid, currentFid, err)
+				return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "financeIssueFinishAfter: PutState_Ex(rfi=%s,%s) failed. error=(%s).", rackid, currentFid, err)
 			}
 		}
 	}
@@ -2807,12 +2796,12 @@ func (t *KD) financeIssueFinishAfter(stub shim.ChaincodeStubInterface, currentFi
 	return t.financeRenewalPreviousFinance(stub, currentFid, invokeTime)
 }
 
-func (t *KD) financeRenewalPreviousFinance(stub shim.ChaincodeStubInterface, currentFid string, invokeTime int64) error {
+func (t *KD) financeRenewalPreviousFinance(stub shim.ChaincodeStubInterface, currentFid string, invokeTime int64) *ErrorCodeMsg {
 	//看上期的理财中，哪些没有提取的自动续期
 	//调用理财续期的接口时，已经将最新的理财期号设置了（调用setCurrentFid），所以这里取前一期的期号
-	preFid, err := t.getPreviousFid(stub)
-	if err != nil {
-		return kdlogger.Errorf("financeRenewal: getPreviousFid failed. err=%s.", err)
+	preFid, errcm := t.getPreviousFid(stub)
+	if errcm != nil {
+		return kdlogger.ErrorECM(errcm.Code, "financeRenewal: getPreviousFid failed. error=(%s).", errcm)
 	}
 
 	kdlogger.Debug("financeRenewal: preFid=%s", preFid)
@@ -2824,12 +2813,12 @@ func (t *KD) financeRenewalPreviousFinance(stub shim.ChaincodeStubInterface, cur
 	}
 
 	if preFid == currentFid {
-		return kdlogger.Errorf("financeRenewal: preFid == currentFid, error.")
+		return kdlogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "financeRenewal: preFid == currentFid, error.")
 	}
 
 	fiB, err := stateCache.GetState_Ex(stub, t.getFinacInfoKey(preFid))
 	if err != nil {
-		return kdlogger.Errorf("financeRenewal: GetState(fi=%s) failed. err=%s.", preFid, err)
+		return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "financeRenewal: GetState(fi=%s) failed. error=(%s).", preFid, err)
 	}
 
 	//上一期没人买过理财
@@ -2841,14 +2830,14 @@ func (t *KD) financeRenewalPreviousFinance(stub shim.ChaincodeStubInterface, cur
 	var fi FinancialInfo
 	err = json.Unmarshal(fiB, &fi)
 	if err != nil {
-		return kdlogger.Errorf("financeRenewal: Unmarshal failed. err=%s.", err)
+		return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "financeRenewal: Unmarshal failed. error=(%s).", err)
 	}
 
 	for _, rackid := range fi.RackList {
 		var rfiKey = t.getRackFinacInfoKey(rackid, preFid)
 		rfiB, err := stateCache.GetState_Ex(stub, rfiKey)
 		if err != nil {
-			return kdlogger.Errorf("financeRenewal: GetState(rfi=%s,%s) failed. err=%s.", rackid, preFid, err)
+			return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "financeRenewal: GetState(rfi=%s,%s) failed. error=(%s).", rackid, preFid, err)
 		}
 		if rfiB == nil {
 			continue
@@ -2857,7 +2846,7 @@ func (t *KD) financeRenewalPreviousFinance(stub shim.ChaincodeStubInterface, cur
 		var rfi RackFinancInfo
 		err = json.Unmarshal(rfiB, &rfi)
 		if err != nil {
-			return kdlogger.Errorf("financeRenewal: Unmarshal(rfi=%s,%s) failed. err=%s.", rackid, preFid, err)
+			return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "financeRenewal: Unmarshal(rfi=%s,%s) failed. error=(%s).", rackid, preFid, err)
 		}
 
 		kdlogger.Debug("financeRenewal: rfi=%+v", rfi)
@@ -2872,9 +2861,9 @@ func (t *KD) financeRenewalPreviousFinance(stub shim.ChaincodeStubInterface, cur
 			kdlogger.Info("financeRenewal: renewal for %s,%s", rackid, currentFid)
 
 			//续期，即内部给这些用户买新一期的理财
-			_, err = t.userBuyFinance(stub, acc, rackid, currentFid, "", "", "", amt, invokeTime, true, true)
-			if err != nil {
-				return kdlogger.Errorf("financeRenewal: userBuyFinance(rfi=%s,%s,%s) failed. err=%s.", rackid, preFid, acc, err)
+			_, errcm := t.userBuyFinance(stub, acc, rackid, currentFid, "", "", "", amt, invokeTime, true, true)
+			if errcm != nil {
+				return kdlogger.ErrorECM(errcm.Code, "financeRenewal: userBuyFinance(rfi=%s,%s,%s) failed. error=(%s).", rackid, preFid, acc, errcm)
 			}
 		}
 	}
@@ -2882,10 +2871,10 @@ func (t *KD) financeRenewalPreviousFinance(stub shim.ChaincodeStubInterface, cur
 	return nil
 }
 
-func (t *KD) payUserFinance(stub shim.ChaincodeStubInterface, accName, reacc, rackid string, invokeTime int64, transType, desc string, sameEntSaveTx bool) error {
-	reaccEnt, err := t.getAccountRackInvestInfo(stub, reacc)
-	if err != nil {
-		return kdlogger.Errorf("payUserFinance: getAccountEntity(acc=%s) failed. err=%s.", reacc, err)
+func (t *KD) payUserFinance(stub shim.ChaincodeStubInterface, accName, reacc, rackid string, invokeTime int64, transType, desc string, sameEntSaveTx bool) *ErrorCodeMsg {
+	reaccEnt, errcm := t.getAccountRackInvestInfo(stub, reacc)
+	if errcm != nil {
+		return kdlogger.ErrorECM(errcm.Code, "payUserFinance: getAccountEntity(acc=%s) failed. error=(%s).", reacc, errcm)
 	}
 	kdlogger.Debug("payUserFinance: before reaccEnt = %+v", reaccEnt)
 
@@ -2896,9 +2885,9 @@ func (t *KD) payUserFinance(stub shim.ChaincodeStubInterface, accName, reacc, ra
 
 	//获取用户投资的本金  最近一期投资的额度为本金，因为投资会自动续期
 	var investAmt int64 = 0
-	investAmt, err = t.getUserInvestAmount(stub, reacc, rackid, reaccEnt.LatestFid)
-	if err != nil {
-		return kdlogger.Errorf("payUserFinance: getUserInvestAmount failed. err=%s.", err)
+	investAmt, errcm = t.getUserInvestAmount(stub, reacc, rackid, reaccEnt.LatestFid)
+	if errcm != nil {
+		return kdlogger.ErrorECM(errcm.Code, "payUserFinance: getUserInvestAmount failed. error=(%s).", errcm)
 	}
 
 	kdlogger.Debug("payUserFinance: acc=%s investAmt=%d (%s,%s)", reacc, investAmt, rackid, reaccEnt.LatestFid)
@@ -2916,16 +2905,16 @@ func (t *KD) payUserFinance(stub shim.ChaincodeStubInterface, accName, reacc, ra
 		var rfiKey = t.getRackFinacInfoKey(rackid, f)
 		rfiB, err := stateCache.GetState_Ex(stub, rfiKey)
 		if err != nil {
-			return kdlogger.Errorf("payUserFinance:  GetState(%s,%s) failed. err=%s.", rackid, f, err)
+			return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "payUserFinance:  GetState(%s,%s) failed. error=(%s).", rackid, f, err)
 		}
 		//ent中记录了该条记录，肯定是有的，没有则报错
 		if rfiB == nil {
-			return kdlogger.Errorf("payUserFinance:  FinancialInfo(%s,%s) not exists.", rackid, f)
+			return kdlogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "payUserFinance:  FinancialInfo(%s,%s) not exists.", rackid, f)
 		}
 		var rfi RackFinancInfo
 		err = json.Unmarshal(rfiB, &rfi)
 		if err != nil {
-			return kdlogger.Errorf("payUserFinance:  Unmarshal(%s,%s) failed. err=%s.", rackid, f, err)
+			return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "payUserFinance:  Unmarshal(%s,%s) failed. error=(%s).", rackid, f, err)
 		}
 
 		//如果已提取过，则不能再提取。这里不报错，不实际执行转账即可
@@ -2941,12 +2930,12 @@ func (t *KD) payUserFinance(stub shim.ChaincodeStubInterface, accName, reacc, ra
 		rfi.PayFinanceUserList = append(rfi.PayFinanceUserList, reacc)
 		rfiB, err = json.Marshal(rfi)
 		if err != nil {
-			return kdlogger.Errorf("payUserFinance:  Marshal(%s,%s) failed. err=%s.", rackid, f, err)
+			return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "payUserFinance:  Marshal(%s,%s) failed. error=(%s).", rackid, f, err)
 		}
 
 		err = stateCache.PutState_Ex(stub, rfiKey, rfiB)
 		if err != nil {
-			return kdlogger.Errorf("payUserFinance:  PutState_Ex(%s,%s) failed. err=%s.", rackid, f, err)
+			return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "payUserFinance:  PutState_Ex(%s,%s) failed. error=(%s).", rackid, f, err)
 		}
 
 		kdlogger.Debug("payUserFinance: acc=%s rfi=%+v", reacc, rfi)
@@ -2960,9 +2949,9 @@ func (t *KD) payUserFinance(stub shim.ChaincodeStubInterface, accName, reacc, ra
 
 	kdlogger.Debug("payUserFinance: %s will pay %d to %s.", accName, totalAmt, reacc)
 
-	_, err = t.transferCoin(stub, accName, reacc, transType, desc, totalAmt, invokeTime, sameEntSaveTx)
-	if err != nil {
-		return kdlogger.Errorf("payUserFinance:  transferCoin(%s) failed. err=%s.", reacc, err)
+	_, errcm = t.transferCoin(stub, accName, reacc, transType, desc, totalAmt, invokeTime, sameEntSaveTx)
+	if errcm != nil {
+		return kdlogger.ErrorECM(errcm.Code, "payUserFinance:  transferCoin(%s) failed. error=(%s).", reacc, errcm)
 	}
 
 	//将赎回的理财期号写入已赎回列表
@@ -2977,9 +2966,9 @@ func (t *KD) payUserFinance(stub shim.ChaincodeStubInterface, accName, reacc, ra
 		delete(reaccEnt.RFInfoMap, rfkey)
 	}
 
-	err = t.setAccountRackInvestInfo(stub, reaccEnt)
-	if err != nil {
-		return kdlogger.Errorf("payUserFinance:  setAccountRackInvestInfo(%s) failed. err=%s.", reacc, err)
+	errcm = t.setAccountRackInvestInfo(stub, reaccEnt)
+	if errcm != nil {
+		return kdlogger.ErrorECM(errcm.Code, "payUserFinance:  setAccountRackInvestInfo(%s) failed. error=(%s).", reacc, errcm)
 	}
 
 	kdlogger.Debug("payUserFinance: after reaccEnt = %+v", *reaccEnt)
@@ -2998,10 +2987,10 @@ func (t *KD) getRackFinanceFromMapKey(key string) (string, string) {
 	return pair[0], pair[1]
 }
 
-func (t *KD) getUserFinanceProfit(stub shim.ChaincodeStubInterface, accName, rackid string) (int64, error) {
-	accEnt, err := t.getAccountRackInvestInfo(stub, accName)
-	if err != nil {
-		return 0, kdlogger.Errorf("getUserFinanceProfit: getAccountEntity(acc=%s) failed. err=%s.", accName, err)
+func (t *KD) getUserFinanceProfit(stub shim.ChaincodeStubInterface, accName, rackid string) (int64, *ErrorCodeMsg) {
+	accEnt, errcm := t.getAccountRackInvestInfo(stub, accName)
+	if errcm != nil {
+		return 0, kdlogger.ErrorECM(errcm.Code, "getUserFinanceProfit: getAccountEntity(acc=%s) failed. error=(%s).", accName, errcm)
 	}
 	kdlogger.Debug("getUserFinanceProfit:  accEnt = %+v", accEnt)
 
@@ -3021,16 +3010,16 @@ func (t *KD) getUserFinanceProfit(stub shim.ChaincodeStubInterface, accName, rac
 		var rfiKey = t.getRackFinacInfoKey(rackid, f)
 		rfiB, err := stateCache.GetState_Ex(stub, rfiKey)
 		if err != nil {
-			return profit, kdlogger.Errorf("getUserFinanceProfit:  GetState(%s,%s) failed. err=%s.", rackid, f, err)
+			return profit, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getUserFinanceProfit:  GetState(%s,%s) failed. error=(%s).", rackid, f, err)
 		}
 		//ent中记录了该条记录，肯定是有的，没有则报错
 		if rfiB == nil {
-			return profit, kdlogger.Errorf("getUserFinanceProfit:  FinancialInfo(%s,%s) not exists.", rackid, f)
+			return profit, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getUserFinanceProfit:  FinancialInfo(%s,%s) not exists.", rackid, f)
 		}
 		var rfi RackFinancInfo
 		err = json.Unmarshal(rfiB, &rfi)
 		if err != nil {
-			return profit, kdlogger.Errorf("getUserFinanceProfit:  Unmarshal(%s,%s) failed. err=%s.", rackid, f, err)
+			return profit, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getUserFinanceProfit:  Unmarshal(%s,%s) failed. error=(%s).", rackid, f, err)
 		}
 
 		if rfi.UserProfitMap != nil {
@@ -3041,19 +3030,19 @@ func (t *KD) getUserFinanceProfit(stub shim.ChaincodeStubInterface, accName, rac
 	return profit, nil
 }
 
-func (t *KD) getRestFinanceCapacityForRack(stub shim.ChaincodeStubInterface, rackid, fid string) (int64, error) {
+func (t *KD) getRestFinanceCapacityForRack(stub shim.ChaincodeStubInterface, rackid, fid string) (int64, *ErrorCodeMsg) {
 	var rfc RackFinanceCfg
-	_, err := t.getRackFinancCfg(stub, rackid, &rfc)
-	if err != nil {
-		return 0, kdlogger.Errorf("getRestFinanceCapacityForRack:  getRackFinancCfg(%s) failed. err=%s.", rackid, err)
+	_, errcm := t.getRackFinancCfg(stub, rackid, &rfc)
+	if errcm != nil {
+		return 0, kdlogger.ErrorECM(errcm.Code, "getRestFinanceCapacityForRack:  getRackFinancCfg(%s) failed. error=(%s).", rackid, errcm)
 	}
 
 	//获取前一期的将要续期的金额
 	var preAmt int64 = 0
 
-	hisFids, err := t.getPrevAndCurrFids(stub)
-	if err != nil {
-		return 0, kdlogger.Errorf("getRestFinanceCapacityForRack: getPrevAndCurrFids failed. err=%s.", err)
+	hisFids, errcm := t.getPrevAndCurrFids(stub)
+	if errcm != nil {
+		return 0, kdlogger.ErrorECM(errcm.Code, "getRestFinanceCapacityForRack: getPrevAndCurrFids failed. error=(%s).", errcm)
 	}
 	//如果历史fid为空，说明没有前期理财
 	if hisFids != nil {
@@ -3070,9 +3059,9 @@ func (t *KD) getRestFinanceCapacityForRack(stub shim.ChaincodeStubInterface, rac
 
 		//前期理财id为空，说明没有前期，不用处理
 		if len(preFid) > 0 {
-			preAmt, err = t.getRackFinanceAmount(stub, rackid, preFid)
-			if err != nil {
-				return 0, kdlogger.Errorf("getRestFinanceCapacityForRack: getRackFinanceAmount failed. err=%s.", err)
+			preAmt, errcm = t.getRackFinanceAmount(stub, rackid, preFid)
+			if errcm != nil {
+				return 0, kdlogger.ErrorECM(errcm.Code, "getRestFinanceCapacityForRack: getRackFinanceAmount failed. error=(%s).", errcm)
 			}
 			kdlogger.Debug("getRestFinanceCapacityForRack: preAmt=%v", preAmt)
 		}
@@ -3080,9 +3069,9 @@ func (t *KD) getRestFinanceCapacityForRack(stub shim.ChaincodeStubInterface, rac
 
 	//获取当期理财已投资金额
 	var currAmt int64 = 0
-	currAmt, err = t.getRackFinanceAmount(stub, rackid, fid)
-	if err != nil {
-		return 0, kdlogger.Errorf("getRestFinanceCapacityForRack: getRackFinanceAmount failed. err=%s.", err)
+	currAmt, errcm = t.getRackFinanceAmount(stub, rackid, fid)
+	if errcm != nil {
+		return 0, kdlogger.ErrorECM(errcm.Code, "getRestFinanceCapacityForRack: getRackFinanceAmount failed. error=(%s).", errcm)
 	}
 
 	kdlogger.Debug("getRestFinanceCapacityForRack: InvestCapacity=%v, preAmt=%v, currAmt=%v", rfc.InvestCapacity, preAmt, currAmt)
@@ -3098,10 +3087,10 @@ func (t *KD) getRestFinanceCapacityForRack(stub shim.ChaincodeStubInterface, rac
 
 /*
 //获取某个账户的货架融资信息
-func (t *KD) _getAccRackFinanceTx(stub shim.ChaincodeStubInterface, accName, rackid string) ([]byte, error) {
+func (t *KD) _getAccRackFinanceTx(stub shim.ChaincodeStubInterface, accName, rackid string) ([]byte, *ErrorCodeMsg) {
 	accEnt, err := t.getAccountEntity(stub, accName)
 	if err != nil {
-		return nil, mylog.Errorf("payUserFinance: getAccountEntity(acc=%s) failed. err=%s.", accName, err)
+		return nil, mylog.Errorf("payUserFinance: getAccountEntity(acc=%s) failed. error=(%s).", accName, err)
 	}
 	mylog.Debug("payUserFinance: before reaccEnt = %+v", accEnt)
 
@@ -3121,7 +3110,7 @@ func (t *KD) _getAccRackFinanceTx(stub shim.ChaincodeStubInterface, accName, rac
 		var rfiKey = t.getRackFinacInfoKey(rackid, f)
 		rfiB, err := stateCache.GetState_Ex(stub, rfiKey)
 		if err != nil {
-			return mylog.Errorf("payUserFinance:  GetState(%s,%s) failed. err=%s.", rackid, f, err)
+			return mylog.Errorf("payUserFinance:  GetState(%s,%s) failed. error=(%s).", rackid, f, err)
 		}
 		//ent中记录了该条记录，肯定是有的，没有则报错
 		if rfiB == nil {
@@ -3130,7 +3119,7 @@ func (t *KD) _getAccRackFinanceTx(stub shim.ChaincodeStubInterface, accName, rac
 		var rfi RackFinancInfo
 		err = json.Unmarshal(rfiB, &rfi)
 		if err != nil {
-			return mylog.Errorf("payUserFinance:  Unmarshal(%s,%s) failed. err=%s.", rackid, f, err)
+			return mylog.Errorf("payUserFinance:  Unmarshal(%s,%s) failed. error=(%s).", rackid, f, err)
 		}
 
 		//如果已提取过，则不再显示。
@@ -3152,7 +3141,7 @@ func (t *KD) _getAccRackFinanceTx(stub shim.ChaincodeStubInterface, accName, rac
 	return nil
 }
 
-func (t *KD) queryAccRackFinanceTx(stub shim.ChaincodeStubInterface, accName string, begIdx, count, begTime, endTime, isAsc bool) ([]byte, error) {
+func (t *KD) queryAccRackFinanceTx(stub shim.ChaincodeStubInterface, accName string, begIdx, count, begTime, endTime, isAsc bool) ([]byte, *ErrorCodeMsg) {
 	var err error
 
 	var retTransInfo []byte
@@ -3162,7 +3151,7 @@ func (t *KD) queryAccRackFinanceTx(stub shim.ChaincodeStubInterface, accName str
 
 	retTransInfo, err = json.Marshal(queryResult)
 	if err != nil {
-		return nil, mylog.Errorf("queryAccRackFinanceTx Marshal failed.err=%s", err)
+		return nil, mylog.Errorf("queryAccRackFinanceTx Marshal failed.error=(%s)", err)
 	}
 
 	//begIdx从1开始
@@ -3186,7 +3175,7 @@ func (t *KD) queryAccRackFinanceTx(stub shim.ChaincodeStubInterface, accName str
 			return retTransInfo, nil
 		}
 
-		return nil, mylog.Errorf("queryAccRackFinanceTx getAccountEntity(%s) failed.err=%s", accName, err)
+		return nil, mylog.Errorf("queryAccRackFinanceTx getAccountEntity(%s) failed.error=(%s)", accName, err)
 	}
 
 	if accEnt.AccEnt_Ext_RackFinance.RFInfoMap == nil {
@@ -3205,7 +3194,7 @@ func (t *KD) queryAccRackFinanceTx(stub shim.ChaincodeStubInterface, accName str
 
 			trans, err = t.getOnceTransInfo(stub, t.getTransInfoKey(stub, loop))
 			if err != nil {
-				mylog.Error("queryAccRackFinanceTx getQueryTransInfo(idx=%d) failed.err=%s", loop, err)
+				mylog.Error("queryAccRackFinanceTx getQueryTransInfo(idx=%d) failed.error=(%s)", loop, err)
 				continue
 			}
 			//取匹配的transLvl
@@ -3228,7 +3217,7 @@ func (t *KD) queryAccRackFinanceTx(stub shim.ChaincodeStubInterface, accName str
 
 			trans, err = t.getOnceTransInfo(stub, t.getTransInfoKey(stub, loop))
 			if err != nil {
-				mylog.Error("queryAccRackFinanceTx getQueryTransInfo(idx=%d) failed.err=%s", loop, err)
+				mylog.Error("queryAccRackFinanceTx getQueryTransInfo(idx=%d) failed.error=(%s)", loop, err)
 				continue
 			}
 			//取匹配的transLvl
@@ -3246,7 +3235,7 @@ func (t *KD) queryAccRackFinanceTx(stub shim.ChaincodeStubInterface, accName str
 
 	retTransInfo, err = json.Marshal(queryResult)
 	if err != nil {
-		return nil, mylog.Errorf("queryAccRackFinanceTx Marshal failed.err=%s", err)
+		return nil, mylog.Errorf("queryAccRackFinanceTx Marshal failed.error=(%s)", err)
 	}
 
 	return retTransInfo, nil
@@ -3257,10 +3246,10 @@ func (t *KD) getAccountRackInvestInfoKey(accName string) string {
 	return RACK_ACCINVESTINFO_PREFIX + accName
 }
 
-func (t *KD) getAccountRackInvestInfo(stub shim.ChaincodeStubInterface, accName string) (*AccRackInvest, error) {
+func (t *KD) getAccountRackInvestInfo(stub shim.ChaincodeStubInterface, accName string) (*AccRackInvest, *ErrorCodeMsg) {
 	arfiB, err := stateCache.GetState_Ex(stub, t.getAccountRackInvestInfoKey(accName))
 	if err != nil {
-		return nil, kdlogger.Errorf("getAccountRackInvestInfo: GetState failed.err=%s, acc=%s", err, accName)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getAccountRackInvestInfo: GetState failed.error=(%s), acc=%s", err, accName)
 	}
 
 	if arfiB == nil {
@@ -3269,26 +3258,26 @@ func (t *KD) getAccountRackInvestInfo(stub shim.ChaincodeStubInterface, accName 
 		var arfi AccRackInvest
 		err = json.Unmarshal(arfiB, &arfi)
 		if err != nil {
-			return nil, kdlogger.Errorf("getAccountRackInvestInfo: Unmarshal failed.err=%s, acc=%s", err, accName)
+			return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getAccountRackInvestInfo: Unmarshal failed.error=(%s), acc=%s", err, accName)
 		}
 		return &arfi, nil
 	}
 }
 
-func (t *KD) setAccountRackInvestInfo(stub shim.ChaincodeStubInterface, accRackInvest *AccRackInvest) error {
+func (t *KD) setAccountRackInvestInfo(stub shim.ChaincodeStubInterface, accRackInvest *AccRackInvest) *ErrorCodeMsg {
 	var accName = accRackInvest.EntID
 	if len(accName) == 0 {
-		return kdlogger.Errorf("setAccountRackInvestInfo: accName is nil.")
+		return kdlogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "setAccountRackInvestInfo: accName is nil.")
 	}
 
 	ariB, err := json.Marshal(accRackInvest)
 	if err != nil {
-		return kdlogger.Errorf("setAccountRackInvestInfo: Marshal failed.err=%s, acc=%s", err, accName)
+		return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setAccountRackInvestInfo: Marshal failed.error=(%s), acc=%s", err, accName)
 	}
 
 	err = stateCache.PutState_Ex(stub, t.getAccountRackInvestInfoKey(accName), ariB)
 	if err != nil {
-		return kdlogger.Errorf("setAccountRackInvestInfo: putState_Ex failed.err=%s, acc=%s", err, accName)
+		return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setAccountRackInvestInfo: putState_Ex failed.error=(%s), acc=%s", err, accName)
 	}
 
 	return nil
@@ -3296,38 +3285,34 @@ func (t *KD) setAccountRackInvestInfo(stub shim.ChaincodeStubInterface, accRackI
 
 /* ----------------------- 货架融资相关 end ----------------------- */
 
-func (t *KD) setAccountPasswd(stub shim.ChaincodeStubInterface, accName, pwd string) error {
-	var err error
-
+func (t *KD) setAccountPasswd(stub shim.ChaincodeStubInterface, accName, pwd string) *ErrorCodeMsg {
 	salt := md5.Sum([]byte(accName))
 
 	hash, err := kdCrypto.GenCipher(pwd, salt[:])
 	if err != nil {
-		return kdlogger.Errorf("setAccountPasswd: GenCipher failed.err=%s, acc=%s", err, accName)
+		return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setAccountPasswd: GenCipher failed.error=(%s), acc=%s", err, accName)
 	}
 
 	err = stateCache.PutState_Ex(stub, t.getUserCipherKey(accName), hash)
 	if err != nil {
-		return kdlogger.Errorf("setAccountPasswd: putState_Ex failed.err=%s, acc=%s", err, accName)
+		return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setAccountPasswd: putState_Ex failed.error=(%s), acc=%s", err, accName)
 	}
 
 	return nil
 }
-func (t *KD) authAccountPasswd(stub shim.ChaincodeStubInterface, accName, pwd string) (bool, error) {
-	var err error
-
+func (t *KD) authAccountPasswd(stub shim.ChaincodeStubInterface, accName, pwd string) (bool, *ErrorCodeMsg) {
 	cipher, err := stateCache.GetState_Ex(stub, t.getUserCipherKey(accName))
 	if err != nil {
-		return false, kdlogger.Errorf("AuthAccountPasswd: GetState failed.err=%s, acc=%s", err, accName)
+		return false, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "AuthAccountPasswd: GetState failed.error=(%s), acc=%s", err, accName)
 	}
 
 	if cipher == nil || len(cipher) == 0 {
-		return false, kdlogger.Errorf("AuthAccountPasswd: Cipher is nil, acc=%s", accName)
+		return false, kdlogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "AuthAccountPasswd: Cipher is nil, acc=%s", accName)
 	}
 
 	ok, err := kdCrypto.AuthPass(cipher, pwd)
 	if err != nil {
-		return false, kdlogger.Errorf("AuthAccountPasswd: AuthPass failed.err=%s, acc=%s", err, accName)
+		return false, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "AuthAccountPasswd: AuthPass failed.error=(%s), acc=%s", err, accName)
 	}
 
 	if ok {
@@ -3337,11 +3322,11 @@ func (t *KD) authAccountPasswd(stub shim.ChaincodeStubInterface, accName, pwd st
 	return false, nil
 }
 
-func (t *KD) isSetAccountPasswd(stub shim.ChaincodeStubInterface, accName string) (bool, error) {
+func (t *KD) isSetAccountPasswd(stub shim.ChaincodeStubInterface, accName string) (bool, *ErrorCodeMsg) {
 
 	cipher, err := stateCache.GetState_Ex(stub, t.getUserCipherKey(accName))
 	if err != nil {
-		return false, kdlogger.Errorf("isSetAccountPasswd: GetState failed.err=%s, acc=%s", err, accName)
+		return false, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "isSetAccountPasswd: GetState failed.error=(%s), acc=%s", err, accName)
 	}
 
 	if cipher == nil || len(cipher) == 0 {
@@ -3351,39 +3336,39 @@ func (t *KD) isSetAccountPasswd(stub shim.ChaincodeStubInterface, accName string
 	return true, nil
 }
 
-func (t *KD) changeAccountPasswd(stub shim.ChaincodeStubInterface, accName, oldpwd, newpwd string) error {
-	ok, err := t.authAccountPasswd(stub, accName, oldpwd)
-	if err != nil {
-		return kdlogger.Errorf("changeAccountPasswd: authAccountPasswd failed.err=%s, acc=%s", err, accName)
+func (t *KD) changeAccountPasswd(stub shim.ChaincodeStubInterface, accName, oldpwd, newpwd string) *ErrorCodeMsg {
+	ok, errcm := t.authAccountPasswd(stub, accName, oldpwd)
+	if errcm != nil {
+		return kdlogger.ErrorECM(errcm.Code, "changeAccountPasswd: authAccountPasswd failed.error=(%s), acc=%s", errcm, accName)
 	}
 	if !ok {
-		return kdlogger.Errorf("changeAccountPasswd: authAccountPasswd not pass.")
+		return kdlogger.ErrorECM(ERRCODE_COMMON_CHECK_FAILED, "changeAccountPasswd: authAccountPasswd not pass.")
 	}
 
-	err = t.setAccountPasswd(stub, accName, newpwd)
-	if err != nil {
-		return kdlogger.Errorf("changeAccountPasswd: setAccountPasswd failed.err=%s, acc=%s", err, accName)
+	errcm = t.setAccountPasswd(stub, accName, newpwd)
+	if errcm != nil {
+		return kdlogger.ErrorECM(errcm.Code, "changeAccountPasswd: setAccountPasswd failed.error=(%s), acc=%s", errcm, accName)
 	}
 
 	return nil
 }
 
-func (t *KD) decodeAccountPasswd(pwdBase64 string) (string, error) {
+func (t *KD) decodeAccountPasswd(pwdBase64 string) (string, *ErrorCodeMsg) {
 
 	pwdEncrypt, err := base64.StdEncoding.DecodeString(pwdBase64)
 	if err != nil {
-		return "", kdlogger.Errorf("decodeAccountPasswd: DecodeString failed. err=%s", err)
+		return "", kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "decodeAccountPasswd: DecodeString failed. error=(%s)", err)
 	}
 
 	pwdB, err := kdCrypto.AESDecrypt(256, []byte(PWD_ENCRYPT_KEY), []byte(PWD_ENCRYPT_IV), pwdEncrypt)
 	if err != nil {
-		return "", kdlogger.Errorf("decodeAccountPasswd: AESDecrypt failed. err=%s", err)
+		return "", kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "decodeAccountPasswd: AESDecrypt failed. error=(%s)", err)
 	}
 
 	return string(pwdB), nil
 }
 
-func (t *KD) dateConvertWhenLoad(stub shim.ChaincodeStubInterface, srcCcid, key string, valueB []byte) (string, []byte, error) {
+func (t *KD) dateConvertWhenLoad(stub shim.ChaincodeStubInterface, srcCcid, key string, valueB []byte) (string, []byte, *ErrorCodeMsg) {
 	//var err error
 	var newKey = key
 	var newValB = valueB
@@ -3412,14 +3397,14 @@ func (t *KD) dateConvertWhenLoad(stub shim.ChaincodeStubInterface, srcCcid, key 
 				var oldEnt Old_AccountEntity
 				err = json.Unmarshal(valueB, &oldEnt)
 				if err != nil {
-					return "", nil, kdlogger.Errorf("dateConvertWhenLoad: Unmarshal failed, err=%s", err)
+					return "", nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "dateConvertWhenLoad: Unmarshal failed, error=(%s)", err)
 				}
 
 				var newEnt AccountEntity
-				existEnt, err := Base.getAccountEntity(stub, oldEnt.EntID)
-				if err != nil {
-					if err != ErrNilEntity {
-						return "", nil, kdlogger.Errorf("dateConvertWhenLoad: getAccountEntity failed, err=%s", err)
+				existEnt, errcm := Base.getAccountEntity(stub, oldEnt.EntID)
+				if errcm != nil {
+					if errcm != ErrNilEntity {
+						return "", nil, kdlogger.ErrorECM(errcm.Code, "dateConvertWhenLoad: getAccountEntity failed, error=(%s)", errcm)
 					}
 				}
 
@@ -3444,12 +3429,12 @@ func (t *KD) dateConvertWhenLoad(stub shim.ChaincodeStubInterface, srcCcid, key 
 
 				err = stateCache.PutState_Ex(stub, t.getUserCipherKey(oldEnt.EntID), oldEnt.Cipher)
 				if err != nil {
-					return "", nil, kdlogger.Errorf("dateConvertWhenLoad: putState_Ex(newEnt) failed, err=%s", err)
+					return "", nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "dateConvertWhenLoad: putState_Ex(newEnt) failed, error=(%s)", err)
 				}
 
 				newValB, err = json.Marshal(newEnt)
 				if err != nil {
-					return "", nil, kdlogger.Errorf("dateConvertWhenLoad: Marshal(newEnt) failed, err=%s", err)
+					return "", nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "dateConvertWhenLoad: Marshal(newEnt) failed, error=(%s)", err)
 				}
 
 				var ari AccRackInvest
@@ -3458,9 +3443,9 @@ func (t *KD) dateConvertWhenLoad(stub shim.ChaincodeStubInterface, srcCcid, key 
 				ari.PaidFidList = oldEnt.AccEnt_Ext_RackFinance.PaidFidList
 				ari.RFInfoMap = oldEnt.AccEnt_Ext_RackFinance.RFInfoMap
 
-				err = t.setAccountRackInvestInfo(stub, &ari)
-				if err != nil {
-					return "", nil, kdlogger.Errorf("dateConvertWhenLoad: setAccountRackInvestInfo failed, err=%s", err)
+				errcm = t.setAccountRackInvestInfo(stub, &ari)
+				if errcm != nil {
+					return "", nil, kdlogger.ErrorECM(errcm.Code, "dateConvertWhenLoad: setAccountRackInvestInfo failed, error=(%s)", errcm)
 				}
 			}
 		*/
@@ -3469,7 +3454,7 @@ func (t *KD) dateConvertWhenLoad(stub shim.ChaincodeStubInterface, srcCcid, key 
 	return newKey, newValB, nil
 }
 
-func (t *KD) loadAfter(stub shim.ChaincodeStubInterface, srcCcid string) error {
+func (t *KD) loadAfter(stub shim.ChaincodeStubInterface, srcCcid string) *ErrorCodeMsg {
 
 	if srcCcid == "" {
 
@@ -3482,14 +3467,14 @@ func (t *KD) isAdmin(stub shim.ChaincodeStubInterface, accName string) bool {
 	return true
 }
 
-func (t *KD) transferCoin(stub shim.ChaincodeStubInterface, from, to, transType, description string, amount, transeTime int64, sameEntSaveTrans bool) ([]byte, error) {
+func (t *KD) transferCoin(stub shim.ChaincodeStubInterface, from, to, transType, description string, amount, transeTime int64, sameEntSaveTrans bool) ([]byte, *ErrorCodeMsg) {
 
 	appidB, err := stateCache.GetState_Ex(stub, APPID_KEY)
 	if err != nil {
-		return nil, kdlogger.Errorf("transferCoin: get appid failed, err=%s.", err)
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "transferCoin: get appid failed, error=(%s).", err)
 	}
 	if appidB == nil {
-		return nil, kdlogger.Errorf("transferCoin: appid not register.")
+		return nil, kdlogger.ErrorECM(ERRCODE_COMMON_INNER_ERROR, "transferCoin: appid not register.")
 	}
 	var appid = string(appidB)
 
@@ -3514,31 +3499,31 @@ func (t *KD) getUserCipherKey(accName string) string {
 	return ACCOUT_CIPHER_PREFIX + accName
 }
 
-func (t *KD) getTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string) (int64, error) {
+func (t *KD) getTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string) (int64, *ErrorCodeMsg) {
 	seqB, err := stateCache.GetState_Ex(stub, transSeqKey)
 	if err != nil {
-		return -1, kdlogger.Errorf("getTransSeq GetState failed.err=%s", err)
+		return -1, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getTransSeq GetState failed.error=(%s)", err)
 	}
 	//如果不存在则创建
 	if seqB == nil {
 		err = stateCache.PutState_Ex(stub, transSeqKey, []byte("0"))
 		if err != nil {
-			return -1, kdlogger.Errorf("initTransSeq PutState failed.err=%s", err)
+			return -1, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "initTransSeq PutState failed.error=(%s)", err)
 		}
 		return 0, nil
 	}
 
 	seq, err := strconv.ParseInt(string(seqB), 10, 64)
 	if err != nil {
-		return -1, kdlogger.Errorf("getTransSeq ParseInt failed.seq=%+v, err=%s", seqB, err)
+		return -1, kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "getTransSeq ParseInt failed.seq=%+v, error=(%s)", seqB, err)
 	}
 
 	return seq, nil
 }
-func (t *KD) setTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string, seq int64) error {
+func (t *KD) setTransSeq(stub shim.ChaincodeStubInterface, transSeqKey string, seq int64) *ErrorCodeMsg {
 	err := stateCache.PutState_Ex(stub, transSeqKey, []byte(strconv.FormatInt(seq, 10)))
 	if err != nil {
-		return kdlogger.Errorf("setTransSeq PutState failed.err=%s", err)
+		return kdlogger.ErrorECM(ERRCODE_COMMON_SYS_ERROR, "setTransSeq PutState failed.error=(%s)", err)
 	}
 
 	return nil

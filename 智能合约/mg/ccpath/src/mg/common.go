@@ -9,6 +9,7 @@ import (
 	"crypto/sha512"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"path"
 	"runtime"
@@ -16,6 +17,41 @@ import (
 
 	"github.com/hyperledger/fabric/core/chaincode/shim"
 )
+
+/**************************************************************************/
+/******************************** 错误码 ***********************************/
+/**************************************************************************/
+//这里定义的错误码会返回给前端，所以不要修改已有的错误码，如果要修改，请和前端一起修改
+//错误码开始  本合约的错误码从 10000--99999，其他合约不要冲突
+const ERRCODE_BEGIN = 10000
+
+//转账的错误码
+const (
+	ERRCODE_TRANS_BEGIN                     = iota + 10000
+	ERRCODE_TRANS_PAY_ACCOUNT_NOT_EXIST     //付款账号不存在
+	ERRCODE_TRANS_PAYEE_ACCOUNT_NOT_EXIST   //收款账号不存在
+	ERRCODE_TRANS_BALANCE_NOT_ENOUGH        //账号余额不足
+	ERRCODE_TRANS_PASSWD_INVALID            //密码错误（老版本中使用密码验证，新版本不再使用）
+	ERRCODE_TRANS_AMOUNT_INVALID            //转账金额不合法
+	ERRCODE_TRANS_BALANCE_NOT_ENOUGH_BYLOCK //锁定部分余额导致余额不足
+)
+
+//公共错误码
+const (
+	ERRCODE_COMMON_BEGIN                  = iota + 90000
+	ERRCODE_COMMON_PARAM_INVALID          //参数不合法
+	ERRCODE_COMMON_SYS_ERROR              //系统错误 即调用任何的系统函数（非合约内实现的函数统称为系统函数）出错
+	ERRCODE_COMMON_INNER_ERROR            //内部错误 合约内部逻辑等出现错误
+	ERRCODE_COMMON_IDENTITY_VERIFY_FAILED //身份校验失败
+	ERRCODE_COMMON_CHECK_FAILED           //检查失败，比如检查用户是否存在、用户是否有权限等等
+)
+
+//错误码结束  本合约的错误码从 10000--99999，其他合约不要冲突
+const ERRCODE_END = 99999
+
+/**************************************************************************/
+/******************************** 错误码 ***********************************/
+/**************************************************************************/
 
 var commlogger = NewMylogger("comm")
 
@@ -261,6 +297,14 @@ func (m *MYLOG) SError(format string, args ...interface{}) string {
 	return fmt.Sprintf(format, args...)
 }
 
+//输出错误信息，并返回 ErrorCodeMsg 对象
+func (m *MYLOG) ErrorECM(code int32, format string, args ...interface{}) *ErrorCodeMsg {
+	//日志追加stack信息
+	m.logger.Errorf(m._addStackInfo(format), args...)
+	//返回的信息不追加stack信息
+	return NewErrorCodeMsg(code, fmt.Sprintf(format, args...))
+}
+
 func (m *MYLOG) Critical(format string, args ...interface{}) {
 	m.logger.Criticalf(m._addStackInfo(format), args...)
 }
@@ -334,7 +378,6 @@ func (t *StateWorldCache) GetState_Ex(stub shim.ChaincodeStubInterface, key stri
 }
 
 func (t *StateWorldCache) PutState_Ex(stub shim.ChaincodeStubInterface, key string, value []byte) error {
-
 	err := stub.PutState(key, value)
 	if err == nil {
 		t.lock.Lock()
@@ -342,4 +385,32 @@ func (t *StateWorldCache) PutState_Ex(stub shim.ChaincodeStubInterface, key stri
 		t.lock.Unlock()
 	}
 	return err
+}
+
+type ErrorCodeMsg struct {
+	Code    int32
+	Message string
+}
+
+func (r *ErrorCodeMsg) toJson() string {
+	return fmt.Sprintf("{\"code\":%d,\"msg\":\"%s\"}", r.Code, r.Message)
+}
+
+//String方法只返回错误信息，要返回code和msg使用toJson方法
+func (r *ErrorCodeMsg) String() string {
+	return r.Message
+}
+
+func NewErrorCodeMsg(code int32, msg string) *ErrorCodeMsg {
+	return &ErrorCodeMsg{Code: code, Message: msg}
+}
+
+func NewErrorCodeMsgFromString(jsonStr string) (*ErrorCodeMsg, error) {
+	var ecm ErrorCodeMsg
+	err := json.Unmarshal([]byte(jsonStr), &ecm)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ecm, nil
 }

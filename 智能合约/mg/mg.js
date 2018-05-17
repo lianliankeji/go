@@ -15,13 +15,10 @@
  */
 'use strict';
 
-const fs = require('fs')
-
 const loulan = require('./loulan')
 
 
 const common = require('./lib/common');
-const hash = require('./lib/hash');
 
 
 var logger = common.createLog("mg")
