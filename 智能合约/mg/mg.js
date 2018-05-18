@@ -28,8 +28,6 @@ logger.setLogLevel(logger.logLevel.INFO)
 
 process.on('exit', function (){
   logger.info(" ****  mg exit ****");
-  //fs.closeSync(wFd);
-  user.onExit();
 });
 
 loulan.SetModuleName('mg')

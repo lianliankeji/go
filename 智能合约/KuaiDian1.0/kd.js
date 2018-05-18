@@ -31,8 +31,6 @@ logger.setLogLevel(logger.logLevel.INFO)
 
 process.on('exit', function (){
   logger.info(" ****  kd exit ****");
-  //fs.closeSync(wFd);
-  user.onExit();
 });
 
 loulan.SetModuleName('kd')

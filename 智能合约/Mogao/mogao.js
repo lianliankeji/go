@@ -28,8 +28,6 @@ logger.setLogLevel(logger.logLevel.DEBUG)
 
 process.on('exit', function (){
   logger.info(" ****  mogao exit ****");
-  //fs.closeSync(wFd);
-  user.onExit();
 });
 
 loulan.SetModuleName('mogao')
