@@ -316,10 +316,7 @@ function __execRegister(params, req, outputRResult, serialno) {
 		orgname: orgname
 	}, app.get('secret'));
     */
-    var attributes = [  {name: attrKeys.USRROLE, value: 'role'}, 
-                        {name: attrKeys.USRNAME, value: username}, 
-                        {name: attrKeys.USRTYPE, value: 'user'}]
-                        
+    var attributes = [{name: attrKeys.USRNAME, value: username}]
                         
     var passwd = params.passwd
     
@@ -924,6 +921,7 @@ function handle_query(params, res, req, serialno) {
                 if (fcn == "isAccExists") {
                     body.result = "0"
                     res.send(body);
+                    logger.info("Query.%d success: request=%j, results=%s", serialno, queryRequest, body.result);
                     return
                 }
             }
