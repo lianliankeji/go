@@ -433,7 +433,7 @@ function __execRegister(params, req, outputRResult, serialno) {
             body.msg = util.format('Register: %s err, %s.', funcName ? funcName : '', err)
             
             if (outputRResult == true) {
-                logger.info("Register.%d failed: user=%s, err=%j", serialno, username, err);
+                logger.info("Register.%d failed: user=%s, error=%s", serialno, username, err); //err用%j有的错误打不出来，用%s试试
             }
             
             return Promise.reject(body)
@@ -693,7 +693,7 @@ function __execInvoke(params, req, outputQReslt, serialno) {
                 } else {
                     
                 }                        
-                logger.error("Invoke.%d failed : request=%j, error=%j", serialno, invokeRequest, err);
+                logger.error("Invoke.%d failed : request=%j, error=%s", serialno, invokeRequest, err); //err用%j有的错误打不出来，用%s试试
             }
             
             
@@ -937,7 +937,7 @@ function handle_query(params, res, req, serialno) {
             
             if (outputQReslt == true) {
                 //去掉无用的信息,不打印
-                logger.error("Query.%d failed : request=%j, error=%j", serialno, queryRequest, err);
+                logger.error("Query.%d failed : request=%j, error=%s", serialno, queryRequest, err);  //err用%j有的错误打不出来，用%s试试
             }
         });
 }
