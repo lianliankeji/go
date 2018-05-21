@@ -171,6 +171,8 @@ var paramsFmtConvHandle_Query
 var resultFormatHandle_Invoke
 var resultFormatHandle_Query
 
+var errorIsJsonFormat = true
+
 var module_name
 
 const templateModuleName = '_loulan__'
@@ -647,7 +649,7 @@ function __execInvoke(params, req, outputQReslt, serialno) {
             if (fcn == "account")
                 newUserWhenNil = true
 
-            return hfc_wrap.invokeChaincode(peers, channelName, chaincodeName, fcn, inputArgs, username, orgname, newUserWhenNil, true)
+            return hfc_wrap.invokeChaincode(peers, channelName, chaincodeName, fcn, inputArgs, username, orgname, newUserWhenNil, errorIsJsonFormat)
             .then((response)=>{
                     logger.debug('invoke success, response=', response)
                     body.msg = util.format("Invoke(%s) OK.", fcn)
@@ -856,7 +858,7 @@ function handle_query(params, res, req, serialno) {
         logger.debug('args  : ', inputArgs);
     
 
-        return hfc_wrap.queryChaincode(peer, channelName, chaincodeName, inputArgs, fcn, username, orgname, true)
+        return hfc_wrap.queryChaincode(peer, channelName, chaincodeName, inputArgs, fcn, username, orgname, errorIsJsonFormat)
         .then((response)=>{
                 logger.debug('query success, response=', response)
                 body.msg = util.format("Query(%s) OK.", fcn)
@@ -2264,6 +2266,9 @@ function Loulan_RegisterInvokeResultFormatHandle(fn) {
     resultFormatHandle_Invoke = fn
 }
 
+function Loulan_TurnoffErrorJson() {
+    errorIsJsonFormat = false
+}
 
 function Loulan_Start(subCfgFile) {
 
@@ -2300,6 +2305,7 @@ exports.SetLogger = Loulan_SetLogger
 exports.UseDefaultRoute = Loulan_UseDefaultRoute
 exports.RegisterRoute = Loulan_RegisterRoute
 exports.SetExportIntfPath = Loulan_SetExportIntfPath
+exports.TurnoffErrorJson = Loulan_TurnoffErrorJson
 exports.RegisterInvokeParamsFmtConvHandle = Loulan_RegisterInvokeParamsFmtConvHandle
 exports.RegisterQueryParamsFmtConvHandle = Loulan_RegisterQueryParamsFmtConvHandle
 exports.RegisterQueryResultFormatHandle = Loulan_RegisterQueryResultFormatHandle

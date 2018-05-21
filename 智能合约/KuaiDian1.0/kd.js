@@ -66,6 +66,8 @@ loulan.RegisterQueryParamsFmtConvHandle(parseParams_Query)
 loulan.RegisterInvokeResultFormatHandle(formatInvokeResult)
 loulan.RegisterQueryResultFormatHandle(formatQueryResult)
 
+loulan.TurnoffErrorJson() //error暂不支持json格式
+
 loulan.Start('./cfg/subscribe.cfg')
 
 
