@@ -920,7 +920,9 @@ function handle_query(params, res, req, serialno) {
     .catch((err)=>{
             //用户不存在时，做特殊处理
             if (err == hfc_wrap.ErrorUserNotExists) {
-                if (fcn == "isAccExists") {
+                logger.error("Query.%d: user '%s' not exists.", serialno, username);
+                //判断用户是否存在接口及查询余额接口，用户不存在时都返回0
+                if (fcn == "isAccExists" || fcn == "getBalance") {
                     body.result = "0"
                     res.send(body);
                     logger.info("Query.%d success: request=%j, results=%s", serialno, queryRequest, body.result);
